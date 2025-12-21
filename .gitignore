@@ -3,3 +3,7 @@
 *.log
 *.json
 *.info
+RAG/logs
+qdrant_storage
+output
+.DS_Store
