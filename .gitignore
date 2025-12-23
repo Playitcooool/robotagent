@@ -7,3 +7,4 @@ RAG/logs
 qdrant_storage
 output
 .DS_Store
+*.pyc
