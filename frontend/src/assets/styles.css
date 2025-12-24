@@ -1,0 +1,30 @@
+:root{--bg:#0f1720;--panel:#0b1220;--muted:#9aa6b2;--accent:#4f46e5;--glass:rgba(255,255,255,0.03)}
+html,body,#app{height:100%;margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial}
+.app-grid{display:grid;grid-template-columns:280px 1fr 360px;grid-template-rows:100vh;gap:18px;padding:18px;background:linear-gradient(180deg,#071022,#071428);box-sizing:border-box}
+.left,.center,.right{background:var(--panel);border-radius:10px;padding:12px;color:#e6eef6;box-shadow:0 6px 24px rgba(2,6,23,0.6)}
+.sidebar .header{font-weight:700;margin-bottom:10px}
+.sidebar .list{overflow:auto;max-height:calc(100vh - 160px)}
+.sidebar .item{padding:10px;border-radius:8px;margin-bottom:8px;background:var(--glass);cursor:pointer}
+.sidebar .item:hover{outline:1px solid rgba(255,255,255,0.03)}
+.sidebar .meta{display:flex;flex-direction:column}
+.sidebar .snippet{color:var(--muted);font-size:12px;margin-top:6px}
+.footer{display:flex;justify-content:center;margin-top:10px}
+.footer button{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--accent);padding:8px 12px;border-radius:8px}
+
+.chatview{display:flex;flex-direction:column;height:100%}
+.messages{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:8px}
+.message{display:flex}
+.message.user{justify-content:flex-end}
+.message.assistant{justify-content:flex-start}
+.bubble{max-width:70%;padding:10px;border-radius:12px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));color:#e6eef6}
+.composer{display:flex;padding:12px;border-top:1px solid rgba(255,255,255,0.02)}
+.composer input{flex:1;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:#e6eef6}
+.composer button{margin-left:10px;padding:10px 16px;border-radius:8px;background:var(--accent);border:none;color:white}
+
+.tool-results .header{font-weight:700;margin-bottom:10px}
+.tool-results .body{overflow:auto;max-height:calc(100vh - 120px)}
+.tool-results pre{background:rgba(255,255,255,0.02);padding:12px;border-radius:8px;color:#cfe3ff}
+.tool-results .image-wrap img{max-width:100%;border-radius:8px}
+
+/* Responsive */
+@media (max-width: 1000px){.app-grid{grid-template-columns:220px 1fr;grid-template-rows:auto 1fr;}.right{display:none}}
