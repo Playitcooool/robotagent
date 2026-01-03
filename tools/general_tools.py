@@ -7,6 +7,7 @@ import os
 import json
 import re
 from datetime import datetime, timezone
+
 try:
     from zoneinfo import ZoneInfo
 except Exception:
@@ -18,9 +19,9 @@ from typing import List, Tuple, Optional
 def retrieve_context(query: str):
     """Retrieve information to help answer a query."""
     query = embeddings.embed_query(query)
-    retrieved_docs = client.query_points(query=query, 
-                                         collection_name='markdown_chunks',
-                                         limit=3)
+    retrieved_docs = client.query_points(
+        query=query, collection_name="markdown_chunks", limit=3
+    )
 
     documents = []
     serialized_parts = []
@@ -30,7 +31,11 @@ def retrieve_context(query: str):
     points = None
     if isinstance(retrieved_docs, dict):
         points = retrieved_docs.get("points") or retrieved_docs.get("result") or []
-    elif isinstance(retrieved_docs, (tuple, list)) and len(retrieved_docs) >= 2 and isinstance(retrieved_docs[1], list):
+    elif (
+        isinstance(retrieved_docs, (tuple, list))
+        and len(retrieved_docs) >= 2
+        and isinstance(retrieved_docs[1], list)
+    ):
         # e.g. ('points', [ScoredPoint(...), ...])
         points = retrieved_docs[1]
     elif hasattr(retrieved_docs, "points"):
@@ -45,7 +50,11 @@ def retrieve_context(query: str):
         # ScoredPoint objects expose `.payload`; sometimes doc can be a tuple/indexed structure.
         if hasattr(doc, "payload"):
             metadata = doc.payload or {}
-        elif isinstance(doc, (tuple, list)) and len(doc) >= 2 and hasattr(doc[1], "payload"):
+        elif (
+            isinstance(doc, (tuple, list))
+            and len(doc) >= 2
+            and hasattr(doc[1], "payload")
+        ):
             metadata = doc[1].payload or {}
         elif isinstance(doc, dict):
             metadata = doc.get("payload") or {}
@@ -76,6 +85,7 @@ def retrieve_context(query: str):
 # ---------------------------
 # General-purpose agent tools
 # ---------------------------
+
 
 @tool(response_format="content")
 def http_get(url: str, max_chars: int = 2000, timeout: float = 5.0):
@@ -142,7 +152,15 @@ def read_workspace_file(path: str, max_chars: int = 10000):
     truncated = len(content) > max_chars
     snippet = content[:max_chars]
 
-    return json.dumps({"path": os.path.relpath(candidate, repo_root), "content": snippet, "truncated": truncated}, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {
+            "path": os.path.relpath(candidate, repo_root),
+            "content": snippet,
+            "truncated": truncated,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 @tool(response_format="content")
@@ -178,7 +196,7 @@ def summarize_text(text: str, max_sentences: int = 5):
         return ""
 
     # Split into sentences with a simple regex that handles common punctuation.
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
     if len(sentences) <= max_sentences:
         summary = " ".join(sentences)
         return summary
@@ -201,3 +219,14 @@ def current_time(tz: Optional[str] = "UTC"):
         dt = datetime.now()
 
     return dt.isoformat()
+
+
+__all__ = [
+    "current_time",
+    "summarize_text",
+    "extract_emails",
+    "format_json",
+    "read_workspace_file",
+    "http_get",
+    "retrieve_context",
+]
