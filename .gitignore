@@ -1,9 +1,10 @@
 *.pdf
-*.md
 *.log
 *.json
 *.info
 RAG/logs
+RAG/chunks
+RAG/extracted_md
 qdrant_storage
 output
 .DS_Store
