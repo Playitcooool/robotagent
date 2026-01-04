@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  robotagent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: robotagent:latest
+    volumes:
+      - ../:/app
+    working_dir: /app
+    environment:
+      - TZ=UTC
+    tty: true
