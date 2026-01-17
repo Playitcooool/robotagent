@@ -24,7 +24,7 @@ if agent is None:
         if chatBot is None:
             chatBot = ChatOllama(
                 base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-                model=os.getenv("OLLAMA_MODEL", "qwen3:8b"),
+                model=os.getenv("OLLAMA_MODEL", "qwen3:4b"),
             )
         ollama_agent = create_agent(model=chatBot, tools=[])
     except Exception:
@@ -48,6 +48,19 @@ class ChatIn(BaseModel):
 @app.get("/api/ping")
 async def ping():
     return {"status": "ok"}
+
+
+@app.get("/api/messages")
+async def get_messages():
+    """Return a small list of recent messages for the frontend sidebar.
+
+    This is a lightweight compatibility endpoint used by the dev frontend.
+    """
+    sample = [
+        {"id": 1, "role": "assistant", "text": "示例对话：你好，我是 RobotAgent。"},
+        {"id": 2, "role": "user", "text": "请帮我查一下最新的论文。"},
+    ]
+    return sample
 
 
 @app.post("/api/chat/send")
@@ -108,3 +121,6 @@ async def chat_send(payload: ChatIn):
             ) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+# uvicorn server:app --reload --host 0.0.0.0 --port 8000 to start backend

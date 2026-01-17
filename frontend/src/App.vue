@@ -5,7 +5,7 @@
     </aside>
 
     <main class="center">
-      <ChatView :conversation="conversation" @sendMessage="onSendMessage" />
+      <ChatView :conversation="conversation" :assistantDraft="assistantDraft" @sendMessage="onSendMessage" />
     </main>
 
     <aside class="right">
@@ -29,6 +29,8 @@ export default {
       { id: 1, role: 'assistant', text: '欢迎使用 RobotAgent！请选择左侧会话或发起新对话。' }
     ])
 
+    // (streaming assistant placeholder will be inserted directly into `conversation`)
+
     const toolResult = ref(null)
 
     function onSelectMessage(message) {
@@ -42,6 +44,11 @@ export default {
       const userMsg = { id: Date.now(), role: 'user', text }
       conversation.value.push(userMsg)
 
+      // create assistant placeholder immediately so UI shows typing animation
+      const assistantId = Date.now() + 1
+      conversation.value.push({ id: assistantId, role: 'assistant', text: '', loading: true })
+      console.debug('App: pushed assistant placeholder', assistantId, conversation.value.map(m=>({id:m.id,role:m.role,text:m.text,loading:m.loading})))
+      console.debug('dqdaadadadad')
       // call backend API (assumes /api/chat/send exists). If not, mock response.
       try {
         const res = await fetch('/api/chat/send', {
@@ -50,14 +57,17 @@ export default {
         })
 
         if (!res.ok) {
-          conversation.value.push({ id: Date.now()+2, role: 'assistant', text: '无法连接后端，已在本地模拟回复：' + text })
+          // update the existing assistant placeholder with an error message
+          const idxErr = conversation.value.findIndex(m => m.id === assistantId)
+          const errText = '无法连接后端（http ' + res.status + '）'
+          if (idxErr !== -1) {
+            conversation.value[idxErr].loading = false
+            conversation.value[idxErr].text = errText
+          } else {
+            conversation.value.push({ id: Date.now()+2, role: 'assistant', text: errText })
+          }
           return
         }
-
-        // Prepare an assistant placeholder to update incrementally
-        const assistantId = Date.now() + 1
-        conversation.value.push({ id: assistantId, role: 'assistant', text: '' })
-
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
         let buf = ''
@@ -80,21 +90,30 @@ export default {
             }
 
             if (obj.type === 'delta') {
-              // Update the assistant placeholder with the latest text
+              // Update the assistant placeholder in conversation with the latest text
               const idx = conversation.value.findIndex(m => m.id === assistantId)
               if (idx !== -1) {
-                // Replace or append text (agent may stream full content each time)
+                if (conversation.value[idx].loading) {
+                  conversation.value[idx].loading = false
+                  console.debug('App: first token arrived, clearing loading for', assistantId)
+                }
                 conversation.value[idx].text = obj.text
               } else {
                 conversation.value.push({ id: assistantId, role: 'assistant', text: obj.text })
               }
             } else if (obj.type === 'error') {
-              const idx = conversation.value.findIndex(m => m.id === assistantId)
               const errText = `[后端错误] ${obj.error}`
-              if (idx !== -1) conversation.value[idx].text = (conversation.value[idx].text || '') + '\n' + errText
-              else conversation.value.push({ id: assistantId, role: 'assistant', text: errText })
+              const idxErr2 = conversation.value.findIndex(m => m.id === assistantId)
+              if (idxErr2 !== -1) {
+                conversation.value[idxErr2].loading = false
+                conversation.value[idxErr2].text = errText
+              } else {
+                conversation.value.push({ id: Date.now()+3, role: 'assistant', text: errText })
+              }
             } else if (obj.type === 'done') {
-              // finalization can be handled here if needed
+              // stream finished — ensure loading cleared
+              const idxDone = conversation.value.findIndex(m => m.id === assistantId)
+              if (idxDone !== -1) conversation.value[idxDone].loading = false
             }
           }
         }
@@ -104,9 +123,13 @@ export default {
           try {
             const obj = JSON.parse(buf)
             if (obj && obj.type === 'delta') {
-              const idx = conversation.value.findIndex(m => m.role === 'assistant' && m.id === assistantId)
-              if (idx !== -1) conversation.value[idx].text = obj.text
-              else conversation.value.push({ id: assistantId, role: 'assistant', text: obj.text })
+              const idxRem = conversation.value.findIndex(m => m.id === assistantId)
+              if (idxRem !== -1) {
+                conversation.value[idxRem].loading = false
+                conversation.value[idxRem].text = obj.text
+              } else {
+                conversation.value.push({ id: assistantId, role: 'assistant', text: obj.text })
+              }
             }
           } catch (err) {
             // ignore
@@ -114,7 +137,14 @@ export default {
         }
 
       } catch (e) {
-        conversation.value.push({ id: Date.now()+2, role: 'assistant', text: '网络错误（本地模拟回复）：' + text })
+        const idxNet = conversation.value.findIndex(m => m.role === 'assistant' && m.loading)
+        const errMsg = '[网络错误] ' + String(e)
+        if (idxNet !== -1) {
+          conversation.value[idxNet].loading = false
+          conversation.value[idxNet].text = errMsg
+        } else {
+          conversation.value.push({ id: Date.now()+2, role: 'assistant', text: errMsg })
+        }
       }
     }
 
