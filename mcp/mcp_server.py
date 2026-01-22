@@ -1,5 +1,4 @@
 from fastmcp import FastMCP
-import mcp
 
 mcp_server = FastMCP("pybullet")
 

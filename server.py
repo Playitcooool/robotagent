@@ -4,6 +4,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import logging
 import json
+from langchain_mcp_adapters.client import MultiServerMCPClient
+import tools.AnalysisTool
+
+client = MultiServerMCPClient(
+    {
+        "pybullet": {
+            "transport": "stdio",
+            "command": "python",
+            "args": "mcp/mcp_server.py",
+        }
+    }
+)
+
+
+async def load_all_tools():
+    mcp_tools = await client.get_tools()
+
+    analysis_tools = []
+    for func_name in tools.AnalysisTool.__all__:
+        function = getattr(tools.AnalysisTool, func_name)
+        analysis_tools.append(function)
+
+    return mcp_tools.extend(analysis_tools)
+
 
 # Import the existing agent and chat bot from main.py (if available)
 try:
@@ -26,7 +50,8 @@ if agent is None:
                 base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
                 model=os.getenv("OLLAMA_MODEL", "qwen3:4b"),
             )
-        ollama_agent = create_agent(model=chatBot, tools=[])
+        tools = load_all_tools()
+        ollama_agent = create_agent(model=chatBot, tools=tools)
     except Exception:
         ollama_agent = None
 
