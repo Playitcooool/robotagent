@@ -5,7 +5,7 @@ from fastapi.responses import StreamingResponse
 import logging
 import json
 from langchain_mcp_adapters.client import MultiServerMCPClient
-import tools.AnalysisTool
+import tools.AnalysisTool, tools.GeneralTool, tools.SubAgentTool
 import asyncio
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
@@ -41,14 +41,22 @@ async def get_tools():
 
         # 获取分析工具
         analysis_tools = []
+        general_tools = []
+        subagent_tools = []
         logger.info(f"AnalysisTool.__all__ 内容：{tools.AnalysisTool.__all__}")
         for func_name in tools.AnalysisTool.__all__:
             function = getattr(tools.AnalysisTool, func_name)
             analysis_tools.append(function)
+        for func_name in tools.GeneralTool.__all__:
+            function = getattr(tools.GeneralTool, func_name)
+            general_tools.append(function)
+        for func_name in tools.SubAgentTool.__all__:
+            function = getattr(tools.SubAgentTool, func_name)
+            subagent_tools.append(function)
         logger.info(f"成功加载分析工具数量：{len(analysis_tools)}")
 
         # 合并工具
-        all_tools = mcp_tools + analysis_tools
+        all_tools = mcp_tools + analysis_tools + general_tools + subagent_tools
         logger.info(f"总工具数量：{len(all_tools)}")
         return all_tools
     except Exception as e:

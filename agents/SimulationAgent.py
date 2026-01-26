@@ -1,7 +1,11 @@
-from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 
-chatBot = ChatOllama(base_url="http://localhost:11434", model="qwen3:8b")
+chatBot = ChatOpenAI(
+    base_url="http://localhost:1234",
+    model="qwen2.5.1-coder-7b-instruct",
+    api_key="no_need",
+)
 agent = create_agent(
     model=chatBot,
     tools=[],
