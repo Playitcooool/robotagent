@@ -12,3 +12,7 @@ def stacking():
 @mcp_server.tool()
 def grab_and_place():
     pass
+
+
+if __name__ == "__main__":
+    mcp_server.run(transport="stdio")
