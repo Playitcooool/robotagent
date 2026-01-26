@@ -7,6 +7,10 @@ import json
 from langchain_mcp_adapters.client import MultiServerMCPClient
 import tools.AnalysisTool
 
+from langchain_openai import ChatOpenAI
+from langchain.agents import create_agent
+import os
+
 client = MultiServerMCPClient(
     {
         "pybullet": {
@@ -26,34 +30,16 @@ async def load_all_tools():
         function = getattr(tools.AnalysisTool, func_name)
         analysis_tools.append(function)
 
-    return mcp_tools.extend(analysis_tools)
+    return await mcp_tools.extend(analysis_tools)
 
 
-# Import the existing agent and chat bot from main.py (if available)
-try:
-    # main.py defines `agent` (an agent wrapper) and `chatBot` (the raw ChatOllama client)
-    from main import agent, chatBot
-except Exception:
-    agent = None
-    chatBot = None
-
-# If no top-level agent is available, try to create a lightweight Ollama-based agent as a fallback.
-ollama_agent = None
-if agent is None:
-    try:
-        from langchain_ollama import ChatOllama
-        from langchain.agents import create_agent
-        import os
-
-        if chatBot is None:
-            chatBot = ChatOllama(
-                base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-                model=os.getenv("OLLAMA_MODEL", "qwen3:4b"),
-            )
-        tools = load_all_tools()
-        ollama_agent = create_agent(model=chatBot, tools=tools)
-    except Exception:
-        ollama_agent = None
+chatBot = ChatOpenAI(
+    base_url="http://localhost:1234/v1",
+    model="qwen2.5.1-coder-7b-instruct",
+    api_key="no_need",
+)
+# tools = await load_all_tools()
+agent = create_agent(model=chatBot, tools=[])
 
 app = FastAPI()
 # Allow frontend dev server to call this API; restrict in production as needed
@@ -102,7 +88,7 @@ async def chat_send(payload: ChatIn):
     user_message = payload.message or ""
 
     # Prefer an existing orchestrating agent, otherwise fall back to the ollama-only agent
-    active_agent = agent or ollama_agent
+    active_agent = agent
     if not active_agent:
         # Return a simple JSON reply instead of a stream for compatibility
         return {
