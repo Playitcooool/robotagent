@@ -1,6 +1,7 @@
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 import tools.AnalysisTool
+from prompts import AnalysisAgentPrompt
 
 chatBot = ChatOpenAI(
     base_url="http://localhost:1234",
@@ -14,4 +15,5 @@ for func_name in tools.AnalysisTool.__all__:
 analysis_agent = create_agent(
     model=chatBot,
     tools=analysis_agent_tools,
+    system_prompt=AnalysisAgentPrompt.SYSTEM_PROMPT,
 )

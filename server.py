@@ -10,6 +10,7 @@ import asyncio
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 import os
+from prompts import MainAgentPrompt
 
 # ========== 1. 日志配置（确保输出到Uvicorn控制台） ==========
 logger = logging.getLogger("uvicorn")
@@ -86,7 +87,9 @@ async def startup_event():
             logger.warning("未加载到任何工具，agent将使用空工具列表")
 
         # 创建带工具的agent（核心修正）
-        active_agent = create_agent(model=chatBot, tools=all_tools)
+        active_agent = create_agent(
+            model=chatBot, tools=all_tools, system_prompt=MainAgentPrompt
+        )
         logger.info("Agent 初始化成功！")
     except Exception as e:
         logger.error(f"Agent 初始化失败：{str(e)}", exc_info=True)
