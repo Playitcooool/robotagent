@@ -10,6 +10,7 @@ from langchain.agents.middleware import (
     LLMToolSelectorMiddleware,
     ToolRetryMiddleware,
 )
+from langgraph.checkpoint.memory import InMemorySaver
 import tools.AnalysisTool, tools.GeneralTool, tools.SubAgentTool
 import asyncio
 from langchain_openai import ChatOpenAI
@@ -112,6 +113,7 @@ async def startup_event():
                     initial_delay=1.0,
                 ),
             ],
+            checkpointer=InMemorySaver(),
         )
         logger.info("Agent 初始化成功！")
     except Exception as e:
