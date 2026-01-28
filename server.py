@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import logging
 import json
+import yaml
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.agents.middleware import (
     SummarizationMiddleware,
@@ -24,7 +25,8 @@ logger.setLevel(logging.INFO)
 
 # ========== 2. 全局变量定义（关键：提前声明active_agent） ==========
 active_agent = None  # 全局agent，启动事件中初始化
-
+with open("config/config.yml", "r", encoding="utf-8") as f:
+    config = yaml.load(f.read(), Loader=yaml.FullLoader)
 # ========== 3. MCP客户端修正（args应为列表） ==========
 client = MultiServerMCPClient(
     {
@@ -73,8 +75,8 @@ async def get_tools():
 
 # ========== 5. 初始化LLM模型 ==========
 chatBot = ChatOpenAI(
-    base_url="http://localhost:1234/v1",
-    model="qwen2.5.1-coder-7b-instruct",
+    base_url=config["model_url"],
+    model=config["llm"]["chat"],
     api_key="no_need",
 )
 
@@ -99,12 +101,12 @@ async def startup_event():
             system_prompt=MainAgentPrompt,
             middleware=[
                 SummarizationMiddleware(
-                    model="qwen3:0.6b",
+                    model=config["llm"]["summary"],
                     trigger=("tokens", 4000),
                     messages_to_keep=("message", 20),
                 ),
                 LLMToolSelectorMiddleware(
-                    model="qwen:1.7b",
+                    model=config["llm"]["tool_selector"],
                     max_tools=3,
                     system_prompt=LLMToolSelectorPrompt.SYSTEM_PROMPT,
                 ),

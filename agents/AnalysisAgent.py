@@ -2,10 +2,14 @@ from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 import tools.AnalysisTool
 from prompts import AnalysisAgentPrompt
+import yaml
+
+with open("config/config.yml", "r", encoding="utf-8") as f:
+    config = yaml.load(f.read(), Loader=yaml.FullLoader)
 
 chatBot = ChatOpenAI(
-    base_url="http://localhost:1234",
-    model="qwen2.5.1-coder-7b-instruct",
+    base_url=config["model_url"],
+    model=config["llm"]["analysis"],
     api_key="no_need",
 )
 analysis_agent_tools = []

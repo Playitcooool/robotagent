@@ -1,0 +1,8 @@
+llm:
+  chat: 'qwen3-4b-instruct-2507-mlx'
+  analysis: 'qwen3-4b-instruct-2507-mlx'
+  simulation: 'qwen3-4b-instruct-2507-mlx'
+  summary: 'qwen3-1.7b-mlx'
+  tool_selector: 'qwen3-0.6b-mlx'
+
+model_url: "http://localhost:1234/v1"
