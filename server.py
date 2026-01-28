@@ -5,6 +5,11 @@ from fastapi.responses import StreamingResponse
 import logging
 import json
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain.agents.middleware import (
+    SummarizationMiddleware,
+    LLMToolSelectorMiddleware,
+    ToolRetryMiddleware,
+)
 import tools.AnalysisTool, tools.GeneralTool, tools.SubAgentTool
 import asyncio
 from langchain_openai import ChatOpenAI
@@ -88,7 +93,25 @@ async def startup_event():
 
         # 创建带工具的agent（核心修正）
         active_agent = create_agent(
-            model=chatBot, tools=all_tools, system_prompt=MainAgentPrompt
+            model=chatBot,
+            tools=all_tools,
+            system_prompt=MainAgentPrompt,
+            middleware=[
+                SummarizationMiddleware(
+                    model="qwen3:0.6b",
+                    trigger=("tokens", 4000),
+                    messages_to_keep=("message", 20),
+                ),
+                LLMToolSelectorMiddleware(
+                    model="qwen:1.7b",
+                    max_tools=3,
+                ),
+                ToolRetryMiddleware(
+                    max_retries=3,
+                    backoff_factor=2.0,
+                    initial_delay=1.0,
+                ),
+            ],
         )
         logger.info("Agent 初始化成功！")
     except Exception as e:
