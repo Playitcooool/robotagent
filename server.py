@@ -17,7 +17,7 @@ import asyncio
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 import os
-from prompts import MainAgentPrompt, LLMToolSelectorPrompt, SummaryPrompt
+from prompts import MainAgentPrompt, LLMToolSelectorPrompt
 
 # ========== 1. 日志配置（确保输出到Uvicorn控制台） ==========
 logger = logging.getLogger("uvicorn")
