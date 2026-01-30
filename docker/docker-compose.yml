@@ -7,7 +7,7 @@ services:
       dockerfile: Dockerfile
     image: robotagent:latest
     volumes:
-      - ../:/app
+      - ../mcp:/app/mcp
     working_dir: /app
     environment:
       - TZ=UTC
