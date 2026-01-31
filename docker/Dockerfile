@@ -1,47 +1,40 @@
-# Use Ubuntu 24.04 as base (ships with Python 3.12)
-FROM ubuntu:24.04
+FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     TZ=UTC
 
-# ----------------------
-# System dependencies
-# ----------------------
+# 1. 系统依赖 + Python（22.04 默认 Python 3.10）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        gnupg \
-        build-essential \
-        libgl1 \
-        ffmpeg \
-        wget \
-        python3 \
-        python3-pip \
-        python3-dev \
+    ca-certificates \
+    curl \
+    build-essential \
+    libgl1 \
+    ffmpeg \
+    wget \
+    python3 \
+    python3-full \
+    python3-venv \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip
-RUN python3 -m pip install --upgrade pip
+# 2. 创建虚拟环境（规避 PEP 668）
+RUN python3 -m venv /opt/venv
 
-# ----------------------
-# Python dependencies
-# ----------------------
-RUN pip install --no-cache-dir \
-        pybullet \
-        numpy \
-        pandas \
-        pydantic \
-        fastmcp \
-        mcp \
-        scipy \
-        matplotlib
+# 3. 激活 venv
+ENV PATH="/opt/venv/bin:$PATH"
 
-# ----------------------
-# Non-root user
-# ----------------------
-RUN useradd -m robot && mkdir /app && chown robot:robot /app
+# 4. 升级 pip（在 venv 中完全合法）
+RUN pip install --upgrade pip
+
+# 5. 安装 Python 包
+RUN pip install \
+    pybullet==3.2.5 \
+    numpy \
+    pandas \
+    fastmcp \
+    pydantic
+
 WORKDIR /app
-USER robot
 
-CMD ["python3"]
+CMD ["python"]
