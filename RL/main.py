@@ -1,53 +1,79 @@
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
-from tools import sum_two_num, product_twon_num
+from tools import sum_two_num, product_two_num
 from langchain.messages import (
     HumanMessage,
     AIMessage,
     ToolMessage,
-    SystemMessage,
 )
+import json
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant, please select proper tools to meet user's request"
 )
 
-tools = [sum_two_num, product_twon_num]
+tools = [sum_two_num, product_two_num]
 chat = ChatOpenAI(
-    base_url="http://localhost:1234/v1", model="qwen3-1.7b-mlx", api_key="no_need"
+    base_url="http://localhost:1234/v1",
+    model="qwen3-4b-instruct-2507-mlx",
+    api_key="no_need",
 )
 
 agent = create_agent(model=chat, tools=tools, system_prompt=SYSTEM_PROMPT)
-response = agent.invoke(
-    {"messages": [{"role": "user", "content": "帮我计算一下1与2的和"}]}
-)
+prompts = [
+    "please calculate the sum of 1 and 2",
+    "please calculate the product of 1 and 2",
+    "please calculate the sum of 3 and 2",
+    "please calculate the product of 5 and 2",
+    "please calculate the sum of 7 and 2",
+    "please calculate the product of 8 and 2",
+]
 
-messages = response["messages"]
+# Store all trajectories for all prompts
+all_trajectories = []
 
-trajectory = []
+# Loop over each prompt
+for index, prompt in enumerate(prompts):
+    print(f"Processing Prompt {index + 1}: {prompt}")
 
-for msg in response["messages"]:
-    # 只关心这三类
-    if isinstance(msg, (HumanMessage, AIMessage, ToolMessage)):
-        item = {
-            "role": (
-                "human"
-                if isinstance(msg, HumanMessage)
-                else "ai" if isinstance(msg, AIMessage) else "tool"
-            ),
-            "type": msg.__class__.__name__,
-            "content": msg.content,
-        }
+    # Generate 4 different trajectories for each prompt
+    for i in range(4):
+        response = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
 
-        # ToolMessage 特有信息（非常重要）
-        if isinstance(msg, ToolMessage):
-            item["tool_name"] = msg.name
-            item["tool_call_id"] = msg.tool_call_id
+        # Extract messages from the response
+        messages = response["messages"]
 
-        trajectory.append(item)
+        # Initialize the trajectory list for each attempt
+        trajectory = []
 
+        # Process each message and append to trajectory
+        for msg in messages:
+            if isinstance(msg, (HumanMessage, AIMessage, ToolMessage)):
+                item = {
+                    "role": (
+                        "human"
+                        if isinstance(msg, HumanMessage)
+                        else "ai" if isinstance(msg, AIMessage) else "tool"
+                    ),
+                    "type": msg.__class__.__name__,
+                    "content": msg.content,
+                }
 
-import json
+                # ToolMessage-specific fields (name, tool_call_id)
+                if isinstance(msg, ToolMessage):
+                    item["tool_name"] = msg.name
+                    item["tool_call_id"] = msg.tool_call_id
 
-with open("trajectory.json", "w", encoding="utf-8") as f:
-    json.dump(trajectory, f, ensure_ascii=False, indent=2)
+                # Add the prompt and iteration info
+                item["prompt_id"] = index
+                item["prompt_visited"] = i
+                trajectory.append(item)
+
+        # Append the generated trajectory for this attempt to all trajectories
+        all_trajectories.append(trajectory)
+
+# Write all trajectories to a JSON file
+with open("RL/trajectory.json", "w", encoding="utf-8") as f:
+    json.dump(all_trajectories, f, ensure_ascii=False, indent=2)
+
+print("Trajectories saved successfully!")

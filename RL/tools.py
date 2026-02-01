@@ -8,5 +8,5 @@ def sum_two_num(a: int, b: int):
 
 
 @tool(description="Use this tool to calculate the product of two numbers")
-def product_twon_num(a: int, b: int):
+def product_two_num(a: int, b: int):
     return a * b
