@@ -39,7 +39,13 @@ async def main():
         "please calculate the sum of 7 and 2",
         "please calculate the product of 8 and 2",
     ]
-    dpo = DPO(prompts=prompts, judge=judge, agent=agent, samples_per_prompt=4)
+    dpo = DPO(
+        model_path="/Volumes/Samsung/lmstudio/lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+        prompts=prompts,
+        judge=judge,
+        agent=agent,
+        samples_per_prompt=2,
+    )
     await dpo.run()
 
 

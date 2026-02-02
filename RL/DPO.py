@@ -10,12 +10,14 @@ from utils import select_best_and_worst, trajectory_to_judge_text, judge_pair
 class DPO:
     def __init__(
         self,
+        model_path,
         agent,
         judge,
         prompts,
         samples_per_prompt=4,
         dpo_batch_size=None,
     ):
+        self.model_path = model_path
         self.agent = agent
         self.judge = judge
         self.prompts = prompts
@@ -87,17 +89,82 @@ class DPO:
         return self.dpo_pairs
 
     def dpo_update(self):
-        """
-        这里之后你可以：
-        - 导出到 JSON
-        - 喂给 TRL DPOTrainer
-        - 或自己算 logprob
-        """
+        import torch
+        from datasets import Dataset
+        from modelscope import AutoTokenizer, AutoModelForCausalLM
+        from peft import LoraConfig, get_peft_model
+        from trl import DPOTrainer, DPOConfig
+
         print(f"DPO update on {len(self.dpo_pairs)} preference pairs")
 
-        # 示例：先落盘
-        with open("dpo_pairs.json", "w", encoding="utf-8") as f:
-            json.dump(self.dpo_pairs, f, ensure_ascii=False, indent=2)
+        # ========= 1. 构建 Dataset =========
+        dataset = Dataset.from_list(self.dpo_pairs)
+
+        # ========= 2. Tokenizer =========
+        tokenizer = AutoTokenizer.from_pretrained(
+            self.model_path, trust_remote_code=True
+        )
+        tokenizer.pad_token = tokenizer.eos_token
+
+        # ========= 3. Policy & Reference Model =========
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+
+        policy_model = AutoModelForCausalLM.from_pretrained(
+            self.model_path,
+            torch_dtype=torch.float16,
+            device_map={"": device},
+            trust_remote_code=True,
+        )
+
+        reference_model = AutoModelForCausalLM.from_pretrained(
+            self.model_path,
+            torch_dtype=torch.float16,
+            device_map={"": device},
+            trust_remote_code=True,
+        )
+
+        # ========= 4. LoRA（强烈建议） =========
+        lora_config = LoraConfig(
+            r=8,
+            lora_alpha=16,
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=["q_proj", "v_proj"],
+        )
+
+        policy_model = get_peft_model(policy_model, lora_config)
+
+        # ========= 5. DPO Config =========
+        dpo_config = DPOConfig(
+            beta=0.1,
+            per_device_train_batch_size=1,
+            gradient_accumulation_steps=4,
+            num_train_epochs=1,
+            learning_rate=5e-5,
+            fp16=True,
+            logging_steps=1,
+            output_dir="./dpo_ckpt",
+            report_to="none",
+        )
+
+        # ========= 6. Trainer =========
+        trainer = DPOTrainer(
+            model=policy_model,
+            ref_model=reference_model,
+            args=dpo_config,
+            train_dataset=dataset,
+            tokenizer=tokenizer,
+        )
+
+        # ========= 7. Train =========
+        trainer.train()
+
+        # ========= 8. 保存 =========
+        policy_model.save_pretrained("./dpo_ckpt/final")
+        tokenizer.save_pretrained("./dpo_ckpt/final")
+
+        print("✅ DPO update finished")
 
     async def run(self, iterations=3):
         for it in range(iterations):
