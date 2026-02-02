@@ -28,7 +28,7 @@ async def main():
     judge = ChatOpenAI(
         base_url="http://localhost:1234/v1",
         api_key="no_need",
-        model="deepseek-r1-distill-qwen-1.5b@8bit",
+        model="deepseek-r1-distill-qwen-1.5b@3bit",
     )
     agent = create_agent(model=chat, tools=tools, system_prompt=SYSTEM_PROMPT)
     prompts = [

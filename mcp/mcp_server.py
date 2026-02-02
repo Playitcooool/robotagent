@@ -151,6 +151,110 @@ def path_tracking(args: PathTrackingArgs):
 
 
 # ======================
+# Tool 4: push_cube
+# ======================
+class PushCubeArgs(BaseModel):
+    gui: bool = Field(default=False, description="Whether to enable PyBullet GUI.")
+    start_position: list[float] = Field(
+        default=[0.0, 0.0, 0.02], description="Initial position of the cube."
+    )
+    push_vector: list[float] = Field(
+        default=[0.2, 0.0, 0.0], description="Vector along which to push the cube."
+    )
+    steps: int = Field(default=120, description="Number of simulation steps.")
+
+
+@mcp_server.tool()
+def push_cube(args: PushCubeArgs):
+    """
+    Push a cube along a given vector using PyBullet.
+    """
+    setup_sim(gui=args.gui)
+
+    cube = p.loadURDF("cube_small.urdf", args.start_position)
+
+    # 线性插值推动
+    start_pos = args.start_position
+    dx = args.push_vector[0] / args.steps
+    dy = args.push_vector[1] / args.steps
+    dz = args.push_vector[2] / args.steps
+
+    for i in range(args.steps):
+        new_pos = [start_pos[0] + dx * i, start_pos[1] + dy * i, start_pos[2] + dz * i]
+        p.resetBasePositionAndOrientation(cube, new_pos, [0, 0, 0, 1])
+        step(1)
+
+    final_pos, _ = p.getBasePositionAndOrientation(cube)
+
+    cleanup_sim()
+
+    return {
+        "task": "push_cube",
+        "status": "success",
+        "final_position": final_pos,
+        "message": f"Cube pushed along vector {args.push_vector}.",
+    }
+
+
+# ======================
+# Tool 5: pick_and_throw
+# ======================
+class PickAndThrowArgs(BaseModel):
+    gui: bool = Field(default=False, description="Whether to enable PyBullet GUI.")
+    start_position: list[float] = Field(
+        default=[0.0, 0.0, 0.02], description="Initial position of the cube."
+    )
+    throw_vector: list[float] = Field(
+        default=[0.3, 0.3, 0.2], description="Vector to throw the cube."
+    )
+    settle_steps: int = Field(
+        default=120, description="Steps to let cube settle before throw."
+    )
+
+
+@mcp_server.tool()
+def pick_and_throw(args: PickAndThrowArgs):
+    """
+    Grab a cube, lift it, and throw it to a target position (teleport-based).
+    """
+    setup_sim(gui=args.gui)
+
+    cube = p.loadURDF("cube_small.urdf", args.start_position)
+
+    # Settle
+    step(args.settle_steps)
+
+    # Lift (grab)
+    lift_pos = [
+        args.start_position[0],
+        args.start_position[1],
+        args.start_position[2] + 0.2,
+    ]
+    p.resetBasePositionAndOrientation(cube, lift_pos, [0, 0, 0, 1])
+    step(60)
+
+    # Throw (teleport)
+    throw_pos = [
+        lift_pos[0] + args.throw_vector[0],
+        lift_pos[1] + args.throw_vector[1],
+        lift_pos[2] + args.throw_vector[2],
+    ]
+    p.resetBasePositionAndOrientation(cube, throw_pos, [0, 0, 0, 1])
+    step(120)
+
+    final_pos, _ = p.getBasePositionAndOrientation(cube)
+
+    cleanup_sim()
+
+    return {
+        "task": "pick_and_throw",
+        "status": "success",
+        "final_position": final_pos,
+        "message": f"Cube picked and thrown along {args.throw_vector}.",
+    }
+
+
+# ======================
 # 适配异步启动的核心逻辑（关键修改）
 # ======================
 async def start_mcp_server():
