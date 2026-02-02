@@ -12,3 +12,5 @@ services:
     environment:
       - TZ=UTC
     tty: true
+    ports:
+      - "8001:8000"

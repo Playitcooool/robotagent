@@ -1,3 +1,4 @@
+import asyncio
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 import pybullet as p
@@ -42,7 +43,7 @@ class StackingArgs(BaseModel):
     )
 
 
-@mcp_server.tool(args_schema=StackingArgs)
+@mcp_server.tool()
 def stacking(args: StackingArgs):
     """
     Stack two cubes using PyBullet.
@@ -81,7 +82,7 @@ class GrabAndPlaceArgs(BaseModel):
     )
 
 
-@mcp_server.tool(args_schema=GrabAndPlaceArgs)
+@mcp_server.tool()
 def grab_and_place(args: GrabAndPlaceArgs):
     """
     Simulate grab and place (simplified, teleport-based).
@@ -119,7 +120,7 @@ class PathTrackingArgs(BaseModel):
     steps: int = Field(default=120, description="Number of trajectory points.")
 
 
-@mcp_server.tool(args_schema=PathTrackingArgs)
+@mcp_server.tool()
 def path_tracking(args: PathTrackingArgs):
     """
     Track a circular path using a sphere.
@@ -150,7 +151,22 @@ def path_tracking(args: PathTrackingArgs):
 
 
 # ======================
+# 适配异步启动的核心逻辑（关键修改）
+# ======================
+async def start_mcp_server():
+    """显式定义异步启动函数，确保绑定 0.0.0.0"""
+    # 调用异步启动方法，明确指定 host 和 port
+    await mcp_server.run_http_async(
+        host="0.0.0.0",  # 强制绑定所有网卡，外部可访问
+        port=8000,  # 容器内端口
+        transport="http",
+    )
+
+
+# ======================
 # Run MCP Server
 # ======================
 if __name__ == "__main__":
-    mcp_server.run(transport="stdio")
+    # 显式运行异步事件循环，避免隐式配置问题
+    # 启动异步服务并阻塞，直到服务停止
+    asyncio.run(start_mcp_server())

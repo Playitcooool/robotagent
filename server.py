@@ -29,15 +29,7 @@ with open("config/config.yml", "r", encoding="utf-8") as f:
     config = yaml.load(f.read(), Loader=yaml.FullLoader)
 # ========== 3. MCP客户端修正（args应为列表） ==========
 client = MultiServerMCPClient(
-    {
-        "pybullet": {
-            "transport": "stdio",
-            "command": "python",
-            "args": [
-                "/Volumes/Samsung/Projects/robotagent/mcp/mcp_server.py"
-            ],  # 修正：args是列表，不是字符串
-        }
-    }
+    {"pybullet": {"transport": "http", "url": "http://localhost:8001/mcp"}}
 )
 
 
