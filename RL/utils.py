@@ -1,51 +1,86 @@
+from langchain.messages import HumanMessage
+
+
 def trajectory_to_judge_text(trajectory):
     tool_calls = []
-    final_answer = ""
+    final_answer = None
 
     for item in trajectory:
         if item["role"] == "tool":
             tool_calls.append(item.get("tool_name", "unknown_tool"))
-        if item["role"] == "ai":
+        elif item["role"] == "ai":
             final_answer = item["content"]
 
-    return (
-        f"- Tool used: {', '.join(tool_calls) if tool_calls else 'None'}\n"
-        f"- Final answer: {final_answer}"
+    tool_part = (
+        f"Tools used: {', '.join(tool_calls)}" if tool_calls else "Tools used: None"
     )
+
+    answer_part = f"Final answer: {final_answer}"
+
+    return f"{tool_part}\n{answer_part}"
+
+
+import random
 
 
 async def judge_pair(judge, prompt, traj_a, traj_b):
+    # ===== 随机映射，去 position bias =====
+    if random.random() < 0.5:
+        label_a, label_b = "A", "B"
+        text_a, text_b = traj_a, traj_b
+        reverse = False
+    else:
+        label_a, label_b = "B", "A"
+        text_a, text_b = traj_b, traj_a
+        reverse = True
+
     content = f"""
+You are an impartial judge.
+
 User prompt:
 {prompt}
 
-Trajectory A:
-{trajectory_to_judge_text(traj_a)}
+{label_a}:
+{trajectory_to_judge_text(text_a)}
 
-Trajectory B:
-{trajectory_to_judge_text(traj_b)}
+{label_b}:
+{trajectory_to_judge_text(text_b)}
 
-Which trajectory is better? Answer ONLY "A" or "B".
+Evaluation criteria:
+- Correctness of the final answer
+- Appropriate use of tools (if needed)
+- No hallucination or unnecessary steps
+
+Which is better? Answer ONLY "{label_a}" or "{label_b}".
 """
 
-    resp = await judge.ainvoke({"messages": [{"role": "user", "content": content}]})
+    resp = await judge.ainvoke([HumanMessage(content=content)])
 
     answer = resp.content.strip()
-    return "A" if "A" in answer else "B"
+
+    winner = label_a if label_a in answer else label_b
+
+    # ===== 还原到原始 trajectory =====
+    if reverse:
+        return "A" if winner == "B" else "B"
+    return winner
 
 
-async def select_best_and_worst(prompt, trajectories):
+async def select_best_and_worst(judge, prompt, trajectories):
+    assert len(trajectories) >= 2
+
+    # ===== best =====
     best = trajectories[0]
-
     for t in trajectories[1:]:
-        winner = await judge_pair(prompt, best, t)
+        winner = await judge_pair(judge, prompt, best, t)
         if winner == "B":
             best = t
 
+    # ===== worst =====
     worst = trajectories[0]
     for t in trajectories[1:]:
-        loser = await judge_pair(prompt, worst, t)
-        if loser == "A":
+        winner = await judge_pair(judge, prompt, worst, t)
+        if winner == "A":
             worst = t
 
     return best, worst
