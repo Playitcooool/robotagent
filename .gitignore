@@ -10,3 +10,4 @@ output
 .DS_Store
 *.pyc 
 frontend/node_modules
+dpo_ckpt

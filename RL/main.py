@@ -1,12 +1,48 @@
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
-from tools import sum_two_num, product_two_num
 import asyncio
+import json
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from DPO import DPO
+from langchain.messages import HumanMessage, AIMessage, ToolMessage
+
+
+async def sample_trajectories(agent, prompts, samples_per_prompt=4):
+    all_trajectories = []
+
+    for idx, prompt in enumerate(prompts):
+        print(f"Processing Prompt {idx+1}: {prompt}")
+
+        for attempt in range(samples_per_prompt):
+            response = await agent.ainvoke(
+                {"messages": [{"role": "user", "content": prompt}]}
+            )
+            trajectory = []
+
+            for msg in response["messages"]:
+                if isinstance(msg, (HumanMessage, AIMessage, ToolMessage)):
+                    item = {
+                        "role": (
+                            "human"
+                            if isinstance(msg, HumanMessage)
+                            else "ai" if isinstance(msg, AIMessage) else "tool"
+                        ),
+                        "type": msg.__class__.__name__,
+                        "content": msg.content,
+                        "prompt_id": idx,
+                        "attempt_id": attempt,
+                    }
+                    if isinstance(msg, ToolMessage):
+                        item["tool_name"] = msg.name
+                        item["tool_call_id"] = msg.tool_call_id
+                    trajectory.append(item)
+
+            all_trajectories.append(trajectory)
+
+    return all_trajectories
 
 
 async def main():
+    # ===== MCP 客户端获取工具 =====
     client = MultiServerMCPClient(
         {
             "pybullet": {
@@ -15,38 +51,47 @@ async def main():
             }
         }
     )
+    mcp_tool = await client.get_tools()
+    tools = mcp_tool
+
+    # ===== 初始化 ChatOpenAI agent =====
     SYSTEM_PROMPT = (
         "You are a helpful assistant, please select proper tools to meet user's request"
     )
-    mcp_tool = await client.get_tools()
-    tools = [sum_two_num, product_two_num] + mcp_tool
     chat = ChatOpenAI(
         base_url="http://localhost:1234/v1",
-        model="qwen3-4b-instruct-2507-mlx",
+        model="lmstudio-community:qwen3-4b-instruct-2507-mlx",
         api_key="no_need",
-    )
-    judge = ChatOpenAI(
-        base_url="http://localhost:1234/v1",
-        api_key="no_need",
-        model="deepseek-r1-distill-qwen-1.5b@3bit",
     )
     agent = create_agent(model=chat, tools=tools, system_prompt=SYSTEM_PROMPT)
+
+    # ===== 采集 prompt 列表 =====
     prompts = [
-        "please calculate the sum of 1 and 2",
-        "please calculate the product of 1 and 2",
-        "please calculate the sum of 3 and 2",
-        "please calculate the product of 5 and 2",
-        "please calculate the sum of 7 and 2",
-        "please calculate the product of 8 and 2",
+        # stacking
+        "Stack two small cubes on top of each other using PyBullet simulation.",
+        # grab_and_place
+        "Grab a cube from position [0.2, 0.0, 0.02] and place it at [0.4, 0.4, 0.02].",
+        "Grab a cube from position [0.1, -0.1, 0.02] and place it at [0.3, 0.2, 0.02].",
+        # path_tracking
+        "Move a sphere along a circular path of radius 0.3 for 120 steps.",
+        "Move a sphere along a circular path of radius 0.5 for 60 steps.",
+        # push_cube
+        "Push a cube from [0.0, 0.0, 0.02] along the vector [0.2, 0.0, 0.0] in PyBullet.",
+        "Push a cube from [0.1, 0.1, 0.02] along the vector [0.0, 0.3, 0.0].",
+        # pick_and_throw
+        "Pick a cube from [0.0, 0.0, 0.02], lift it, and throw it along the vector [0.3, 0.3, 0.2].",
+        "Pick a cube from [0.2, 0.0, 0.02], lift it, and throw it along the vector [0.2, 0.4, 0.1].",
+        # stacking variation
+        "Stack two small cubes at different positions in PyBullet simulation.",
     ]
-    dpo = DPO(
-        model_path="/Volumes/Samsung/lmstudio/lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
-        prompts=prompts,
-        judge=judge,
-        agent=agent,
-        samples_per_prompt=2,
-    )
-    await dpo.run()
+
+    all_trajectories = await sample_trajectories(agent, prompts, samples_per_prompt=4)
+
+    # ===== 保存 JSON =====
+    with open("trajectories.json", "w", encoding="utf-8") as f:
+        json.dump(all_trajectories, f, ensure_ascii=False, indent=2)
+
+    print("✅ Trajectories saved to trajectories.json")
 
 
 asyncio.run(main())
