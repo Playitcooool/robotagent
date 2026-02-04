@@ -1,6 +1,6 @@
 <template>
   <div class="chatview">
-    <div class="messages">
+    <div class="messages" ref="messagesRef">
       <div
         v-for="m in conversation"
         :key="m.id"
@@ -23,18 +23,19 @@
     </div>
 
     <form class="composer" @submit.prevent="send">
-      <input
+      <textarea
         v-model="text"
-        placeholder="向模型提问，按 Enter 发送"
-        autocomplete="off"
-      />
+        placeholder="向模型提问：Enter 发送，Shift+Enter 换行"
+        @keydown="onKeydown"
+        rows="2"
+      ></textarea>
       <button type="submit">发送</button>
     </form>
   </div>
 </template>
 
 <script>
-import { ref, watch } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import MarkdownIt from 'markdown-it'
 
 // Markdown renderer (LLM-safe)
@@ -43,6 +44,23 @@ const md = new MarkdownIt({
   breaks: true,    // 支持换行
   linkify: true    // 自动识别链接
 })
+
+// ensure links open safely in new tab
+const defaultLinkRender = md.renderer.rules.link_open || function (tokens, idx, options, env, self) {
+  return self.renderToken(tokens, idx, options)
+}
+md.renderer.rules.link_open = function (tokens, idx, options, env, self) {
+  const aIndex = tokens[idx].attrIndex('target')
+  if (aIndex < 0) tokens[idx].attrPush(['target', '_blank'])
+  else tokens[idx].attrs[aIndex][1] = '_blank'
+
+  // add rel for security
+  const relIndex = tokens[idx].attrIndex('rel')
+  if (relIndex < 0) tokens[idx].attrPush(['rel', 'noopener noreferrer'])
+  else tokens[idx].attrs[relIndex][1] = 'noopener noreferrer'
+
+  return defaultLinkRender(tokens, idx, options, env, self)
+}
 
 export default {
   name: 'ChatView',
@@ -55,6 +73,7 @@ export default {
   emits: ['sendMessage'],
   setup (props, { emit }) {
     const text = ref('')
+    const messagesRef = ref(null)
 
     function send () {
       if (!text.value.trim()) return
@@ -66,12 +85,19 @@ export default {
       return md.render(content || '')
     }
 
+    function onKeydown (e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        send()
+      }
+    }
+
     // auto-scroll when new message arrives
     watch(
       () => props.conversation.length,
       () => {
         setTimeout(() => {
-          const el = document.querySelector('.messages')
+          const el = messagesRef.value
           if (el) el.scrollTop = el.scrollHeight
         }, 50)
       }
@@ -80,7 +106,9 @@ export default {
     return {
       text,
       send,
-      renderMarkdown
+      renderMarkdown,
+      onKeydown,
+      messagesRef
     }
   }
 }
@@ -116,11 +144,14 @@ export default {
 }
 
 .message.user .bubble {
-  background: #daf1ff;
+  background: linear-gradient(180deg,#0f4b7a,#145f9a);
+  color: #e6eef6;
 }
 
 .message.assistant .bubble {
-  background: #f3f3f3;
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  color: #e6eef6;
+  border: 1px solid rgba(255,255,255,0.03);
 }
 
 /* typing indicator */
@@ -149,20 +180,18 @@ export default {
 }
 
 /* markdown content */
-.markdown :deep(pre) {
+.markdown ::v-deep pre {
   background: #1e1e1e;
   color: #f8f8f2;
   padding: 12px;
   border-radius: 6px;
   overflow-x: auto;
 }
-
-.markdown :deep(code) {
+.markdown ::v-deep code {
   font-family: Menlo, Monaco, Consolas, monospace;
   font-size: 0.9em;
 }
-
-.markdown :deep(p) {
+.markdown ::v-deep p {
   margin: 0.5em 0;
 }
 
@@ -170,12 +199,17 @@ export default {
   display: flex;
   gap: 8px;
   padding: 10px;
-  border-top: 1px solid #ddd;
+  border-top: 1px solid rgba(255,255,255,0.03);
 }
 
-.composer input {
+.composer textarea {
   flex: 1;
   padding: 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.04);
+  background: transparent;
+  color: #e6eef6;
+  resize: vertical;
 }
 
 .composer button {

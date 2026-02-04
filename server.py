@@ -60,6 +60,7 @@ chatBot = ChatOpenAI(
     base_url=config["model_url"],
     model=config["llm"]["chat"],
     api_key="no_need",
+    streaming=True,
 )
 
 # ========== 6. FastAPI应用初始化 ==========
@@ -80,26 +81,14 @@ async def startup_event():
         active_agent = create_agent(
             model=chatBot,
             tools=all_tools,
-            system_prompt=MainAgentPrompt,
+            system_prompt=MainAgentPrompt.SYSTEM_PROMPT,
             middleware=[
-                SummarizationMiddleware(
-                    model=config["llm"]["summary"],
-                    trigger=("tokens", 4000),
-                    messages_to_keep=("message", 20),
-                ),
-                LLMToolSelectorMiddleware(
-                    model=config["llm"]["tool_selector"],
-                    max_tools=3,
-                    system_prompt=LLMToolSelectorPrompt.SYSTEM_PROMPT,
-                ),
                 ToolRetryMiddleware(
                     max_retries=3,
                     backoff_factor=2.0,
                     initial_delay=1.0,
                 ),
-                TodoListMiddleware(),
             ],
-            checkpointer=InMemorySaver(),
         )
         logger.info("Agent 初始化成功！")
     except Exception as e:
@@ -146,7 +135,7 @@ async def chat_send(payload: ChatIn):
 
     # 核心修正：使用全局的active_agent，而非初始空工具的agent
     if not active_agent:
-        # 返回流式错误响应（保持格式统一）
+        # 返回流式错误响应（保持格式统一）并添加防缓冲头
         return StreamingResponse(
             iter(
                 [
@@ -158,6 +147,7 @@ async def chat_send(payload: ChatIn):
                 ]
             ),
             media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-transform", "X-Accel-Buffering": "no"},
         )
 
     def event_stream():
@@ -198,7 +188,11 @@ async def chat_send(payload: ChatIn):
                 ensure_ascii=False,
             ) + "\n"
 
-    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+    return StreamingResponse(
+        event_stream(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-transform", "X-Accel-Buffering": "no"},
+    )
 
 
 # 启动命令：uvicorn server:app --reload --host 0.0.0.0 --port 8000 --log-level info
