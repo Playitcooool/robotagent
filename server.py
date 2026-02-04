@@ -10,6 +10,7 @@ from langchain.agents.middleware import (
     SummarizationMiddleware,
     LLMToolSelectorMiddleware,
     ToolRetryMiddleware,
+    TodoListMiddleware,
 )
 from langgraph.checkpoint.memory import InMemorySaver
 import tools.AnalysisTool, tools.GeneralTool, tools.SubAgentTool
@@ -96,6 +97,7 @@ async def startup_event():
                     backoff_factor=2.0,
                     initial_delay=1.0,
                 ),
+                TodoListMiddleware(),
             ],
             checkpointer=InMemorySaver(),
         )
