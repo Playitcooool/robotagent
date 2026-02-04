@@ -56,7 +56,8 @@ dpo_config = DPOConfig(
     fp16=True,
     logging_steps=1,
     output_dir="./dpo_ckpt",
-    report_to="none",
+    report_to="tensorboard",
+    logging_dir="logs",
 )
 
 # ================= 9. Trainer =================
