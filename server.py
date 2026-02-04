@@ -28,14 +28,10 @@ logger.setLevel(logging.INFO)
 active_agent = None  # 全局agent，启动事件中初始化
 with open("config/config.yml", "r", encoding="utf-8") as f:
     config = yaml.load(f.read(), Loader=yaml.FullLoader)
-# ========== 3. MCP客户端修正（args应为列表） ==========
-client = MultiServerMCPClient(
-    {"pybullet": {"transport": "http", "url": "http://localhost:8001/mcp"}}
-)
 
 
 # ========== 4. 加载工具函数（保留并添加日志） ==========
-async def get_tools():
+def get_tools():
     try:
         general_tools = []
         subagent_tools = []
@@ -73,7 +69,7 @@ async def startup_event():
     global active_agent  # 关联全局变量
     try:
         # 加载所有工具
-        all_tools = await get_tools()
+        all_tools = get_tools()
         if not all_tools:
             logger.warning("未加载到任何工具，agent将使用空工具列表")
 
