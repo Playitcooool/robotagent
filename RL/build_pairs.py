@@ -3,15 +3,17 @@ import json
 import re
 from langchain.messages import HumanMessage, AIMessage, ToolMessage
 from langchain_openai import ChatOpenAI
-
+import yaml
 
 with open("trajectories.json", "r", encoding="utf-8") as f:
     trajectories = json.load(f)
 
+with open("config/config.yml", "r", encoding="utf-8") as f:
+    config = yaml.load(f.read(), Loader=yaml.FullLoader)
 # ================= 2. 初始化 judge 模型 =================
 judge = ChatOpenAI(
-    base_url="http://localhost:1234/v1",
-    model="qwen3-0.6b-mlx",
+    base_url=config["model_url"],
+    model=config["llm"]["judge"],
     api_key="no_need",
 )
 
