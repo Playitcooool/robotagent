@@ -14,6 +14,48 @@ import asyncio
 from langchain_openai import ChatOpenAI
 import os
 from prompts import MainAgentPrompt, LLMToolSelectorPrompt
+from langgraph.checkpoint.redis import RedisSaver
+
+
+# Adapter to expose async methods required by langgraph checkpointers
+class AsyncCheckpointerAdapter:
+    def __init__(self, saver):
+        self._saver = saver
+
+    def setup(self, *args, **kwargs):
+        return self._saver.setup(*args, **kwargs)
+
+    def close(self, *args, **kwargs):
+        # some savers use close
+        try:
+            return self._saver.close(*args, **kwargs)
+        except Exception:
+            return None
+
+    def get_tuple(self, *args, **kwargs):
+        return self._saver.get_tuple(*args, **kwargs)
+
+    def set_tuple(self, *args, **kwargs):
+        return self._saver.set_tuple(*args, **kwargs)
+
+    async def aget_tuple(self, *args, **kwargs):
+        # Delegate blocking calls to a thread
+        return await asyncio.to_thread(self.get_tuple, *args, **kwargs)
+
+    async def aset_tuple(self, *args, **kwargs):
+        return await asyncio.to_thread(self.set_tuple, *args, **kwargs)
+
+    # generic async wrappers in case other async methods are called
+    async def aget(self, *args, **kwargs):
+        if hasattr(self._saver, "get"):
+            return await asyncio.to_thread(self._saver.get, *args, **kwargs)
+        raise NotImplementedError
+
+    async def aset(self, *args, **kwargs):
+        if hasattr(self._saver, "set"):
+            return await asyncio.to_thread(self._saver.set, *args, **kwargs)
+        raise NotImplementedError
+
 
 # ========== 1. 日志配置（确保输出到Uvicorn控制台） ==========
 logger = logging.getLogger("uvicorn")
@@ -66,12 +108,16 @@ async def startup_event():
             logger.warning("未加载到任何工具，agent将使用空工具列表")
         subagents = list(await init_subagents())
         # 创建带工具的agent（核心修正）
-        active_agent = create_deep_agent(
-            model=chatBot,
-            tools=all_tools,
-            system_prompt=MainAgentPrompt.SYSTEM_PROMPT,
-            subagents=subagents,
-        )
+        DB_URI = "redis://localhost:6379/0"
+        with RedisSaver.from_conn_string(DB_URI) as checkpointer:
+            checkpointer.setup()
+            active_agent = create_deep_agent(
+                model=chatBot,
+                tools=all_tools,
+                system_prompt=MainAgentPrompt.SYSTEM_PROMPT,
+                subagents=subagents,
+                checkpointer=checkpointer,
+            )
         logger.info("Agent 初始化成功！")
     except Exception as e:
         logger.error(f"Agent 初始化失败：{str(e)}", exc_info=True)
@@ -91,6 +137,7 @@ app.add_middleware(
 # ========== 9. 请求模型 ==========
 class ChatIn(BaseModel):
     message: str
+    session_id: str = None  # 新增：会话ID，用于维持对话状态
 
 
 # ========== 10. 接口定义 ==========
@@ -114,6 +161,7 @@ async def get_messages():
 @app.post("/api/chat/send")
 async def chat_send(payload: ChatIn):
     user_message = payload.message or ""
+    session_id = payload.session_id or "default_session"  # 使用会话ID或默认值
 
     # 核心修正：使用全局的active_agent，而非初始空工具的agent
     if not active_agent:
@@ -134,10 +182,11 @@ async def chat_send(payload: ChatIn):
 
     async def event_stream():
         try:
-            # 调用全局active_agent的流式接口
+            # 调用全局active_agent的流式接口，传递配置包含thread_id
             async for event in active_agent.astream(
                 {"messages": [{"role": "user", "content": user_message}]},
                 stream_mode="values",
+                config={"configurable": {"thread_id": session_id}},
             ):
                 try:
                     last = event["messages"][-1]
