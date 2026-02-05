@@ -2,21 +2,16 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from deepagents import create_deep_agent
+from tools.SubAgentTool import init_subagents
 import logging
 import json
 import yaml
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langchain.agents.middleware import (
-    SummarizationMiddleware,
-    LLMToolSelectorMiddleware,
-    ToolRetryMiddleware,
-    TodoListMiddleware,
-)
 from langgraph.checkpoint.memory import InMemorySaver
-import tools.AnalysisTool, tools.GeneralTool, tools.SubAgentTool
+from tools import GeneralTool
 import asyncio
 from langchain_openai import ChatOpenAI
-from langchain.agents import create_agent
 import os
 from prompts import MainAgentPrompt, LLMToolSelectorPrompt
 
@@ -35,12 +30,9 @@ def get_tools():
     try:
         general_tools = []
         subagent_tools = []
-        for func_name in tools.GeneralTool.__all__:
-            function = getattr(tools.GeneralTool, func_name)
+        for func_name in GeneralTool.__all__:
+            function = getattr(GeneralTool, func_name)
             general_tools.append(function)
-        for func_name in tools.SubAgentTool.__all__:
-            function = getattr(tools.SubAgentTool, func_name)
-            subagent_tools.append(function)
 
         # 合并工具
         all_tools = general_tools + subagent_tools
@@ -72,19 +64,13 @@ async def startup_event():
         all_tools = get_tools()
         if not all_tools:
             logger.warning("未加载到任何工具，agent将使用空工具列表")
-
+        subagents = list(await init_subagents())
         # 创建带工具的agent（核心修正）
-        active_agent = create_agent(
+        active_agent = create_deep_agent(
             model=chatBot,
             tools=all_tools,
             system_prompt=MainAgentPrompt.SYSTEM_PROMPT,
-            middleware=[
-                ToolRetryMiddleware(
-                    max_retries=3,
-                    backoff_factor=2.0,
-                    initial_delay=1.0,
-                ),
-            ],
+            subagents=subagents,
         )
         logger.info("Agent 初始化成功！")
     except Exception as e:
@@ -146,10 +132,10 @@ async def chat_send(payload: ChatIn):
             headers={"Cache-Control": "no-transform", "X-Accel-Buffering": "no"},
         )
 
-    def event_stream():
+    async def event_stream():
         try:
             # 调用全局active_agent的流式接口
-            for event in active_agent.stream(
+            async for event in active_agent.astream(
                 {"messages": [{"role": "user", "content": user_message}]},
                 stream_mode="values",
             ):
