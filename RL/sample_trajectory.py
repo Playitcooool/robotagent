@@ -67,22 +67,30 @@ async def main():
 
     # ===== 采集 prompt 列表 =====
     prompts = [
-        # stacking
-        "Stack two small cubes on top of each other using PyBullet simulation.",
-        # grab_and_place
-        "Grab a cube from position [0.2, 0.0, 0.02] and place it at [0.4, 0.4, 0.02].",
-        "Grab a cube from position [0.1, -0.1, 0.02] and place it at [0.3, 0.2, 0.02].",
-        # path_tracking
-        "Move a sphere along a circular path of radius 0.3 for 120 steps.",
-        "Move a sphere along a circular path of radius 0.5 for 60 steps.",
-        # push_cube
-        "Push a cube from [0.0, 0.0, 0.02] along the vector [0.2, 0.0, 0.0] in PyBullet.",
-        "Push a cube from [0.1, 0.1, 0.02] along the vector [0.0, 0.3, 0.0].",
-        # pick_and_throw
-        "Pick a cube from [0.0, 0.0, 0.02], lift it, and throw it along the vector [0.3, 0.3, 0.2].",
-        "Pick a cube from [0.2, 0.0, 0.02], lift it, and throw it along the vector [0.2, 0.4, 0.1].",
-        # stacking variation
-        "Stack two small cubes at different positions in PyBullet simulation.",
+        # ===== stacking（多约束堆叠）=====
+        "Using PyBullet, stack three cubes of different sizes in ascending order of size on a table. The stack must remain stable for at least 100 simulation steps without external support.",
+        "Stack two cubes while avoiding a cylindrical obstacle placed between the start positions and the target stacking location.",
+        "Stack two cubes such that their center of mass is aligned within a tolerance of 0.01 along the x-axis.",
+        # ===== grab_and_place（精度 + 路径约束）=====
+        "Grab a cube from position [0.2, 0.0, 0.02] and place it at [0.4, 0.4, 0.02] while following a smooth, collision-free trajectory and minimizing end-effector velocity at placement.",
+        "Pick up a cube from [0.1, -0.1, 0.02] and place it on a platform elevated at height 0.15, without exceeding a gripper force of 5N.",
+        # ===== push_cube（路径 + 力控制）=====
+        "Push a cube from [0.0, 0.0, 0.02] to [0.3, 0.3, 0.02] using only lateral contact, ensuring the cube does not rotate more than 10 degrees during the motion.",
+        "Push a cube along a straight line of length 0.4 while avoiding a static obstacle placed at [0.2, 0.0, 0.02].",
+        # ===== path_tracking（长时序 + 稳定性）=====
+        "Move a sphere along a circular trajectory of radius 0.3 for 200 simulation steps while maintaining a constant speed and minimizing deviation from the path.",
+        "Control a sphere to follow a figure-eight trajectory on the x-y plane for 150 steps without leaving the plane.",
+        # ===== pick_and_throw（动力学 + 时序）=====
+        "Pick up a cube from [0.0, 0.0, 0.02], lift it to height 0.2, and throw it such that it lands within 0.05 distance of target [0.5, 0.3, 0.02].",
+        "Pick and throw a cube over a wall obstacle of height 0.15, ensuring the cube clears the wall and lands within a target zone.",
+        # ===== multi-object reasoning（组合任务）=====
+        "Pick up two cubes one by one and place them at target locations [0.3, 0.2, 0.02] and [0.4, -0.2, 0.02], ensuring the first cube is not disturbed while placing the second.",
+        "Rearrange three cubes from a random initial configuration into a straight line with equal spacing of 0.1 between adjacent cubes.",
+        # ===== failure-sensitive / RL-friendly =====
+        "Using PyBullet, manipulate a cube to reach a target location while recovering from a failed grasp attempt without resetting the environment.",
+        "Complete a stacking task where a small amount of random noise is added to the action at each timestep, and ensure the final configuration is stable.",
+        # ===== long-horizon reasoning =====
+        "Plan and execute a sequence of actions to clear a workspace by moving obstructing objects out of the way before stacking two cubes at the center.",
     ]
 
     all_trajectories = await sample_trajectories(agent, prompts, samples_per_prompt=4)

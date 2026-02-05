@@ -23,18 +23,18 @@ tokenizer.pad_token = tokenizer.eos_token
 device = "mps" if torch.backends.mps.is_available() else "cuda"
 policy_model = AutoModelForCausalLM.from_pretrained(
     model_path,
-    device_map="auto",
+    device_map={"": device},
     trust_remote_code=True,
 )
 policy_model.config.pad_token_id = tokenizer.eos_token_id
-
+policy_model.to(device)
 reference_model = AutoModelForCausalLM.from_pretrained(
     model_path,
-    device_map="auto",
+    device_map={"": device},
     trust_remote_code=True,
 )
 reference_model.config.pad_token_id = tokenizer.eos_token_id
-
+reference_model.to(device)
 # ================= 7. LoRA（推荐） =================
 lora_config = LoraConfig(
     r=8,
@@ -50,14 +50,16 @@ policy_model = get_peft_model(policy_model, lora_config)
 dpo_config = DPOConfig(
     beta=0.1,
     per_device_train_batch_size=1,
-    gradient_accumulation_steps=4,
-    num_train_epochs=1,
+    gradient_accumulation_steps=1,
+    num_train_epochs=3,
     learning_rate=5e-5,
-    fp16=True,
+    fp16=False,
+    bf16=False,
     logging_steps=1,
+    logging_strategy="steps",
     output_dir="./dpo_ckpt",
     report_to="tensorboard",
-    logging_dir="logs",
+    logging_dir="./logs",
 )
 
 # ================= 9. Trainer =================
