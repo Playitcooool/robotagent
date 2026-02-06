@@ -151,6 +151,7 @@ async def chat_send(payload: ChatIn):
             ):
                 try:
                     last = event["messages"][-1]
+                    print(last)
                 except Exception:
                     last = None
 

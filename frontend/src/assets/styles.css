@@ -12,20 +12,29 @@ html,body,#app{height:100%;margin:0;font-family:Inter,ui-sans-serif,system-ui,-a
 .footer button{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--accent);padding:8px 12px;border-radius:8px}
 
 .chatview{display:flex;flex-direction:column;height:100%}
-.messages{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:8px}
+.messages{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px;scrollbar-width:none;-ms-overflow-style:none}
+.messages::-webkit-scrollbar{display:none}
 .message{display:flex}
 .message.user{justify-content:flex-end}
 .message.assistant{justify-content:flex-start}
-.bubble{max-width:70%;padding:10px;border-radius:12px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));color:#e6eef6}
-.bubble{word-wrap:break-word;white-space:pre-wrap}
+.bubble{max-width:70ch;min-width:6ch;padding:10px;border-radius:12px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));color:#e6eef6}
+.bubble{word-wrap:break-word;overflow-wrap:anywhere;white-space:pre-wrap;word-break:break-word}
 .composer{display:flex;padding:12px;border-top:1px solid rgba(255,255,255,0.02)}
 .composer textarea{flex:1;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:#e6eef6;resize:vertical;min-height:38px}
 .composer input{flex:1;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:#e6eef6}
 .composer button{margin-left:10px;padding:10px 16px;border-radius:8px;background:var(--accent);border:none;color:white}
 
 .tool-results .header{font-weight:700;margin-bottom:10px}
-.tool-results .body{overflow:auto;max-height:calc(100vh - 120px)}
-.tool-results pre{background:rgba(255,255,255,0.02);padding:12px;border-radius:8px;color:#cfe3ff}
+.tool-results .body{overflow:auto;max-height:calc(100vh - 120px);scrollbar-width:none;-ms-overflow-style:none}
+.tool-results .body::-webkit-scrollbar{display:none}
+.tool-results pre{background:rgba(255,255,255,0.02);padding:12px;border-radius:8px;color:#cfe3ff;overflow-x:auto}
+.tool-results pre::-webkit-scrollbar{display:none}
+.tool-results .markdown table{width:100%;border-collapse:collapse;margin:8px 0}
+.tool-results .markdown table th,.tool-results .markdown table td{border:1px solid rgba(255,255,255,0.06);padding:6px 8px;text-align:left}
+.markdown table{width:100%;border-collapse:collapse;margin:8px 0}
+.markdown table th,.markdown table td{border:1px solid rgba(255,255,255,0.06);padding:6px 8px;text-align:left}
+.markdown pre{background:#0f1620;padding:12px;border-radius:8px;overflow:auto}
+.markdown code{font-family:Menlo, Monaco, Consolas, monospace}
 .tool-results .image-wrap img{max-width:100%;border-radius:8px}
 
 /* Responsive */

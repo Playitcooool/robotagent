@@ -37,13 +37,22 @@
 <script>
 import { ref, watch, onMounted } from 'vue'
 import MarkdownIt from 'markdown-it'
+import markdownItGfm from 'markdown-it-multimd-table'
+import markdownItKatex from 'markdown-it-katex'
+import markdownItHighlightjs from 'markdown-it-highlightjs'
+import hljs from 'highlight.js'
 
-// Markdown renderer (LLM-safe)
+// Markdown renderer with GFM (tables), KaTeX (math) and syntax highlighting
 const md = new MarkdownIt({
   html: false,     // 禁止 HTML，防 XSS
   breaks: true,    // 支持换行
-  linkify: true    // 自动识别链接
+  linkify: true,   // 自动识别链接
+  typographer: true
 })
+
+md.use(markdownItGfm)
+md.use(markdownItKatex)
+md.use(markdownItHighlightjs, { auto: true, hljs })
 
 // ensure links open safely in new tab
 const defaultLinkRender = md.renderer.rules.link_open || function (tokens, idx, options, env, self) {

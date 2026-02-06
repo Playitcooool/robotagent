@@ -11,3 +11,4 @@ output
 *.pyc 
 frontend/node_modules
 dpo_ckpt
+dist

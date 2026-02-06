@@ -2,27 +2,38 @@
   <div class="tool-results">
     <div class="header">工具结果</div>
     <div class="body">
-      <div v-if="!result" class="empty">无工具执行信息</div>
+        <div v-if="!result" class="empty">无工具执行信息</div>
 
-      <div v-else>
-        <!-- if result contains an `image` or `image_url`, render image -->
-        <div v-if="isImage(result)" class="image-wrap">
-          <img :src="getImageUrl(result)" alt="tool image" />
-        </div>
+        <div v-else>
+          <div v-if="isImage(result)" class="image-wrap">
+            <img :src="getImageUrl(result)" alt="tool image" />
+          </div>
 
-        <pre v-if="isText(result)">{{ pretty(result) }}</pre>
+          <!-- render markdown for text results so tables/code/math are supported -->
+          <div v-if="isText(result)" class="markdown" v-html="renderMarkdown(result)"></div>
 
-        <!-- support list of items or structured JSON -->
-        <div v-if="isJson(result)">
-          <h4>数据</h4>
-          <pre>{{ pretty(result) }}</pre>
+          <!-- support list of items or structured JSON -->
+          <div v-if="isJson(result)">
+            <h4>数据</h4>
+            <pre>{{ pretty(result) }}</pre>
+          </div>
         </div>
       </div>
-    </div>
   </div>
 </template>
 
 <script>
+import MarkdownIt from 'markdown-it'
+import markdownItGfm from 'markdown-it-multimd-table'
+import markdownItKatex from 'markdown-it-katex'
+import markdownItHighlightjs from 'markdown-it-highlightjs'
+import hljs from 'highlight.js'
+
+const md = new MarkdownIt({ html: false, breaks: true, linkify: true, typographer: true })
+md.use(markdownItGfm)
+md.use(markdownItKatex)
+md.use(markdownItHighlightjs, { auto: true, hljs })
+
 export default {
   name: 'ToolResults',
   props: { result: { type: [Object, String, null], default: null } },
@@ -41,6 +52,9 @@ export default {
     isJson (r) { return typeof r === 'object' },
     pretty (r) {
       try { return typeof r === 'string' ? r : JSON.stringify(r, null, 2) } catch (e) { return String(r) }
+    },
+    renderMarkdown (content) {
+      return md.render(content || '')
     }
   }
 }
