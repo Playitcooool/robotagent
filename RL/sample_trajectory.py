@@ -1,9 +1,24 @@
+from deepagents import create_deep_agent
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 import asyncio
 import json
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.messages import HumanMessage, AIMessage, ToolMessage
+import sys
+import os
+
+# 获取当前文件的绝对路径
+current_file = os.path.abspath(__file__)
+# 获取当前文件所在目录（tools目录）
+current_dir = os.path.dirname(current_file)
+# 获取项目根目录（tools的上一级目录）
+root_dir = os.path.dirname(current_dir)
+# 将根目录添加到Python的系统路径中
+sys.path.append(root_dir)
+
+from prompts import MainAgentPrompt
+from tools.SubAgentTool import init_subagents
 
 
 async def sample_trajectories(agent, prompts, samples_per_prompt=4):
@@ -19,6 +34,7 @@ async def sample_trajectories(agent, prompts, samples_per_prompt=4):
             trajectory = []
 
             for msg in response["messages"]:
+                print(msg)
                 if isinstance(msg, (HumanMessage, AIMessage, ToolMessage)):
                     item = {
                         "role": (
@@ -42,29 +58,19 @@ async def sample_trajectories(agent, prompts, samples_per_prompt=4):
 
 
 async def main():
-    # ===== MCP 客户端获取工具 =====
-    client = MultiServerMCPClient(
-        {
-            "pybullet": {
-                "transport": "http",
-                "url": "http://localhost:8001/mcp",
-            }
-        }
-    )
-    mcp_tool = await client.get_tools()
-    tools = mcp_tool
-
     # ===== 初始化 ChatOpenAI agent =====
-    SYSTEM_PROMPT = (
-        "You are a helpful assistant, please select proper tools to meet user's request"
-    )
+    subagents = list(await init_subagents())
     chat = ChatOpenAI(
         base_url="http://localhost:1234/v1",
         model="lmstudio-community:qwen3-4b-instruct-2507-mlx",
         api_key="no_need",
     )
-    agent = create_agent(model=chat, tools=tools, system_prompt=SYSTEM_PROMPT)
-
+    agent = create_deep_agent(
+        model=chat,
+        tools=[],
+        system_prompt=MainAgentPrompt.SYSTEM_PROMPT,
+        subagents=subagents,
+    )
     # ===== 采集 prompt 列表 =====
     prompts = [
         # ===== stacking（多约束堆叠）=====
