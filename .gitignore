@@ -12,3 +12,4 @@ output
 frontend/node_modules
 dpo_ckpt
 dist
+*.jsonl
