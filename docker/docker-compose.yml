@@ -8,9 +8,10 @@ services:
     image: robotagent:latest
     volumes:
       - ../mcp:/app/mcp
-    working_dir: /app
+    working_dir: /app/mcp
     environment:
       - TZ=UTC
     tty: true
     ports:
       - "8001:8000"
+    command: ["python", "mcp_server.py"]
