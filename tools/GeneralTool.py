@@ -1,160 +1,88 @@
-from langchain_core.tools import tool
-from langchain_core.embeddings import embeddings
-from langchain_core.documents import Document
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
 
 import requests
-import os
-import json
-import re
-from datetime import datetime, timezone
+from langchain_core.tools import tool
 
 try:
     from zoneinfo import ZoneInfo
 except Exception:
     ZoneInfo = None
-from typing import List, Tuple, Optional
 
 
-@tool(response_format="content_and_artifact")
-def retrieve_context(query: str):
-    """Retrieve information to help answer a query."""
-    query = embeddings.embed_query(query)
-    retrieved_docs = client.query_points(
-        query=query, collection_name="markdown_chunks", limit=3
-    )
-
-    documents = []
-    serialized_parts = []
-
-    # Qdrant's response may come in different shapes (tuple, dict, or object).
-    # Normalize to an iterable of scored points called `points`.
-    points = None
-    if isinstance(retrieved_docs, dict):
-        points = retrieved_docs.get("points") or retrieved_docs.get("result") or []
-    elif (
-        isinstance(retrieved_docs, (tuple, list))
-        and len(retrieved_docs) >= 2
-        and isinstance(retrieved_docs[1], list)
-    ):
-        # e.g. ('points', [ScoredPoint(...), ...])
-        points = retrieved_docs[1]
-    elif hasattr(retrieved_docs, "points"):
-        points = getattr(retrieved_docs, "points")
-    elif hasattr(retrieved_docs, "result"):
-        points = getattr(retrieved_docs, "result")
-    else:
-        # Fallback: assume it's already an iterable of points
-        points = retrieved_docs
-
-    for doc in points:
-        # ScoredPoint objects expose `.payload`; sometimes doc can be a tuple/indexed structure.
-        if hasattr(doc, "payload"):
-            metadata = doc.payload or {}
-        elif (
-            isinstance(doc, (tuple, list))
-            and len(doc) >= 2
-            and hasattr(doc[1], "payload")
-        ):
-            metadata = doc[1].payload or {}
-        elif isinstance(doc, dict):
-            metadata = doc.get("payload") or {}
-        else:
-            metadata = {}
-
-        text = ""
-        if isinstance(metadata, dict):
-            text = metadata.get("text", "")
-        elif isinstance(metadata, str):
-            text = metadata
-
-        if not text:
-            print("[WARN] No text in metadata:", metadata)
-            continue
-
-        documents.append(Document(page_content=text, metadata=metadata))
-        serialized_parts.append(f"Source: {metadata}\nContent: {text}")
-
-    serialized = "\n\n".join(serialized_parts)
-
-    if not serialized:
-        print("[WARN] No chunks retrieved for query:", query)
-
-    return serialized, documents
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-# ---------------------------
-# General-purpose agent tools
-# ---------------------------
+def _resolve_repo_path(path: str) -> Path:
+    raw = Path(path)
+    candidate = raw if raw.is_absolute() else (REPO_ROOT / raw)
+    candidate = candidate.resolve()
+
+    try:
+        candidate.relative_to(REPO_ROOT)
+    except Exception as e:
+        raise ValueError("access denied: path outside repository root") from e
+
+    return candidate
 
 
 @tool(response_format="content")
-def http_get(url: str, max_chars: int = 2000, timeout: float = 5.0):
-    """Perform a safe HTTP GET request and return status, headers, and a body snippet.
+def list_workspace_files(glob_pattern: str = "**/*", max_results: int = 200) -> str:
+    """List files under the workspace with an optional glob pattern."""
+    safe_limit = max(1, min(max_results, 2000))
+    files = []
 
-    Only http/https URLs are allowed. Returns a dict-like string.
-    """
-    if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
-        return "Error: only http/https URLs are allowed."
-
-    try:
-        resp = requests.get(url, timeout=timeout)
-    except Exception as e:
-        return f"Error fetching URL: {e}"
-
-    headers = dict(resp.headers)
-    body = resp.text or ""
-    snippet = body[:max_chars]
-    truncated = len(body) > max_chars
-
-    result = {
-        "url": url,
-        "status_code": resp.status_code,
-        "headers": {k: v for k, v in list(headers.items())[:20]},
-        "body_snippet": snippet,
-        "truncated": truncated,
-    }
-    return json.dumps(result, ensure_ascii=False, indent=2)
-
-
-@tool(response_format="content")
-def read_workspace_file(path: str, max_chars: int = 10000):
-    """Read a text file under the repository workspace safely.
-
-    The file path must be inside the repository root (parent of `tools/`). Binary data is handled safely and returned as replaced text.
-    """
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    candidate = os.path.abspath(path)
-
-    # if the user provided a relative path, resolve it relative to repo root
-    if not os.path.isabs(path):
-        candidate = os.path.abspath(os.path.join(repo_root, path))
-
-    try:
-        common = os.path.commonpath([repo_root, candidate])
-    except Exception:
-        return "Error resolving paths."
-
-    if common != repo_root:
-        return "Error: access denied. Path outside repository root."
-
-    if not os.path.exists(candidate):
-        return "Error: file does not exist."
-
-    if os.path.isdir(candidate):
-        return "Error: path is a directory."
-
-    try:
-        with open(candidate, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
-    except Exception as e:
-        return f"Error reading file: {e}"
-
-    truncated = len(content) > max_chars
-    snippet = content[:max_chars]
+    for p in REPO_ROOT.glob(glob_pattern):
+        if p.is_file():
+            files.append(str(p.relative_to(REPO_ROOT)))
+            if len(files) >= safe_limit:
+                break
 
     return json.dumps(
         {
-            "path": os.path.relpath(candidate, repo_root),
+            "root": str(REPO_ROOT),
+            "glob_pattern": glob_pattern,
+            "count": len(files),
+            "files": files,
+            "truncated": len(files) >= safe_limit,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+@tool(response_format="content")
+def read_workspace_file(path: str, max_chars: int = 12000) -> str:
+    """Read a text file under the repository workspace safely."""
+    if not path:
+        return "Error: path is required."
+
+    try:
+        candidate = _resolve_repo_path(path)
+    except Exception as e:
+        return f"Error: {e}"
+
+    if not candidate.exists():
+        return "Error: file does not exist."
+    if candidate.is_dir():
+        return "Error: path is a directory."
+
+    try:
+        content = candidate.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        return f"Error reading file: {e}"
+
+    safe_max = max(1, max_chars)
+    snippet = content[:safe_max]
+    truncated = len(content) > safe_max
+
+    return json.dumps(
+        {
+            "path": str(candidate.relative_to(REPO_ROOT)),
             "content": snippet,
             "truncated": truncated,
         },
@@ -164,49 +92,98 @@ def read_workspace_file(path: str, max_chars: int = 10000):
 
 
 @tool(response_format="content")
-def format_json(json_str: str):
+def search_workspace_text(
+    pattern: str,
+    glob_pattern: str = "**/*",
+    max_results: int = 100,
+    max_line_chars: int = 300,
+) -> str:
+    """Search for plain text in workspace files and return matched lines."""
+    if not pattern:
+        return "Error: pattern is required."
+
+    safe_limit = max(1, min(max_results, 1000))
+    safe_line_chars = max(20, max_line_chars)
+    matches = []
+
+    for p in REPO_ROOT.glob(glob_pattern):
+        if not p.is_file():
+            continue
+        try:
+            with p.open("r", encoding="utf-8", errors="replace") as f:
+                for line_no, line in enumerate(f, start=1):
+                    if pattern in line:
+                        matches.append(
+                            {
+                                "path": str(p.relative_to(REPO_ROOT)),
+                                "line": line_no,
+                                "text": line.rstrip("\n")[:safe_line_chars],
+                            }
+                        )
+                        if len(matches) >= safe_limit:
+                            return json.dumps(
+                                {
+                                    "pattern": pattern,
+                                    "count": len(matches),
+                                    "matches": matches,
+                                    "truncated": True,
+                                },
+                                ensure_ascii=False,
+                                indent=2,
+                            )
+        except Exception:
+            continue
+
+    return json.dumps(
+        {
+            "pattern": pattern,
+            "count": len(matches),
+            "matches": matches,
+            "truncated": False,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+@tool(response_format="content")
+def http_get(url: str, max_chars: int = 3000, timeout: float = 8.0) -> str:
+    """Perform a safe HTTP GET request and return status, headers, and body snippet."""
+    if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
+        return "Error: only http/https URLs are allowed."
+
+    try:
+        resp = requests.get(url, timeout=timeout)
+    except Exception as e:
+        return f"Error fetching URL: {e}"
+
+    body = resp.text or ""
+    safe_max = max(1, max_chars)
+    snippet = body[:safe_max]
+
+    result = {
+        "url": url,
+        "status_code": resp.status_code,
+        "headers": {k: v for k, v in list(dict(resp.headers).items())[:20]},
+        "body_snippet": snippet,
+        "truncated": len(body) > safe_max,
+    }
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@tool(response_format="content")
+def format_json(json_str: str, sort_keys: bool = False) -> str:
     """Validate and pretty-format JSON input."""
     try:
         parsed = json.loads(json_str)
     except Exception as e:
         return f"Error parsing JSON: {e}"
 
-    return json.dumps(parsed, ensure_ascii=False, indent=2)
+    return json.dumps(parsed, ensure_ascii=False, indent=2, sort_keys=sort_keys)
 
 
 @tool(response_format="content")
-def extract_emails(text: str, max_results: int = 100):
-    """Extract email addresses from text and return a de-duplicated list."""
-    if not text:
-        return "[]"
-
-    pattern = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
-    found = re.findall(pattern, text)
-    unique = list(dict.fromkeys(found))[:max_results]
-    return json.dumps(unique, ensure_ascii=False)
-
-
-@tool(response_format="content")
-def summarize_text(text: str, max_sentences: int = 5):
-    """Return a very lightweight extractive summary: first N sentences.
-
-    This is intentionally simple — for high-quality summaries integrate an LLM summarizer.
-    """
-    if not text:
-        return ""
-
-    # Split into sentences with a simple regex that handles common punctuation.
-    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
-    if len(sentences) <= max_sentences:
-        summary = " ".join(sentences)
-        return summary
-
-    summary = " ".join(sentences[:max_sentences])
-    return summary + ("\n\n[Note: truncated to first %d sentences]" % max_sentences)
-
-
-@tool(response_format="content")
-def current_time(tz: Optional[str] = "UTC"):
+def current_time(tz: Optional[str] = "UTC") -> str:
     """Return current timestamp in ISO format for a timezone (default UTC)."""
     try:
         if tz and ZoneInfo is not None:
@@ -223,10 +200,9 @@ def current_time(tz: Optional[str] = "UTC"):
 
 __all__ = [
     "current_time",
-    "summarize_text",
-    "extract_emails",
     "format_json",
-    "read_workspace_file",
     "http_get",
-    "retrieve_context",
+    "list_workspace_files",
+    "read_workspace_file",
+    "search_workspace_text",
 ]
