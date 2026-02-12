@@ -11,6 +11,7 @@ services:
     working_dir: /app/mcp
     environment:
       - TZ=UTC
+      - PYBULLET_STREAM_DIR=/app/mcp/.sim_stream
     tty: true
     ports:
       - "8001:8000"

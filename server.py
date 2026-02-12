@@ -1,7 +1,10 @@
 from fastapi import FastAPI
+from fastapi import Request
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pathlib import Path
+import base64
 from deepagents import create_deep_agent
 from tools.SubAgentTool import init_subagents
 import logging
@@ -13,11 +16,19 @@ from tools import GeneralTool
 import asyncio
 from langchain_openai import ChatOpenAI
 import os
-from prompts import MainAgentPrompt, LLMToolSelectorPrompt
+from prompts import MainAgentPrompt
 from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 import os
 
 os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
+# Shared realtime frame location written by mcp/mcp_server.py
+# Default path points to repo-mounted directory so host and docker can share files.
+DEFAULT_SIM_STREAM_DIR = (Path(__file__).resolve().parent / "mcp" / ".sim_stream").resolve()
+SIM_STREAM_DIR = Path(
+    os.environ.get("PYBULLET_STREAM_DIR", str(DEFAULT_SIM_STREAM_DIR))
+).resolve()
+SIM_META_FILE = SIM_STREAM_DIR / "latest.json"
+SIM_FRAME_FILE = SIM_STREAM_DIR / "latest.png"
 # ========== 1. 日志配置（确保输出到Uvicorn控制台） ==========
 logger = logging.getLogger("uvicorn")
 logger.setLevel(logging.INFO)
@@ -119,6 +130,95 @@ async def get_messages():
     return sample
 
 
+@app.get("/api/sim/debug")
+async def sim_debug():
+    return {
+        "stream_dir": str(SIM_STREAM_DIR),
+        "meta_exists": SIM_META_FILE.exists(),
+        "frame_exists": SIM_FRAME_FILE.exists(),
+    }
+
+
+def _load_latest_frame_payload():
+    if not SIM_META_FILE.exists() or not SIM_FRAME_FILE.exists():
+        return {"status": "idle", "has_frame": False}
+
+    try:
+        with open(SIM_META_FILE, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+    except Exception as e:
+        return {"status": "error", "has_frame": False, "error": f"meta read failed: {e}"}
+
+    try:
+        with open(SIM_FRAME_FILE, "rb") as f:
+            image_b64 = base64.b64encode(f.read()).decode("ascii")
+    except Exception as e:
+        return {
+            "status": "error",
+            "has_frame": False,
+            "error": f"frame read failed: {e}",
+        }
+
+    return {
+        "status": "done" if meta.get("done") else "running",
+        "has_frame": True,
+        "run_id": meta.get("run_id"),
+        "task": meta.get("task"),
+        "step": meta.get("step"),
+        "total_steps": meta.get("total_steps"),
+        "done": bool(meta.get("done")),
+        "timestamp": meta.get("timestamp"),
+        "image_url": f"data:image/png;base64,{image_b64}",
+    }
+
+
+@app.get("/api/sim/latest-frame")
+async def get_latest_sim_frame():
+    return _load_latest_frame_payload()
+
+
+@app.get("/api/sim/stream")
+async def stream_sim_frames(request: Request, since: float = 0.0):
+    """SSE endpoint that actively pushes latest simulation frames."""
+
+    async def event_stream():
+        last_ts = float(since or 0.0)
+        idle_ticks = 0
+
+        while True:
+            if await request.is_disconnected():
+                break
+
+            payload = _load_latest_frame_payload()
+            if payload.get("has_frame"):
+                current_ts = float(payload.get("timestamp") or 0.0)
+                if current_ts > last_ts:
+                    last_ts = current_ts
+                    idle_ticks = 0
+                    yield f"event: frame\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                else:
+                    idle_ticks += 1
+            else:
+                idle_ticks += 1
+
+            # keep-alive every ~5s (100 * 50ms) so proxies won't close idle SSE
+            if idle_ticks >= 100:
+                idle_ticks = 0
+                yield "event: ping\ndata: {}\n\n"
+
+            await asyncio.sleep(0.05)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.post("/api/chat/send")
 async def chat_send(payload: ChatIn):
     user_message = payload.message or ""
@@ -188,4 +288,13 @@ async def chat_send(payload: ChatIn):
     )
 
 
-# 启动命令：uvicorn server:app --reload --host 0.0.0.0 --port 8000 --log-level info
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "server:app",  # 如果文件名是 server.py 就写 server:app
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info",
+    )

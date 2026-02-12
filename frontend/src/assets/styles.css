@@ -196,11 +196,29 @@ body {
   background: linear-gradient(180deg, #fffdf9, #fff6ea);
 }
 
-.typing {
-  display: inline-flex;
-  gap: 6px;
+.typing-card {
+  min-width: 260px;
+  padding: 12px 14px;
+  border: 1px solid rgba(13, 122, 102, 0.2);
+  background: linear-gradient(180deg, #fffdf8, #fff4e6);
+}
+
+.typing-head {
+  display: flex;
   align-items: center;
-  min-width: 64px;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.typing-label {
+  font-size: 13px;
+  color: #3c4a54;
+}
+
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .dot {
@@ -219,6 +237,30 @@ body {
 .dot:nth-child(3) {
   animation-delay: 0.3s;
 }
+
+.typing-skeleton {
+  margin-top: 10px;
+  display: grid;
+  gap: 7px;
+}
+
+.sk-line {
+  display: block;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    rgba(207, 221, 231, 0.45) 0%,
+    rgba(255, 255, 255, 0.95) 45%,
+    rgba(207, 221, 231, 0.45) 100%
+  );
+  background-size: 240% 100%;
+  animation: shimmer 1.3s linear infinite;
+}
+
+.w-90 { width: 90%; }
+.w-72 { width: 72%; }
+.w-56 { width: 56%; }
 
 .composer {
   display: flex;
@@ -358,6 +400,11 @@ body {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -80% 0; }
 }
 
 @media (max-width: 1220px) {

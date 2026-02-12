@@ -2,7 +2,16 @@
   <div class="tool-results">
     <div class="header">工具结果</div>
     <div class="body">
-        <div v-if="!result" class="empty">无工具执行信息</div>
+        <div v-if="!result && !liveFrame" class="empty">无工具执行信息</div>
+
+        <div v-if="liveFrame && liveFrame.image_url" class="image-wrap">
+          <img :src="liveFrame.image_url" alt="pybullet live frame" />
+          <div class="live-meta">
+            <span>{{ liveFrame.task || 'simulation' }}</span>
+            <span v-if="typeof liveFrame.step === 'number'">step {{ liveFrame.step }}/{{ liveFrame.total_steps || '?' }}</span>
+            <span>{{ liveFrame.done ? 'done' : 'running' }}</span>
+          </div>
+        </div>
 
         <div v-else>
           <div v-if="isImage(result)" class="image-wrap">
@@ -36,7 +45,10 @@ md.use(markdownItHighlightjs, { auto: true, hljs })
 
 export default {
   name: 'ToolResults',
-  props: { result: { type: [Object, String, null], default: null } },
+  props: {
+    result: { type: [Object, String, null], default: null },
+    liveFrame: { type: [Object, null], default: null }
+  },
   methods: {
     isImage (r) {
       if (!r) return false
@@ -59,3 +71,14 @@ export default {
   }
 }
 </script>
+
+<style scoped>
+.live-meta {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  opacity: 0.8;
+}
+</style>

@@ -9,7 +9,7 @@
     </main>
 
     <aside class="right">
-      <ToolResults :result="toolResult" />
+      <ToolResults :result="toolResult" :liveFrame="liveFrame" />
     </aside>
   </div>
 </template>
@@ -32,10 +32,44 @@ export default {
 
     const assistantStreams = {}
     const toolResult = ref(null)
+    const liveFrame = ref(null)
+    let liveFrameSource = null
+    let liveFramePollStart = 0
 
     function resetConversation () {
       conversation.value = [{ id: Date.now(), role: 'assistant', text: WELCOME_TEXT }]
       toolResult.value = null
+      liveFrame.value = null
+      stopLiveFrameStream()
+    }
+
+    function startLiveFrameStream () {
+      if (liveFrameSource) return
+      liveFramePollStart = Date.now() / 1000
+      const url = `/api/sim/stream?since=${encodeURIComponent(liveFramePollStart)}`
+      liveFrameSource = new EventSource(url)
+
+      liveFrameSource.addEventListener('frame', (evt) => {
+        try {
+          const payload = JSON.parse(evt.data || '{}')
+          if (!payload || !payload.has_frame) return
+          const ts = Number(payload.timestamp || 0)
+          if (ts > 0 && ts < liveFramePollStart) return
+          liveFrame.value = payload
+        } catch (_) {
+          // ignore parse errors
+        }
+      })
+
+      liveFrameSource.addEventListener('error', () => {
+        stopLiveFrameStream()
+      })
+    }
+
+    function stopLiveFrameStream () {
+      if (!liveFrameSource) return
+      liveFrameSource.close()
+      liveFrameSource = null
     }
 
     function onSelectMessage (message) {
@@ -48,6 +82,8 @@ export default {
     }
 
     async function onSendMessage(text) {
+      liveFrame.value = null
+      startLiveFrameStream()
       const userMsg = { id: Date.now(), role: 'user', text }
       conversation.value.push(userMsg)
 
@@ -192,6 +228,7 @@ export default {
                   delete assistantStreams[assistantId]
                 }
               }
+              setTimeout(stopLiveFrameStream, 1000)
             }
           }
         }
@@ -222,10 +259,12 @@ export default {
         } else {
           conversation.value.push({ id: Date.now()+2, role: 'assistant', text: errMsg })
         }
+      } finally {
+        setTimeout(stopLiveFrameStream, 1500)
       }
     }
 
-    return { conversation, toolResult, onSelectMessage, onSendMessage }
+    return { conversation, toolResult, liveFrame, onSelectMessage, onSendMessage }
   }
 }
 </script>

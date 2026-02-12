@@ -7,10 +7,20 @@
         :class="['message', m.role]"
       >
         <!-- typing indicator -->
-        <div v-if="m.loading" class="bubble typing">
-          <span class="dot" aria-hidden="true"></span>
-          <span class="dot" aria-hidden="true"></span>
-          <span class="dot" aria-hidden="true"></span>
+        <div v-if="m.loading" class="bubble typing-card">
+          <div class="typing-head">
+            <span class="typing-label">正在思考并调用工具</span>
+            <span class="typing-dots" aria-hidden="true">
+              <span class="dot"></span>
+              <span class="dot"></span>
+              <span class="dot"></span>
+            </span>
+          </div>
+          <div class="typing-skeleton">
+            <span class="sk-line w-90" aria-hidden="true"></span>
+            <span class="sk-line w-72" aria-hidden="true"></span>
+            <span class="sk-line w-56" aria-hidden="true"></span>
+          </div>
         </div>
 
         <!-- markdown-rendered message -->
