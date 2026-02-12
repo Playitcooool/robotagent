@@ -115,6 +115,11 @@ body {
   box-shadow: 0 10px 22px rgba(31, 42, 51, 0.08);
 }
 
+.sidebar .item.active {
+  border-color: #a7cec4;
+  background: linear-gradient(180deg, #f1fbf7, #e4f5ef);
+}
+
 .sidebar .meta {
   display: flex;
   flex-direction: column;

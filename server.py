@@ -14,13 +14,17 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.checkpoint.memory import InMemorySaver
 from tools import GeneralTool
 import asyncio
+import time
 from langchain_openai import ChatOpenAI
 import os
 from prompts import MainAgentPrompt
 from langgraph.checkpoint.redis.aio import AsyncRedisSaver
-import os
+from redis.asyncio import Redis
+from typing import Optional
 
 os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
+# Chat history Redis should be separated from agent checkpoint Redis.
+os.environ.setdefault("CHAT_REDIS_URL", "redis://127.0.0.1:6379/1")
 # Shared realtime frame location written by mcp/mcp_server.py
 # Default path points to repo-mounted directory so host and docker can share files.
 DEFAULT_SIM_STREAM_DIR = (Path(__file__).resolve().parent / "mcp" / ".sim_stream").resolve()
@@ -35,6 +39,11 @@ logger.setLevel(logging.INFO)
 
 # ========== 2. 全局变量定义（关键：提前声明active_agent） ==========
 active_agent = None  # 全局agent，启动事件中初始化
+chat_redis: Optional[Redis] = None
+CHAT_REDIS_URL = os.environ["CHAT_REDIS_URL"]
+CHAT_HISTORY_PREFIX = "robotagent:chat:messages"
+CHAT_HISTORY_MAX_LEN = int(os.environ.get("CHAT_HISTORY_MAX_LEN", "200"))
+CHAT_SESSIONS_ZSET = "robotagent:chat:sessions"
 with open("config/config.yml", "r", encoding="utf-8") as f:
     config = yaml.load(f.read(), Loader=yaml.FullLoader)
 
@@ -72,8 +81,12 @@ app = FastAPI()
 # ========== 7. 启动事件（正确初始化agent） ==========
 @app.on_event("startup")
 async def startup_event():
-    global active_agent  # 关联全局变量
+    global active_agent, chat_redis  # 关联全局变量
     try:
+        chat_redis = Redis.from_url(CHAT_REDIS_URL, decode_responses=True)
+        await chat_redis.ping()
+        logger.info(f"Chat history Redis 已连接: {CHAT_REDIS_URL}")
+
         # 加载所有工具
         all_tools = get_tools()
         if not all_tools:
@@ -94,6 +107,17 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Agent 初始化失败：{str(e)}", exc_info=True)
         active_agent = None
+        if chat_redis is not None:
+            await chat_redis.aclose()
+            chat_redis = None
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global chat_redis
+    if chat_redis is not None:
+        await chat_redis.aclose()
+        chat_redis = None
 
 
 # ========== 8. CORS中间件 ==========
@@ -112,6 +136,46 @@ class ChatIn(BaseModel):
     session_id: str = None  # 新增：会话ID，用于维持对话状态
 
 
+def _chat_history_key(session_id: str) -> str:
+    safe = (session_id or "default_session").strip() or "default_session"
+    return f"{CHAT_HISTORY_PREFIX}:{safe}"
+
+
+async def _append_chat_message(session_id: str, role: str, text: str):
+    if chat_redis is None:
+        return
+    now_ts = time.time()
+    payload = {
+        "id": int(now_ts * 1000),
+        "role": role,
+        "text": text or "",
+        "session_id": session_id,
+        "created_at": now_ts,
+    }
+    key = _chat_history_key(session_id)
+    await chat_redis.rpush(key, json.dumps(payload, ensure_ascii=False))
+    await chat_redis.ltrim(key, -CHAT_HISTORY_MAX_LEN, -1)
+    await chat_redis.zadd(CHAT_SESSIONS_ZSET, {session_id: now_ts})
+
+
+def _normalize_text(content) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return str(content)
+
+
 # ========== 10. 接口定义 ==========
 @app.get("/api/ping")
 async def ping():
@@ -122,12 +186,62 @@ async def ping():
 
 
 @app.get("/api/messages")
-async def get_messages():
-    sample = [
-        {"id": 1, "role": "assistant", "text": "示例对话：你好，我是 RobotAgent。"},
-        {"id": 2, "role": "user", "text": "请帮我查一下最新的论文。"},
-    ]
-    return sample
+async def get_messages(session_id: str = "default_session", limit: int = 100):
+    if chat_redis is None:
+        return []
+
+    normalized_limit = max(1, min(limit, 500))
+    key = _chat_history_key(session_id)
+    raw_items = await chat_redis.lrange(key, -normalized_limit, -1)
+
+    messages = []
+    for item in raw_items:
+        try:
+            parsed = json.loads(item)
+            if isinstance(parsed, dict):
+                messages.append(parsed)
+        except Exception:
+            continue
+
+    return messages
+
+
+@app.get("/api/sessions")
+async def get_sessions(limit: int = 50):
+    if chat_redis is None:
+        return []
+
+    normalized_limit = max(1, min(limit, 500))
+    ranked = await chat_redis.zrevrange(
+        CHAT_SESSIONS_ZSET, 0, normalized_limit - 1, withscores=True
+    )
+    if not ranked:
+        return []
+
+    result = []
+    for session_id, score in ranked:
+        key = _chat_history_key(session_id)
+        last_raw = await chat_redis.lindex(key, -1)
+        preview = ""
+        last_role = "assistant"
+        if last_raw:
+            try:
+                last_msg = json.loads(last_raw)
+                preview = str(last_msg.get("text") or "")[:120]
+                last_role = str(last_msg.get("role") or "assistant")
+            except Exception:
+                preview = ""
+
+        result.append(
+            {
+                "session_id": session_id,
+                "updated_at": score,
+                "preview": preview,
+                "last_role": last_role,
+            }
+        )
+
+    return result
 
 
 @app.get("/api/sim/debug")
@@ -223,6 +337,7 @@ async def stream_sim_frames(request: Request, since: float = 0.0):
 async def chat_send(payload: ChatIn):
     user_message = payload.message or ""
     session_id = payload.session_id or "default_session"  # 使用会话ID或默认值
+    await _append_chat_message(session_id, "user", user_message)
 
     # 核心修正：使用全局的active_agent，而非初始空工具的agent
     if not active_agent:
@@ -242,6 +357,7 @@ async def chat_send(payload: ChatIn):
         )
 
     async def event_stream():
+        assistant_latest_text = ""
         try:
             # 调用全局active_agent的流式接口，传递配置包含thread_id
             async for event in active_agent.astream(
@@ -267,15 +383,24 @@ async def chat_send(payload: ChatIn):
                     )
 
                 if content is not None:
-                    payload = {"type": "delta", "text": content}
+                    text = _normalize_text(content)
+                    assistant_latest_text = text
+                    payload = {"type": "delta", "text": text}
                     yield json.dumps(payload, ensure_ascii=False) + "\n"
 
+            if assistant_latest_text:
+                await _append_chat_message(
+                    session_id, "assistant", assistant_latest_text
+                )
             # 发送完成信号
             yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
         except Exception as e:
             logger.error(
                 f"调用Agent出错：{str(e)}", exc_info=True
             )  # 修正：使用uvicorn logger
+            await _append_chat_message(
+                session_id, "assistant", f"[后端错误] 处理请求失败：{str(e)}"
+            )
             yield json.dumps(
                 {"type": "error", "error": f"处理请求失败：{str(e)}"},
                 ensure_ascii=False,

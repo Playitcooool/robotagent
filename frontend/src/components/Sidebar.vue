@@ -2,13 +2,18 @@
   <div class="sidebar">
     <div class="header">
       <h2>对话历史</h2>
-      <span>{{ messages.length }} 条</span>
+      <span>{{ sessions.length }} 个会话</span>
     </div>
     <div class="list">
-      <div v-for="m in messages" :key="m.id" class="item" @click="select(m)">
+      <div
+        v-for="s in sessions"
+        :key="s.session_id"
+        :class="['item', { active: s.session_id === currentSessionId }]"
+        @click="select(s)"
+      >
         <div class="meta">
-          <strong>{{ m.role === 'user' ? '你' : '助手' }}</strong>
-          <span class="snippet">{{ snippet(m.text) }}</span>
+          <strong>{{ s.session_id }}</strong>
+          <span class="snippet">{{ snippet(s.preview) || '空会话' }}</span>
         </div>
       </div>
     </div>
@@ -19,44 +24,42 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 
 export default {
   name: 'Sidebar',
-  emits: ['selectMessage'],
-  setup (_, { emit }) {
-    const messages = ref([])
+  props: {
+    reloadToken: { type: Number, default: 0 },
+    currentSessionId: { type: String, default: '' }
+  },
+  emits: ['selectSession'],
+  setup (props, { emit }) {
+    const sessions = ref([])
 
     async function load () {
       try {
-        const res = await fetch('/api/messages')
+        const res = await fetch('/api/sessions')
         if (res.ok) {
           const data = await res.json()
-          messages.value = Array.isArray(data) ? data.filter(Boolean) : sample()
+          sessions.value = Array.isArray(data) ? data.filter(Boolean) : []
         }
-        else messages.value = sample()
+        else sessions.value = []
       } catch (e) {
-        messages.value = sample()
+        sessions.value = []
       }
     }
 
-    function sample () {
-      return [
-        { id: 1, role: 'assistant', text: '示例对话：你好，我是 RobotAgent。' },
-        { id: 2, role: 'user', text: '请帮我查一下最新的论文。' }
-      ]
-    }
-
-    function select (m) { emit('selectMessage', m) }
+    function select (s) { emit('selectSession', s) }
     function startNew () {
-      emit('selectMessage', { __newConversation: true, id: Date.now() })
+      emit('selectSession', { __newConversation: true, session_id: `session_${Date.now()}` })
     }
 
     onMounted(load)
+    watch(() => props.reloadToken, () => { load() })
 
     function snippet (t) { return (t || '').slice(0, 80) + (t && t.length > 80 ? '…' : '') }
 
-    return { messages, select, startNew, snippet }
+    return { sessions, select, startNew, snippet }
   }
 }
 </script>

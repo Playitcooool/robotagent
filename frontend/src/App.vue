@@ -1,7 +1,11 @@
 <template>
   <div class="app-grid">
     <aside class="left">
-      <Sidebar @selectMessage="onSelectMessage" ref="sidebar" />
+      <Sidebar
+        @selectSession="onSelectSession"
+        :reloadToken="sidebarReloadToken"
+        :currentSessionId="currentSessionId"
+      />
     </aside>
 
     <main class="center">
@@ -26,9 +30,12 @@ export default {
   name: 'App',
   components: { Sidebar, ChatView, ToolResults },
   setup () {
+    const initialSessionId = `session_${Date.now()}`
     const conversation = ref([
       { id: 1, role: 'assistant', text: WELCOME_TEXT }
     ])
+    const currentSessionId = ref(initialSessionId)
+    const sidebarReloadToken = ref(0)
 
     const assistantStreams = {}
     const toolResult = ref(null)
@@ -36,7 +43,8 @@ export default {
     let liveFrameSource = null
     let liveFramePollStart = 0
 
-    function resetConversation () {
+    function resetConversation (newSessionId = null) {
+      if (newSessionId) currentSessionId.value = newSessionId
       conversation.value = [{ id: Date.now(), role: 'assistant', text: WELCOME_TEXT }]
       toolResult.value = null
       liveFrame.value = null
@@ -72,12 +80,26 @@ export default {
       liveFrameSource = null
     }
 
-    function onSelectMessage (message) {
-      if (!message || message.__newConversation) {
-        resetConversation()
+    async function onSelectSession (session) {
+      if (!session || session.__newConversation) {
+        resetConversation(session?.session_id || `session_${Date.now()}`)
         return
       }
-      conversation.value = [message]
+      const nextSessionId = session.session_id
+      currentSessionId.value = nextSessionId
+      try {
+        const res = await fetch(`/api/messages?session_id=${encodeURIComponent(nextSessionId)}`)
+        if (res.ok) {
+          const data = await res.json()
+          if (Array.isArray(data) && data.length > 0) {
+            conversation.value = data
+          } else {
+            conversation.value = [{ id: Date.now(), role: 'assistant', text: WELCOME_TEXT }]
+          }
+        }
+      } catch (_) {
+        conversation.value = [{ id: Date.now(), role: 'assistant', text: WELCOME_TEXT }]
+      }
       toolResult.value = null
     }
 
@@ -98,7 +120,7 @@ export default {
       try {
         const res = await fetch('/api/chat/send', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text })
+          body: JSON.stringify({ message: text, session_id: currentSessionId.value })
         })
 
         if (!res.ok) {
@@ -261,10 +283,19 @@ export default {
         }
       } finally {
         setTimeout(stopLiveFrameStream, 1500)
+        sidebarReloadToken.value += 1
       }
     }
 
-    return { conversation, toolResult, liveFrame, onSelectMessage, onSendMessage }
+    return {
+      conversation,
+      toolResult,
+      liveFrame,
+      currentSessionId,
+      sidebarReloadToken,
+      onSelectSession,
+      onSendMessage
+    }
   }
 }
 </script>
