@@ -12,7 +12,7 @@
         @click="select(s)"
       >
         <div class="meta">
-          <strong>{{ s.session_id }}</strong>
+          <strong>{{ sessionTitle(s) }}</strong>
           <span class="snippet">{{ snippet(s.preview) || '空会话' }}</span>
         </div>
       </div>
@@ -58,8 +58,13 @@ export default {
     watch(() => props.reloadToken, () => { load() })
 
     function snippet (t) { return (t || '').slice(0, 80) + (t && t.length > 80 ? '…' : '') }
+    function sessionTitle (s) {
+      const t = (s?.title || s?.preview || '').trim()
+      if (!t) return '新对话'
+      return t.length > 18 ? `${t.slice(0, 18)}...` : t
+    }
 
-    return { sessions, select, startNew, snippet }
+    return { sessions, select, startNew, snippet, sessionTitle }
   }
 }
 </script>

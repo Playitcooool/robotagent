@@ -221,9 +221,17 @@ async def get_sessions(limit: int = 50):
     result = []
     for session_id, score in ranked:
         key = _chat_history_key(session_id)
+        first_raw = await chat_redis.lindex(key, 0)
         last_raw = await chat_redis.lindex(key, -1)
+        title = ""
         preview = ""
         last_role = "assistant"
+        if first_raw:
+            try:
+                first_msg = json.loads(first_raw)
+                title = str(first_msg.get("text") or "").strip()
+            except Exception:
+                title = ""
         if last_raw:
             try:
                 last_msg = json.loads(last_raw)
@@ -232,9 +240,13 @@ async def get_sessions(limit: int = 50):
             except Exception:
                 preview = ""
 
+        if not title:
+            title = preview or "新对话"
+
         result.append(
             {
                 "session_id": session_id,
+                "title": title,
                 "updated_at": score,
                 "preview": preview,
                 "last_role": last_role,
