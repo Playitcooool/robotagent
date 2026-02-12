@@ -24,29 +24,30 @@
 
     <form class="composer" @submit.prevent="send">
       <textarea
+        ref="textareaRef"
         v-model="text"
         placeholder="向模型提问：Enter 发送，Shift+Enter 换行"
         @keydown="onKeydown"
+        @input="onInput"
         rows="2"
       ></textarea>
-      <button type="submit">发送</button>
+      <button type="submit" :disabled="!canSend">发送</button>
     </form>
   </div>
 </template>
 
 <script>
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch, nextTick, onMounted } from 'vue'
 import MarkdownIt from 'markdown-it'
 import markdownItGfm from 'markdown-it-multimd-table'
 import markdownItKatex from 'markdown-it-katex'
 import markdownItHighlightjs from 'markdown-it-highlightjs'
 import hljs from 'highlight.js'
 
-// Markdown renderer with GFM (tables), KaTeX (math) and syntax highlighting
 const md = new MarkdownIt({
-  html: false,     // 禁止 HTML，防 XSS
-  breaks: true,    // 支持换行
-  linkify: true,   // 自动识别链接
+  html: false,
+  breaks: true,
+  linkify: true,
   typographer: true
 })
 
@@ -54,7 +55,6 @@ md.use(markdownItGfm)
 md.use(markdownItKatex)
 md.use(markdownItHighlightjs, { auto: true, hljs })
 
-// ensure links open safely in new tab
 const defaultLinkRender = md.renderer.rules.link_open || function (tokens, idx, options, env, self) {
   return self.renderToken(tokens, idx, options)
 }
@@ -83,11 +83,16 @@ export default {
   setup (props, { emit }) {
     const text = ref('')
     const messagesRef = ref(null)
+    const textareaRef = ref(null)
+    const canSend = ref(false)
 
     function send () {
-      if (!text.value.trim()) return
-      emit('sendMessage', text.value.trim())
+      const payload = text.value.trim()
+      if (!payload) return
+      emit('sendMessage', payload)
       text.value = ''
+      canSend.value = false
+      nextTick(autoResizeTextarea)
     }
 
     function renderMarkdown (content) {
@@ -101,127 +106,54 @@ export default {
       }
     }
 
-    // auto-scroll when new message arrives
+    function onInput () {
+      canSend.value = text.value.trim().length > 0
+      autoResizeTextarea()
+    }
+
+    function autoResizeTextarea () {
+      const el = textareaRef.value
+      if (!el) return
+      el.style.height = 'auto'
+      const nextHeight = Math.min(el.scrollHeight, 220)
+      el.style.height = `${nextHeight}px`
+    }
+
+    function scrollToBottom () {
+      const el = messagesRef.value
+      if (!el) return
+      el.scrollTop = el.scrollHeight
+    }
+
     watch(
       () => props.conversation.length,
       () => {
-        setTimeout(() => {
-          const el = messagesRef.value
-          if (el) el.scrollTop = el.scrollHeight
-        }, 50)
+        nextTick(scrollToBottom)
       }
     )
 
+    watch(
+      () => props.conversation.map(item => `${item.id}:${item.text}:${item.loading}`).join('|'),
+      () => {
+        nextTick(scrollToBottom)
+      }
+    )
+
+    onMounted(() => {
+      autoResizeTextarea()
+      scrollToBottom()
+    })
+
     return {
       text,
+      canSend,
       send,
       renderMarkdown,
       onKeydown,
-      messagesRef
+      onInput,
+      messagesRef,
+      textareaRef
     }
   }
 }
 </script>
-
-<style scoped>
-.chatview {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
-.messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px;
-}
-
-.message {
-  margin-bottom: 12px;
-}
-
-.message.user {
-  text-align: right;
-}
-
-.bubble {
-  display: inline-block;
-  max-width: 80%;
-  padding: 10px 14px;
-  border-radius: 8px;
-  line-height: 1.6;
-}
-
-.message.user .bubble {
-  background: linear-gradient(180deg,#0f4b7a,#145f9a);
-  color: #e6eef6;
-}
-
-.message.assistant .bubble {
-  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
-  color: #e6eef6;
-  border: 1px solid rgba(255,255,255,0.03);
-}
-
-/* typing indicator */
-.typing {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.dot {
-  width: 8px;
-  height: 8px;
-  background: currentColor;
-  border-radius: 50%;
-  opacity: 0.25;
-  animation: blink 1s infinite;
-}
-
-.dot:nth-child(2) { animation-delay: 0.15s }
-.dot:nth-child(3) { animation-delay: 0.3s }
-
-@keyframes blink {
-  0% { opacity: 0.25 }
-  50% { opacity: 1 }
-  100% { opacity: 0.25 }
-}
-
-/* markdown content */
-.markdown ::v-deep pre {
-  background: #1e1e1e;
-  color: #f8f8f2;
-  padding: 12px;
-  border-radius: 6px;
-  overflow-x: auto;
-}
-.markdown ::v-deep code {
-  font-family: Menlo, Monaco, Consolas, monospace;
-  font-size: 0.9em;
-}
-.markdown ::v-deep p {
-  margin: 0.5em 0;
-}
-
-.composer {
-  display: flex;
-  gap: 8px;
-  padding: 10px;
-  border-top: 1px solid rgba(255,255,255,0.03);
-}
-
-.composer textarea {
-  flex: 1;
-  padding: 8px;
-  border-radius: 6px;
-  border: 1px solid rgba(255,255,255,0.04);
-  background: transparent;
-  color: #e6eef6;
-  resize: vertical;
-}
-
-.composer button {
-  padding: 8px 16px;
-}
-</style>

@@ -1,10 +1,13 @@
 <template>
   <div class="sidebar">
-    <div class="header">对话历史</div>
+    <div class="header">
+      <h2>对话历史</h2>
+      <span>{{ messages.length }} 条</span>
+    </div>
     <div class="list">
       <div v-for="m in messages" :key="m.id" class="item" @click="select(m)">
         <div class="meta">
-          <strong>{{ m.role === 'user' ? '你' : '模型' }}</strong>
+          <strong>{{ m.role === 'user' ? '你' : '助手' }}</strong>
           <span class="snippet">{{ snippet(m.text) }}</span>
         </div>
       </div>
@@ -24,10 +27,13 @@ export default {
   setup (_, { emit }) {
     const messages = ref([])
 
-    async function load() {
+    async function load () {
       try {
         const res = await fetch('/api/messages')
-        if (res.ok) messages.value = await res.json()
+        if (res.ok) {
+          const data = await res.json()
+          messages.value = Array.isArray(data) ? data.filter(Boolean) : sample()
+        }
         else messages.value = sample()
       } catch (e) {
         messages.value = sample()
@@ -42,7 +48,9 @@ export default {
     }
 
     function select (m) { emit('selectMessage', m) }
-    function startNew () { emit('selectMessage', { id: Date.now(), role: 'user', text: '' }) }
+    function startNew () {
+      emit('selectMessage', { __newConversation: true, id: Date.now() })
+    }
 
     onMounted(load)
 
