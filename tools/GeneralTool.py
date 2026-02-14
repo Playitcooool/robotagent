@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -9,12 +11,249 @@ import requests
 from langchain_core.tools import tool
 
 try:
+    from langchain_huggingface import HuggingFaceEmbeddings
+except Exception:
+    HuggingFaceEmbeddings = None
+
+try:
+    from qdrant_client import QdrantClient
+except Exception:
+    QdrantClient = None
+
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    TFIDF_AVAILABLE = True
+except Exception:
+    TFIDF_AVAILABLE = False
+
+try:
     from zoneinfo import ZoneInfo
 except Exception:
     ZoneInfo = None
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+QDRANT_HOST = os.environ.get("QDRANT_HOST", "localhost")
+QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
+QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "markdown_chunks")
+QDRANT_EMBED_MODEL = os.environ.get(
+    "QDRANT_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+)
+
+_qdrant_client = None
+_embedder = None
+
+
+def _normalize_qdrant_response(retrieved):
+    if isinstance(retrieved, dict):
+        return retrieved.get("points") or retrieved.get("result") or []
+    if isinstance(retrieved, (tuple, list)) and len(retrieved) >= 2 and isinstance(
+        retrieved[1], list
+    ):
+        return retrieved[1]
+    if hasattr(retrieved, "points"):
+        return getattr(retrieved, "points")
+    if hasattr(retrieved, "result"):
+        return getattr(retrieved, "result")
+    return retrieved or []
+
+
+def _extract_payload(point):
+    if hasattr(point, "payload"):
+        payload = point.payload or {}
+    elif isinstance(point, dict):
+        payload = point.get("payload") or {}
+    elif isinstance(point, (tuple, list)) and len(point) >= 2 and hasattr(
+        point[1], "payload"
+    ):
+        payload = point[1].payload or {}
+    else:
+        payload = {}
+
+    if not isinstance(payload, dict):
+        payload = {"text": str(payload)}
+
+    text = (
+        payload.get("text")
+        or payload.get("content")
+        or payload.get("chunk")
+        or payload.get("page_content")
+        or ""
+    )
+    if not isinstance(text, str):
+        text = str(text)
+
+    doc_id = None
+    if hasattr(point, "id"):
+        doc_id = getattr(point, "id")
+    elif isinstance(point, dict):
+        doc_id = point.get("id")
+
+    score = None
+    if hasattr(point, "score"):
+        score = getattr(point, "score")
+    elif isinstance(point, dict):
+        score = point.get("score")
+
+    return {
+        "id": doc_id,
+        "text": text,
+        "metadata": payload,
+        "score": float(score) if isinstance(score, (int, float)) else 0.0,
+    }
+
+
+def _get_qdrant_client():
+    global _qdrant_client
+    if _qdrant_client is not None:
+        return _qdrant_client
+    if QdrantClient is None:
+        raise RuntimeError("qdrant_client not installed")
+    _qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+    return _qdrant_client
+
+
+def _get_embedder():
+    global _embedder
+    if _embedder is not None:
+        return _embedder
+    if HuggingFaceEmbeddings is None:
+        raise RuntimeError("langchain_huggingface not installed")
+    _embedder = HuggingFaceEmbeddings(model_name=QDRANT_EMBED_MODEL)
+    return _embedder
+
+
+def _vector_retrieve(query: str, top_k: int):
+    try:
+        client = _get_qdrant_client()
+        vec = _get_embedder().embed_query(query)
+        resp = client.query_points(
+            query=vec,
+            collection_name=QDRANT_COLLECTION,
+            limit=top_k,
+            with_payload=True,
+        )
+        points = _normalize_qdrant_response(resp)
+        hits = []
+        for point in points:
+            item = _extract_payload(point)
+            if item["text"]:
+                item["source"] = "vector"
+                hits.append(item)
+        return hits
+    except Exception:
+        return []
+
+
+def _load_corpus(limit_per_scroll: int = 512):
+    try:
+        client = _get_qdrant_client()
+    except Exception:
+        return []
+
+    all_docs = []
+    offset = None
+    try:
+        while True:
+            points, next_offset = client.scroll(
+                collection_name=QDRANT_COLLECTION,
+                with_payload=True,
+                with_vectors=False,
+                limit=limit_per_scroll,
+                offset=offset,
+            )
+            if not points:
+                break
+            for point in points:
+                item = _extract_payload(point)
+                if item["text"]:
+                    all_docs.append(item)
+            offset = next_offset
+            if offset is None:
+                break
+    except Exception:
+        return []
+    return all_docs
+
+
+def _keyword_retrieve(query: str, corpus, top_k: int):
+    terms = [t.lower() for t in re.findall(r"\w+", query)]
+    if not terms:
+        return []
+
+    scored = []
+    for doc in corpus:
+        text = doc["text"].lower()
+        score = sum(text.count(t) for t in terms)
+        if score > 0:
+            item = dict(doc)
+            item["score"] = float(score)
+            item["source"] = "keyword"
+            scored.append(item)
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:top_k]
+
+
+def _tfidf_retrieve(query: str, corpus, top_k: int):
+    if not corpus:
+        return []
+    if not TFIDF_AVAILABLE:
+        return _keyword_retrieve(query, corpus, top_k)
+
+    try:
+        texts = [d["text"] for d in corpus]
+        vec = TfidfVectorizer(stop_words="english")
+        x = vec.fit_transform(texts)
+        q = vec.transform([query])
+        sims = cosine_similarity(q, x).flatten()
+
+        idx = sims.argsort()[::-1][:top_k]
+        hits = []
+        for i in idx:
+            score = float(sims[i])
+            if score <= 0:
+                continue
+            item = dict(corpus[int(i)])
+            item["score"] = score
+            item["source"] = "tfidf"
+            hits.append(item)
+        return hits
+    except Exception:
+        return _keyword_retrieve(query, corpus, top_k)
+
+
+def _rrf_merge(*ranked_lists, top_k: int):
+    # Reciprocal Rank Fusion for robust multi-route retrieval.
+    c = 60
+    scores = {}
+    items = {}
+
+    for ranked in ranked_lists:
+        for rank, hit in enumerate(ranked, start=1):
+            key = hit.get("id") or hit.get("text", "")[:240]
+            if not key:
+                continue
+            scores[key] = scores.get(key, 0.0) + 1.0 / (c + rank)
+            if key not in items:
+                items[key] = dict(hit)
+            srcs = items[key].get("sources", set())
+            if not isinstance(srcs, set):
+                srcs = set(srcs)
+            srcs.add(hit.get("source", "unknown"))
+            items[key]["sources"] = srcs
+
+    merged = []
+    for key, score in scores.items():
+        item = dict(items[key])
+        item["rrf_score"] = score
+        item["sources"] = sorted(item.get("sources", []))
+        merged.append(item)
+
+    merged.sort(key=lambda x: x["rrf_score"], reverse=True)
+    return merged[:top_k]
 
 
 def _resolve_repo_path(path: str) -> Path:
@@ -198,11 +437,70 @@ def current_time(tz: Optional[str] = "UTC") -> str:
     return dt.isoformat()
 
 
+@tool(response_format="content")
+def qdrant_retrieve_context(
+    query: str,
+    top_k: int = 8,
+    route_k: int = 8,
+    include_content: bool = True,
+) -> str:
+    """Agentic RAG retrieval from Qdrant with multi-route recall and fusion ranking."""
+    if not query or not query.strip():
+        return "Error: query is required."
+
+    safe_top_k = max(1, min(top_k, 20))
+    safe_route_k = max(safe_top_k, min(route_k, 50))
+
+    vector_hits = _vector_retrieve(query, safe_route_k)
+    corpus = _load_corpus()
+    tfidf_hits = _tfidf_retrieve(query, corpus, safe_route_k) if corpus else []
+    keyword_hits = _keyword_retrieve(query, corpus, safe_route_k) if corpus else []
+    merged = _rrf_merge(vector_hits, tfidf_hits, keyword_hits, top_k=safe_top_k)
+
+    results = []
+    for item in merged:
+        payload = {
+            "id": item.get("id"),
+            "rrf_score": round(float(item.get("rrf_score", 0.0)), 6),
+            "routes": item.get("sources", []),
+            "metadata": item.get("metadata", {}),
+        }
+        if include_content:
+            payload["content"] = item.get("text", "")
+        results.append(payload)
+
+    return json.dumps(
+        {
+            "query": query,
+            "collection": QDRANT_COLLECTION,
+            "qdrant": {"host": QDRANT_HOST, "port": QDRANT_PORT},
+            "embed_model": QDRANT_EMBED_MODEL,
+            "route_hits": {
+                "vector": len(vector_hits),
+                "tfidf": len(tfidf_hits),
+                "keyword": len(keyword_hits),
+            },
+            "returned": len(results),
+            "results": results,
+            "warnings": (
+                []
+                if results
+                else [
+                    "no documents retrieved; check Qdrant service, collection name, or embedding model"
+                ]
+            ),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
 __all__ = [
     "current_time",
     "format_json",
     "http_get",
     "list_workspace_files",
+    "qdrant_retrieve_context",
     "read_workspace_file",
     "search_workspace_text",
 ]
