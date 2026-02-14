@@ -23,9 +23,9 @@ from tools.SubAgentTool import init_subagents
 # ===============================
 # 配置
 # ===============================
-PROMPT_FILE = "/Volumes/Samsung/Projects/robotagent/RL/data.txt"
+PROMPT_FILE = "/Volumes/Samsung/Projects/robotagent/SFT/data.txt"
 OUTPUT_JSONL = "trajectories.jsonl"
-SAMPLES_PER_PROMPT = 4
+SAMPLES_PER_PROMPT = 1
 
 
 # ===============================
@@ -82,32 +82,34 @@ async def sample_trajectories_incremental(
                 print(f"❌ 调用失败，跳过该样本: {e}")
                 continue
 
-            trajectory = []
+            messages = []
 
             for msg in response["messages"]:
                 if isinstance(msg, (HumanMessage, AIMessage, ToolMessage)):
+                    if isinstance(msg, HumanMessage):
+                        role = "user"
+                    elif isinstance(msg, AIMessage):
+                        role = "assistant"
+                    else:
+                        role = "tool"
+
                     item = {
-                        "role": (
-                            "human"
-                            if isinstance(msg, HumanMessage)
-                            else "ai" if isinstance(msg, AIMessage) else "tool"
-                        ),
-                        "type": msg.__class__.__name__,
+                        "role": role,
                         "content": msg.content,
-                        "prompt_id": prompt_id,
-                        "attempt_id": attempt_id,
                     }
 
                     if isinstance(msg, ToolMessage):
-                        item["tool_name"] = msg.name
-                        item["tool_call_id"] = msg.tool_call_id
+                        if msg.name:
+                            item["name"] = msg.name
+                        if msg.tool_call_id:
+                            item["tool_call_id"] = msg.tool_call_id
 
-                    trajectory.append(item)
+                    messages.append(item)
 
             record = {
                 "prompt_id": prompt_id,
                 "attempt_id": attempt_id,
-                "trajectory": trajectory,
+                "messages": messages,
             }
 
             # ✅ 立刻追加写入（原子性强）
@@ -128,7 +130,7 @@ async def main():
     # 初始化 LLM
     chat = ChatOpenAI(
         base_url="http://localhost:1234/v1",
-        model="lmstudio-community:qwen3-4b-instruct-2507-mlx",
+        model="qwen-qwen3-14b-mlx@4bit",
         api_key="no_need",
     )
 
