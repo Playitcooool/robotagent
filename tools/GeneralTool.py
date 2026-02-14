@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from langchain_core.tools import tool
@@ -45,6 +46,64 @@ QDRANT_EMBED_MODEL = os.environ.get(
 
 _qdrant_client = None
 _embedder = None
+_corpus_cache: List[Dict[str, Any]] = []
+_corpus_cache_at: float = 0.0
+_tfidf_vectorizer = None
+_tfidf_matrix = None
+
+CORPUS_CACHE_TTL_SECONDS = int(os.environ.get("RAG_CORPUS_CACHE_TTL_SECONDS", "600"))
+
+ROBOTICS_TERMS = [
+    "robotics",
+    "manipulation",
+    "motion planning",
+    "control",
+    "trajectory optimization",
+    "simulation",
+]
+SIM_TERMS = [
+    "pybullet",
+    "simulation task",
+    "action sequence",
+    "constraint",
+    "reward design",
+]
+STOPWORDS_EN = {
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "of",
+    "to",
+    "in",
+    "on",
+    "for",
+    "with",
+    "what",
+    "how",
+    "why",
+    "is",
+    "are",
+    "be",
+    "this",
+    "that",
+    "please",
+    "about",
+    "from",
+}
+STOPWORDS_ZH = {
+    "什么",
+    "怎么",
+    "如何",
+    "以及",
+    "关于",
+    "问题",
+    "一下",
+    "哪些",
+    "还有",
+    "请问",
+}
 
 
 def _normalize_qdrant_response(retrieved):
@@ -106,6 +165,125 @@ def _extract_payload(point):
     }
 
 
+def _tokenize(text: str) -> List[str]:
+    if not text:
+        return []
+    en = re.findall(r"[A-Za-z][A-Za-z0-9_\-]{1,}", text.lower())
+    zh = re.findall(r"[\u4e00-\u9fff]{2,}", text)
+    mixed = en + zh
+    return [t for t in mixed if t]
+
+
+def _keyword_tokens(query: str, max_terms: int = 10) -> List[str]:
+    terms = _tokenize(query)
+    filtered = []
+    for t in terms:
+        if t in STOPWORDS_EN or t in STOPWORDS_ZH:
+            continue
+        filtered.append(t)
+    if not filtered:
+        return terms[:max_terms]
+    return filtered[:max_terms]
+
+
+def _query_profile(query: str) -> Dict[str, Any]:
+    q = (query or "").lower()
+    is_robotics = any(
+        k in q
+        for k in (
+            "robot",
+            "机器人",
+            "manipulation",
+            "grasp",
+            "抓取",
+            "motion planning",
+            "路径规划",
+            "control",
+            "控制",
+        )
+    )
+    is_sim = any(
+        k in q
+        for k in (
+            "simulate",
+            "simulation",
+            "仿真",
+            "pybullet",
+            "simulator",
+            "执行",
+            "任务规划",
+            "trajectory",
+            "轨迹",
+        )
+    )
+    is_cn = bool(re.search(r"[\u4e00-\u9fff]", query or ""))
+    return {
+        "robotics_related": is_robotics,
+        "simulation_related": is_sim,
+        "contains_chinese": is_cn,
+    }
+
+
+def _rewrite_queries(query: str, max_variants: int = 5) -> List[Dict[str, Any]]:
+    base = " ".join((query or "").strip().split())
+    if not base:
+        return []
+
+    profile = _query_profile(base)
+    keywords = _keyword_tokens(base, max_terms=8)
+    variants: List[Dict[str, Any]] = [
+        {"name": "original", "query": base, "weight": 1.25}
+    ]
+
+    if keywords:
+        variants.append(
+            {
+                "name": "keyword_focus",
+                "query": " ".join(keywords),
+                "weight": 1.1,
+            }
+        )
+
+    if profile["robotics_related"] or len(keywords) < 5:
+        variants.append(
+            {
+                "name": "robotics_expand",
+                "query": f"{base} {' '.join(ROBOTICS_TERMS)}",
+                "weight": 1.0,
+            }
+        )
+
+    if profile["simulation_related"]:
+        variants.append(
+            {
+                "name": "simulation_expand",
+                "query": f"{base} {' '.join(SIM_TERMS)}",
+                "weight": 1.0,
+            }
+        )
+
+    if profile["contains_chinese"]:
+        variants.append(
+            {
+                "name": "bilingual_expand",
+                "query": f"{base} robot manipulation planning control simulation",
+                "weight": 0.95,
+            }
+        )
+
+    dedup = []
+    seen = set()
+    for v in variants:
+        q = v["query"].strip()
+        if not q or q in seen:
+            continue
+        seen.add(q)
+        dedup.append(v)
+        if len(dedup) >= max_variants:
+            break
+    return dedup
+
+
 def _get_qdrant_client():
     global _qdrant_client
     if _qdrant_client is not None:
@@ -148,7 +326,7 @@ def _vector_retrieve(query: str, top_k: int):
         return []
 
 
-def _load_corpus(limit_per_scroll: int = 512):
+def _load_corpus_from_qdrant(limit_per_scroll: int = 512):
     try:
         client = _get_qdrant_client()
     except Exception:
@@ -180,7 +358,7 @@ def _load_corpus(limit_per_scroll: int = 512):
 
 
 def _keyword_retrieve(query: str, corpus, top_k: int):
-    terms = [t.lower() for t in re.findall(r"\w+", query)]
+    terms = _keyword_tokens(query, max_terms=12)
     if not terms:
         return []
 
@@ -197,18 +375,28 @@ def _keyword_retrieve(query: str, corpus, top_k: int):
     return scored[:top_k]
 
 
-def _tfidf_retrieve(query: str, corpus, top_k: int):
+def _build_tfidf_index(corpus: List[Dict[str, Any]]):
+    if not TFIDF_AVAILABLE or not corpus:
+        return None, None
+    texts = [d["text"] for d in corpus]
+    vec = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), min_df=1)
+    matrix = vec.fit_transform(texts)
+    return vec, matrix
+
+
+def _tfidf_retrieve(query: str, corpus, top_k: int, vec=None, matrix=None):
     if not corpus:
         return []
     if not TFIDF_AVAILABLE:
         return _keyword_retrieve(query, corpus, top_k)
 
     try:
-        texts = [d["text"] for d in corpus]
-        vec = TfidfVectorizer(stop_words="english")
-        x = vec.fit_transform(texts)
+        if vec is None or matrix is None:
+            vec, matrix = _build_tfidf_index(corpus)
+        if vec is None or matrix is None:
+            return _keyword_retrieve(query, corpus, top_k)
         q = vec.transform([query])
-        sims = cosine_similarity(q, x).flatten()
+        sims = cosine_similarity(q, matrix).flatten()
 
         idx = sims.argsort()[::-1][:top_k]
         hits = []
@@ -225,35 +413,117 @@ def _tfidf_retrieve(query: str, corpus, top_k: int):
         return _keyword_retrieve(query, corpus, top_k)
 
 
-def _rrf_merge(*ranked_lists, top_k: int):
-    # Reciprocal Rank Fusion for robust multi-route retrieval.
+def _doc_source(hit: Dict[str, Any]) -> str:
+    md = hit.get("metadata") or {}
+    source = md.get("source") or md.get("file_name") or md.get("doc_id") or "unknown"
+    return str(source)
+
+
+def _weighted_rrf_merge(
+    retrieval_groups: List[Dict[str, Any]],
+    top_k: int,
+    max_per_source: int = 3,
+):
     c = 60
     scores = {}
     items = {}
 
-    for ranked in ranked_lists:
+    for group in retrieval_groups:
+        ranked = group["hits"]
+        route_weight = float(group.get("route_weight", 1.0))
+        query_weight = float(group.get("query_weight", 1.0))
+        query_variant = group.get("query_variant", "unknown")
         for rank, hit in enumerate(ranked, start=1):
             key = hit.get("id") or hit.get("text", "")[:240]
             if not key:
                 continue
-            scores[key] = scores.get(key, 0.0) + 1.0 / (c + rank)
+            contribution = (route_weight * query_weight) / (c + rank)
+            scores[key] = scores.get(key, 0.0) + contribution
             if key not in items:
                 items[key] = dict(hit)
-            srcs = items[key].get("sources", set())
-            if not isinstance(srcs, set):
-                srcs = set(srcs)
-            srcs.add(hit.get("source", "unknown"))
-            items[key]["sources"] = srcs
+            route_set = items[key].get("routes", set())
+            if not isinstance(route_set, set):
+                route_set = set(route_set)
+            route_set.add(hit.get("source", "unknown"))
+            items[key]["routes"] = route_set
+
+            variant_set = items[key].get("query_variants", set())
+            if not isinstance(variant_set, set):
+                variant_set = set(variant_set)
+            variant_set.add(query_variant)
+            items[key]["query_variants"] = variant_set
 
     merged = []
     for key, score in scores.items():
         item = dict(items[key])
         item["rrf_score"] = score
-        item["sources"] = sorted(item.get("sources", []))
+        item["routes"] = sorted(item.get("routes", []))
+        item["query_variants"] = sorted(item.get("query_variants", []))
+        item["doc_source"] = _doc_source(item)
         merged.append(item)
 
     merged.sort(key=lambda x: x["rrf_score"], reverse=True)
-    return merged[:top_k]
+    if max_per_source < 1:
+        return merged[:top_k]
+
+    diversified = []
+    source_counts: Dict[str, int] = {}
+    overflow = []
+    for item in merged:
+        src = item.get("doc_source", "unknown")
+        if source_counts.get(src, 0) >= max_per_source:
+            overflow.append(item)
+            continue
+        source_counts[src] = source_counts.get(src, 0) + 1
+        diversified.append(item)
+        if len(diversified) >= top_k:
+            return diversified
+
+    for item in overflow:
+        diversified.append(item)
+        if len(diversified) >= top_k:
+            break
+    return diversified
+
+
+def _get_corpus_cached(refresh: bool = False):
+    global _corpus_cache, _corpus_cache_at, _tfidf_vectorizer, _tfidf_matrix
+    now = time.time()
+    cache_valid = (
+        bool(_corpus_cache)
+        and not refresh
+        and (now - _corpus_cache_at) < max(30, CORPUS_CACHE_TTL_SECONDS)
+    )
+    if cache_valid:
+        return _corpus_cache, _tfidf_vectorizer, _tfidf_matrix, True
+
+    corpus = _load_corpus_from_qdrant()
+    vec, matrix = _build_tfidf_index(corpus) if corpus else (None, None)
+    _corpus_cache = corpus
+    _corpus_cache_at = now
+    _tfidf_vectorizer = vec
+    _tfidf_matrix = matrix
+    return _corpus_cache, _tfidf_vectorizer, _tfidf_matrix, False
+
+
+def _simulation_hints(query: str, merged_results: List[Dict[str, Any]]) -> List[str]:
+    q = (query or "").lower()
+    merged_text = " ".join((m.get("text") or "")[:240] for m in merged_results).lower()
+    text = f"{q} {merged_text}"
+    hints = []
+
+    if any(k in text for k in ["grasp", "抓取", "pick", "manipulation"]):
+        hints.append("仿真可先固定抓取目标姿态与接触参数，再搜索可行抓取位姿。")
+    if any(k in text for k in ["trajectory", "path", "轨迹", "路径规划", "motion planning"]):
+        hints.append("执行前应分离全局路径与局部控制，优先验证轨迹平滑性和碰撞约束。")
+    if any(k in text for k in ["control", "控制", "policy", "rl", "强化学习"]):
+        hints.append("建议记录控制频率、动作裁剪范围和奖励项权重，便于复现实验。")
+    if any(k in text for k in ["sim2real", "domain randomization", "迁移"]):
+        hints.append("可加入质量、摩擦、传感噪声随机化，以提升策略迁移稳定性。")
+    if any(k in text for k in ["multi-agent", "coordination", "协作"]):
+        hints.append("多体任务建议先做单体基线，再逐步增加协作约束与通信机制。")
+
+    return hints[:5]
 
 
 def _resolve_repo_path(path: str) -> Path:
@@ -441,55 +711,138 @@ def current_time(tz: Optional[str] = "UTC") -> str:
 def qdrant_retrieve_context(
     query: str,
     top_k: int = 8,
-    route_k: int = 8,
+    route_k: int = 10,
+    max_query_variants: int = 4,
+    max_per_source: int = 3,
+    refresh_corpus_cache: bool = False,
     include_content: bool = True,
+    include_debug: bool = False,
 ) -> str:
-    """Agentic RAG retrieval from Qdrant with multi-route recall and fusion ranking."""
+    """Agentic RAG for robotics papers: query rewrite + multi-route retrieval + fusion."""
     if not query or not query.strip():
         return "Error: query is required."
 
     safe_top_k = max(1, min(top_k, 20))
     safe_route_k = max(safe_top_k, min(route_k, 50))
+    safe_variants = max(1, min(max_query_variants, 8))
+    safe_max_per_source = max(1, min(max_per_source, safe_top_k))
 
-    vector_hits = _vector_retrieve(query, safe_route_k)
-    corpus = _load_corpus()
-    tfidf_hits = _tfidf_retrieve(query, corpus, safe_route_k) if corpus else []
-    keyword_hits = _keyword_retrieve(query, corpus, safe_route_k) if corpus else []
-    merged = _rrf_merge(vector_hits, tfidf_hits, keyword_hits, top_k=safe_top_k)
+    profile = _query_profile(query)
+    variants = _rewrite_queries(query, max_variants=safe_variants)
+    if not variants:
+        variants = [{"name": "original", "query": query.strip(), "weight": 1.0}]
+
+    corpus, tfidf_vec, tfidf_matrix, cache_hit = _get_corpus_cached(
+        refresh=refresh_corpus_cache
+    )
+    retrieval_groups: List[Dict[str, Any]] = []
+    route_hit_counter = {"vector": 0, "tfidf": 0, "keyword": 0}
+
+    route_weights = {"vector": 1.0, "tfidf": 0.8, "keyword": 0.65}
+    per_variant_k = max(3, min(safe_route_k, safe_route_k))
+
+    for variant in variants:
+        vq = variant["query"]
+        qw = float(variant.get("weight", 1.0))
+
+        v_hits = _vector_retrieve(vq, per_variant_k)
+        for h in v_hits:
+            h["query_variant"] = variant["name"]
+        route_hit_counter["vector"] += len(v_hits)
+        retrieval_groups.append(
+            {
+                "hits": v_hits,
+                "route_weight": route_weights["vector"],
+                "query_weight": qw,
+                "query_variant": variant["name"],
+            }
+        )
+
+        if corpus:
+            t_hits = _tfidf_retrieve(
+                vq, corpus, per_variant_k, vec=tfidf_vec, matrix=tfidf_matrix
+            )
+            for h in t_hits:
+                h["query_variant"] = variant["name"]
+            route_hit_counter["tfidf"] += len(t_hits)
+            retrieval_groups.append(
+                {
+                    "hits": t_hits,
+                    "route_weight": route_weights["tfidf"],
+                    "query_weight": qw,
+                    "query_variant": variant["name"],
+                }
+            )
+
+            k_hits = _keyword_retrieve(vq, corpus, per_variant_k)
+            for h in k_hits:
+                h["query_variant"] = variant["name"]
+            route_hit_counter["keyword"] += len(k_hits)
+            retrieval_groups.append(
+                {
+                    "hits": k_hits,
+                    "route_weight": route_weights["keyword"],
+                    "query_weight": qw,
+                    "query_variant": variant["name"],
+                }
+            )
+
+    merged = _weighted_rrf_merge(
+        retrieval_groups,
+        top_k=safe_top_k,
+        max_per_source=safe_max_per_source,
+    )
 
     results = []
     for item in merged:
         payload = {
             "id": item.get("id"),
             "rrf_score": round(float(item.get("rrf_score", 0.0)), 6),
-            "routes": item.get("sources", []),
+            "routes": item.get("routes", []),
+            "query_variants": item.get("query_variants", []),
+            "doc_source": item.get("doc_source"),
             "metadata": item.get("metadata", {}),
         }
         if include_content:
             payload["content"] = item.get("text", "")
         results.append(payload)
 
-    return json.dumps(
-        {
-            "query": query,
-            "collection": QDRANT_COLLECTION,
-            "qdrant": {"host": QDRANT_HOST, "port": QDRANT_PORT},
-            "embed_model": QDRANT_EMBED_MODEL,
-            "route_hits": {
-                "vector": len(vector_hits),
-                "tfidf": len(tfidf_hits),
-                "keyword": len(keyword_hits),
-            },
-            "returned": len(results),
-            "results": results,
-            "warnings": (
-                []
-                if results
-                else [
-                    "no documents retrieved; check Qdrant service, collection name, or embedding model"
-                ]
-            ),
+    response = {
+        "query": query,
+        "query_profile": profile,
+        "rewritten_queries": [v["query"] for v in variants],
+        "query_variants": variants,
+        "collection": QDRANT_COLLECTION,
+        "qdrant": {"host": QDRANT_HOST, "port": QDRANT_PORT},
+        "embed_model": QDRANT_EMBED_MODEL,
+        "cache": {
+            "corpus_cache_hit": cache_hit,
+            "corpus_size": len(corpus),
+            "cache_ttl_seconds": CORPUS_CACHE_TTL_SECONDS,
         },
+        "route_hits": route_hit_counter,
+        "returned": len(results),
+        "planning_hints": _simulation_hints(query, merged),
+        "results": results,
+        "warnings": (
+            []
+            if results
+            else [
+                "no documents retrieved; check Qdrant service, collection name, or embedding model"
+            ]
+        ),
+    }
+    if include_debug:
+        response["debug"] = {
+            "safe_top_k": safe_top_k,
+            "safe_route_k": safe_route_k,
+            "safe_variants": safe_variants,
+            "safe_max_per_source": safe_max_per_source,
+            "retrieval_groups": len(retrieval_groups),
+        }
+
+    return json.dumps(
+        response,
         ensure_ascii=False,
         indent=2,
     )
