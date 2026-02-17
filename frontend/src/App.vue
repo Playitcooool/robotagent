@@ -147,6 +147,9 @@ export default {
           const ts = Number(payload.timestamp || 0)
           if (ts > 0 && ts < liveFramePollStart) return
           liveFrame.value = payload
+          if (payload.done) {
+            setTimeout(stopLiveFrameStream, 1000)
+          }
         } catch (_) {
           // ignore parse errors
         }
@@ -335,7 +338,6 @@ export default {
                   delete assistantStreams[assistantId]
                 }
               }
-              setTimeout(stopLiveFrameStream, 1000)
             }
           }
         }
@@ -366,7 +368,6 @@ export default {
           conversation.value.push({ id: Date.now() + 2, role: 'assistant', text: errMsg })
         }
       } finally {
-        setTimeout(stopLiveFrameStream, 1500)
         sidebarReloadToken.value += 1
       }
     }
