@@ -4,6 +4,12 @@
       <h2>对话历史</h2>
       <span>{{ sessions.length }} 个会话</span>
     </div>
+
+    <div class="userline" v-if="authUser">
+      <span class="user">{{ authUser.username }}</span>
+      <button class="logout-mini" @click="$emit('logout')">退出</button>
+    </div>
+
     <div class="list">
       <div
         v-for="s in sessions"
@@ -30,20 +36,29 @@ export default {
   name: 'Sidebar',
   props: {
     reloadToken: { type: Number, default: 0 },
-    currentSessionId: { type: String, default: '' }
+    currentSessionId: { type: String, default: '' },
+    authToken: { type: String, default: '' },
+    authUser: { type: Object, default: null }
   },
-  emits: ['selectSession'],
+  emits: ['selectSession', 'logout'],
   setup (props, { emit }) {
     const sessions = ref([])
 
     async function load () {
+      if (!props.authToken) {
+        sessions.value = []
+        return
+      }
       try {
-        const res = await fetch('/api/sessions')
+        const res = await fetch('/api/sessions', {
+          headers: { Authorization: `Bearer ${props.authToken}` }
+        })
         if (res.ok) {
           const data = await res.json()
           sessions.value = Array.isArray(data) ? data.filter(Boolean) : []
+        } else {
+          sessions.value = []
         }
-        else sessions.value = []
       } catch (e) {
         sessions.value = []
       }
@@ -56,6 +71,7 @@ export default {
 
     onMounted(load)
     watch(() => props.reloadToken, () => { load() })
+    watch(() => props.authToken, () => { load() })
 
     function snippet (t) { return (t || '').slice(0, 80) + (t && t.length > 80 ? '…' : '') }
     function sessionTitle (s) {

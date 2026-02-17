@@ -1,34 +1,57 @@
 <template>
-  <div class="app-grid">
-    <aside class="left">
-      <Sidebar
-        @selectSession="onSelectSession"
-        :reloadToken="sidebarReloadToken"
-        :currentSessionId="currentSessionId"
-      />
-    </aside>
+  <div v-if="authLoading" class="auth-shell">
+    <div class="auth-card"><p>正在检查登录状态...</p></div>
+  </div>
 
-    <main class="center">
-      <ChatView :conversation="conversation" @sendMessage="onSendMessage" />
-    </main>
+  <div v-else-if="!authUser" class="auth-shell">
+    <AuthView @authed="onAuthed" />
+  </div>
 
-    <aside class="right">
-      <ToolResults :result="toolResult" :liveFrame="liveFrame" />
-    </aside>
+  <div v-else class="app-shell">
+    <header class="app-topbar">
+      <div class="topbar-left">RobotAgent</div>
+      <div class="topbar-right">
+        <span class="whoami">当前用户：{{ authUser.username }}</span>
+        <button class="logout" @click="onLogout">退出登录</button>
+      </div>
+    </header>
+
+    <div class="app-grid">
+      <aside class="left">
+        <Sidebar
+          @selectSession="onSelectSession"
+          @logout="onLogout"
+          :reloadToken="sidebarReloadToken"
+          :currentSessionId="currentSessionId"
+          :authUser="authUser"
+          :authToken="authToken"
+        />
+      </aside>
+
+      <main class="center">
+        <ChatView :conversation="conversation" @sendMessage="onSendMessage" />
+      </main>
+
+      <aside class="right">
+        <ToolResults :result="toolResult" :liveFrame="liveFrame" />
+      </aside>
+    </div>
   </div>
 </template>
 
 <script>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import ChatView from './components/ChatView.vue'
 import ToolResults from './components/ToolResults.vue'
+import AuthView from './components/AuthView.vue'
 
 const WELCOME_TEXT = '欢迎使用 RobotAgent！请选择左侧会话或发起新对话。'
+const AUTH_TOKEN_KEY = 'robotagent_auth_token'
 
 export default {
   name: 'App',
-  components: { Sidebar, ChatView, ToolResults },
+  components: { Sidebar, ChatView, ToolResults, AuthView },
   setup () {
     const initialSessionId = `session_${Date.now()}`
     const conversation = ref([
@@ -43,6 +66,66 @@ export default {
     let liveFrameSource = null
     let liveFramePollStart = 0
 
+    const authToken = ref(localStorage.getItem(AUTH_TOKEN_KEY) || '')
+    const authUser = ref(null)
+    const authLoading = ref(true)
+
+    function handleAuthExpired () {
+      authToken.value = ''
+      authUser.value = null
+      localStorage.removeItem(AUTH_TOKEN_KEY)
+      resetConversation(`session_${Date.now()}`)
+    }
+
+    function authHeaders (extra = {}) {
+      const headers = { ...extra }
+      if (authToken.value) headers.Authorization = `Bearer ${authToken.value}`
+      return headers
+    }
+
+    async function apiFetch (url, options = {}) {
+      const merged = {
+        ...options,
+        headers: authHeaders(options.headers || {})
+      }
+      const res = await fetch(url, merged)
+      if (res.status === 401) handleAuthExpired()
+      return res
+    }
+
+    async function checkAuth () {
+      authLoading.value = true
+      try {
+        if (!authToken.value) {
+          authUser.value = null
+          return
+        }
+        const res = await apiFetch('/api/auth/me')
+        if (!res.ok) {
+          authUser.value = null
+          return
+        }
+        const data = await res.json().catch(() => ({}))
+        authUser.value = data?.user || null
+      } finally {
+        authLoading.value = false
+      }
+    }
+
+    function onAuthed (payload) {
+      authToken.value = payload.token || ''
+      authUser.value = payload.user || null
+      localStorage.setItem(AUTH_TOKEN_KEY, authToken.value)
+      sidebarReloadToken.value += 1
+    }
+
+    async function onLogout () {
+      try {
+        await apiFetch('/api/auth/logout', { method: 'POST' })
+      } catch (_) {}
+      handleAuthExpired()
+    }
+
     function resetConversation (newSessionId = null) {
       if (newSessionId) currentSessionId.value = newSessionId
       conversation.value = [{ id: Date.now(), role: 'assistant', text: WELCOME_TEXT }]
@@ -52,7 +135,7 @@ export default {
     }
 
     function startLiveFrameStream () {
-      if (liveFrameSource) return
+      if (liveFrameSource || !authToken.value) return
       liveFramePollStart = Date.now() / 1000
       const url = `/api/sim/stream?since=${encodeURIComponent(liveFramePollStart)}`
       liveFrameSource = new EventSource(url)
@@ -88,7 +171,7 @@ export default {
       const nextSessionId = session.session_id
       currentSessionId.value = nextSessionId
       try {
-        const res = await fetch(`/api/messages?session_id=${encodeURIComponent(nextSessionId)}`)
+        const res = await apiFetch(`/api/messages?session_id=${encodeURIComponent(nextSessionId)}`)
         if (res.ok) {
           const data = await res.json()
           if (Array.isArray(data) && data.length > 0) {
@@ -103,7 +186,9 @@ export default {
       toolResult.value = null
     }
 
-    async function onSendMessage(text) {
+    async function onSendMessage (text) {
+      if (!authUser.value) return
+
       liveFrame.value = null
       startLiveFrameStream()
       const userMsg = { id: Date.now(), role: 'user', text }
@@ -118,7 +203,7 @@ export default {
       }
 
       try {
-        const res = await fetch('/api/chat/send', {
+        const res = await apiFetch('/api/chat/send', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message: text, session_id: currentSessionId.value })
         })
@@ -130,7 +215,7 @@ export default {
             conversation.value[idxErr].loading = false
             conversation.value[idxErr].text = errText
           } else {
-            conversation.value.push({ id: Date.now()+2, role: 'assistant', text: errText })
+            conversation.value.push({ id: Date.now() + 2, role: 'assistant', text: errText })
           }
           return
         }
@@ -232,7 +317,7 @@ export default {
                 conversation.value[idxErr2].loading = false
                 conversation.value[idxErr2].text = errText
               } else {
-                conversation.value.push({ id: Date.now()+3, role: 'assistant', text: errText })
+                conversation.value.push({ id: Date.now() + 3, role: 'assistant', text: errText })
               }
             } else if (obj.type === 'tool') {
               toolResult.value = obj.result ?? obj.data ?? obj.payload ?? null
@@ -271,7 +356,6 @@ export default {
             // ignore invalid trailing line
           }
         }
-
       } catch (e) {
         const idxNet = conversation.value.findIndex(m => m.role === 'assistant' && m.loading)
         const errMsg = '[网络错误] ' + String(e)
@@ -279,7 +363,7 @@ export default {
           conversation.value[idxNet].loading = false
           conversation.value[idxNet].text = errMsg
         } else {
-          conversation.value.push({ id: Date.now()+2, role: 'assistant', text: errMsg })
+          conversation.value.push({ id: Date.now() + 2, role: 'assistant', text: errMsg })
         }
       } finally {
         setTimeout(stopLiveFrameStream, 1500)
@@ -287,12 +371,19 @@ export default {
       }
     }
 
+    onMounted(checkAuth)
+
     return {
+      authLoading,
+      authToken,
+      authUser,
       conversation,
       toolResult,
       liveFrame,
       currentSessionId,
       sidebarReloadToken,
+      onAuthed,
+      onLogout,
       onSelectSession,
       onSendMessage
     }
