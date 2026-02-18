@@ -15,6 +15,11 @@ if root_dir not in sys.path:
 _cached_subagents: List[Any] | None = None
 _subagent_lock = asyncio.Lock()
 
+# Collection runtime behavior (intended for single-trajectory isolation)
+REBUILD_AGENT_EVERY = 1
+CLEANUP_SIMULATION_PER_ATTEMPT = True
+MCP_CLEANUP_URL = "http://localhost:8001/mcp"
+
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
@@ -96,6 +101,7 @@ async def collect_trajectories(
     output_path: str,
     samples_per_prompt: int,
     rebuild_agent_every: int,
+    cleanup_after_attempt: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     finished_keys = load_finished_keys(output_path)
     print(f"[collect] existing trajectories: {len(finished_keys)}")
@@ -126,6 +132,12 @@ async def collect_trajectories(
                     f"[collect] failed prompt={prompt_id} attempt={attempt_id}: {e}"
                 )
                 continue
+            finally:
+                if cleanup_after_attempt is not None:
+                    try:
+                        await cleanup_after_attempt()
+                    except Exception as e:
+                        print(f"[collect] cleanup_after_attempt failed: {e}")
 
             trajectory_messages = extract_messages(result)
             response = ""
@@ -215,12 +227,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_retries", type=int, default=3)
     parser.add_argument("--backoff_factor", type=float, default=2.0)
     parser.add_argument("--initial_delay", type=float, default=1.0)
-    parser.add_argument(
-        "--rebuild_agent_every",
-        type=int,
-        default=50,
-        help="Rebuild deep agent every N attempts. <=0 means never rebuild.",
-    )
     return parser.parse_args()
 
 
@@ -244,13 +250,33 @@ async def async_main() -> None:
             initial_delay=args.initial_delay,
         )
 
-    await collect_trajectories(
-        agent_builder=agent_builder,
-        prompts=prompts,
-        output_path=args.output_path,
-        samples_per_prompt=args.samples_per_prompt,
-        rebuild_agent_every=args.rebuild_agent_every,
-    )
+    cleanup_hook = None
+    if CLEANUP_SIMULATION_PER_ATTEMPT:
+        from fastmcp import Client
+
+        mcp_client = Client(MCP_CLEANUP_URL)
+
+        async def cleanup_hook() -> None:
+            await mcp_client.call_tool("cleanup_simulation_tool")
+
+        async with mcp_client:
+            await collect_trajectories(
+                agent_builder=agent_builder,
+                prompts=prompts,
+                output_path=args.output_path,
+                samples_per_prompt=args.samples_per_prompt,
+                rebuild_agent_every=REBUILD_AGENT_EVERY,
+                cleanup_after_attempt=cleanup_hook,
+            )
+    else:
+        await collect_trajectories(
+            agent_builder=agent_builder,
+            prompts=prompts,
+            output_path=args.output_path,
+            samples_per_prompt=args.samples_per_prompt,
+            rebuild_agent_every=REBUILD_AGENT_EVERY,
+            cleanup_after_attempt=cleanup_hook,
+        )
 
 
 def main() -> None:

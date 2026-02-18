@@ -134,7 +134,7 @@ def _publish_realtime_frame(
 def setup_simulation(gui: bool = False):
     """初始化PyBullet环境，只在首次创建时运行"""
     global simulation_instance
-    if simulation_instance is None:
+    if simulation_instance is None or not p.isConnected(simulation_instance):
         if gui:
             simulation_instance = p.connect(p.GUI)
         else:
@@ -156,8 +156,14 @@ def ensure_simulation():
 def cleanup_simulation():
     """关闭PyBullet环境"""
     global simulation_instance
-    if simulation_instance:
-        p.disconnect()
+    if simulation_instance is not None:
+        try:
+            if p.isConnected(simulation_instance):
+                p.resetSimulation(physicsClientId=simulation_instance)
+                p.disconnect(simulation_instance)
+        except Exception:
+            # Best-effort cleanup; always clear local state.
+            pass
         simulation_instance = None
     else:
         print("No simulation environment to close.")
