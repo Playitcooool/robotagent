@@ -12,6 +12,9 @@ root_dir = os.path.dirname(os.path.dirname(current_dir))
 if root_dir not in sys.path:
     sys.path.append(root_dir)
 
+_cached_subagents: List[Any] | None = None
+_subagent_lock = asyncio.Lock()
+
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
@@ -92,9 +95,12 @@ async def collect_trajectories(
     prompts: List[str],
     output_path: str,
     samples_per_prompt: int,
+    rebuild_agent_every: int,
 ) -> None:
     finished_keys = load_finished_keys(output_path)
     print(f"[collect] existing trajectories: {len(finished_keys)}")
+    agent = None
+    attempt_since_rebuild = 0
 
     for prompt_id, prompt in enumerate(prompts):
         for attempt_id in range(samples_per_prompt):
@@ -103,11 +109,18 @@ async def collect_trajectories(
                 continue
 
             try:
-                # Hard-reset context by creating a fresh agent for each attempt.
-                agent = await agent_builder()
+                # Rebuild agent periodically to prevent long-run resource growth.
+                if (
+                    agent is None
+                    or rebuild_agent_every > 0
+                    and attempt_since_rebuild >= rebuild_agent_every
+                ):
+                    agent = await agent_builder()
+                    attempt_since_rebuild = 0
                 result = await agent.ainvoke(
                     {"messages": [{"role": "user", "content": prompt}]}
                 )
+                attempt_since_rebuild += 1
             except Exception as e:
                 print(
                     f"[collect] failed prompt={prompt_id} attempt={attempt_id}: {e}"
@@ -152,7 +165,11 @@ async def build_agent(
     from prompts import MainAgentPrompt
     from tools.SubAgentTool import init_subagents
 
-    subagents = list(await init_subagents())
+    async with _subagent_lock:
+        global _cached_subagents
+        if _cached_subagents is None:
+            _cached_subagents = list(await init_subagents())
+    subagents = _cached_subagents
 
     chat = ChatOpenAI(
         base_url=base_url,
@@ -198,6 +215,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_retries", type=int, default=3)
     parser.add_argument("--backoff_factor", type=float, default=2.0)
     parser.add_argument("--initial_delay", type=float, default=1.0)
+    parser.add_argument(
+        "--rebuild_agent_every",
+        type=int,
+        default=50,
+        help="Rebuild deep agent every N attempts. <=0 means never rebuild.",
+    )
     return parser.parse_args()
 
 
@@ -226,6 +249,7 @@ async def async_main() -> None:
         prompts=prompts,
         output_path=args.output_path,
         samples_per_prompt=args.samples_per_prompt,
+        rebuild_agent_every=args.rebuild_agent_every,
     )
 
 
