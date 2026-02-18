@@ -1,63 +1,63 @@
 import argparse
+import asyncio
 import json
 import os
 import re
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from deepagents import create_deep_agent
+from langchain.agents.middleware import ToolRetryMiddleware
+from langchain_openai import ChatOpenAI
+
 
 @dataclass
-class ChatClient:
+class DeepAgentClient:
     base_url: str
     model: str
     api_key: str
-    timeout: int = 120
+    max_retries: int
+    backoff_factor: float
+    initial_delay: float
+    temperature: float
+    max_tokens: int
 
-    def chat(
+    async def chat(
         self,
-        messages: List[Dict[str, str]],
-        temperature: float = 0.7,
-        max_tokens: int = 1024,
+        system_prompt: str,
+        user_content: str,
     ) -> str:
-        url = self.base_url.rstrip("/") + "/chat/completions"
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-            method="POST",
+        chat = ChatOpenAI(
+            base_url=self.base_url,
+            model=self.model,
+            api_key=self.api_key,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+        )
+        agent = create_deep_agent(
+            model=chat,
+            tools=[],
+            system_prompt=system_prompt,
+            middleware=[
+                ToolRetryMiddleware(
+                    max_retries=self.max_retries,
+                    backoff_factor=self.backoff_factor,
+                    initial_delay=self.initial_delay,
+                )
+            ],
+        )
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": user_content}]}
         )
 
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                body = resp.read().decode("utf-8")
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(f"HTTPError {e.code}: {detail}") from e
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"Request failed: {e}") from e
-
-        data = json.loads(body)
-        choices = data.get("choices", [])
-        if not choices:
-            raise RuntimeError(f"No choices returned: {data}")
-
-        content = choices[0].get("message", {}).get("content")
-        if not isinstance(content, str):
-            raise RuntimeError(f"Invalid content in response: {data}")
-        return content.strip()
+        for msg in reversed(result.get("messages", [])):
+            cls_name = msg.__class__.__name__
+            if cls_name == "AIMessage":
+                return str(msg.content).strip()
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                return str(msg.get("content", "")).strip()
+        raise RuntimeError("No assistant response in deepagent result")
 
 
 def ensure_dir(path: str) -> None:
@@ -96,7 +96,7 @@ def extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
 
 def build_summary_prompt(
     top: List[Dict[str, Any]], bottom: List[Dict[str, Any]]
-) -> List[Dict[str, str]]:
+) -> Dict[str, str]:
     system = (
         "你是经验提炼器。基于高分/低分样本，提炼可执行策略。"
         "仅返回严格 JSON，不要额外文本。"
@@ -114,10 +114,7 @@ def build_summary_prompt(
             "one_paragraph_summary": "string",
         },
     }
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-    ]
+    return {"system": system, "user": json.dumps(payload, ensure_ascii=False)}
 
 
 def pick_top_bottom(
@@ -135,13 +132,11 @@ def pick_top_bottom(
     return top, bottom
 
 
-def summarize_experience(
-    client: ChatClient,
+async def summarize_experience(
+    client: DeepAgentClient,
     score_path: str,
     memory_json_path: str,
     memory_md_path: str,
-    temperature: float,
-    max_tokens: int,
     top_k: int,
     bottom_k: int,
 ) -> None:
@@ -150,11 +145,9 @@ def summarize_experience(
         raise RuntimeError("No score data found. Run score step first.")
 
     top, bottom = pick_top_bottom(scores, top_k=top_k, bottom_k=bottom_k)
-    raw = client.chat(
-        build_summary_prompt(top=top, bottom=bottom),
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
+    prompt = build_summary_prompt(top=top, bottom=bottom)
+    raw = await client.chat(prompt["system"], prompt["user"])
+
     parsed = extract_first_json_object(raw)
     if parsed is None:
         parsed = {
@@ -173,7 +166,7 @@ def summarize_experience(
             "top_k": top_k,
             "bottom_k": bottom_k,
             "source_score_file": score_path,
-            "method": "training_free_grpo",
+            "method": "training_free_grpo_deep_agent",
         },
         "experience": parsed,
     }
@@ -237,14 +230,17 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="output/training_free_grpo/external_memory.md",
     )
-    parser.add_argument("--temperature", type=float, default=0.2)
-    parser.add_argument("--max_tokens", type=int, default=1024)
     parser.add_argument("--top_k", type=int, default=10)
     parser.add_argument("--bottom_k", type=int, default=10)
+    parser.add_argument("--max_retries", type=int, default=3)
+    parser.add_argument("--backoff_factor", type=float, default=2.0)
+    parser.add_argument("--initial_delay", type=float, default=1.0)
+    parser.add_argument("--temperature", type=float, default=0.2)
+    parser.add_argument("--max_tokens", type=int, default=1024)
     return parser.parse_args()
 
 
-def main() -> None:
+async def async_main() -> None:
     args = parse_args()
     json_output_dir = os.path.dirname(args.memory_json_path)
     md_output_dir = os.path.dirname(args.memory_md_path)
@@ -253,21 +249,28 @@ def main() -> None:
     if md_output_dir:
         ensure_dir(md_output_dir)
 
-    client = ChatClient(
+    client = DeepAgentClient(
         base_url=args.base_url,
         model=args.model,
         api_key=args.api_key,
+        max_retries=args.max_retries,
+        backoff_factor=args.backoff_factor,
+        initial_delay=args.initial_delay,
+        temperature=args.temperature,
+        max_tokens=args.max_tokens,
     )
-    summarize_experience(
+    await summarize_experience(
         client=client,
         score_path=args.score_path,
         memory_json_path=args.memory_json_path,
         memory_md_path=args.memory_md_path,
-        temperature=args.temperature,
-        max_tokens=args.max_tokens,
         top_k=args.top_k,
         bottom_k=args.bottom_k,
     )
+
+
+def main() -> None:
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":

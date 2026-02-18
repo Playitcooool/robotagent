@@ -1,63 +1,63 @@
 import argparse
+import asyncio
 import json
 import os
 import re
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from deepagents import create_deep_agent
+from langchain.agents.middleware import ToolRetryMiddleware
+from langchain_openai import ChatOpenAI
+
 
 @dataclass
-class ChatClient:
+class DeepAgentClient:
     base_url: str
     model: str
     api_key: str
-    timeout: int = 120
+    max_retries: int
+    backoff_factor: float
+    initial_delay: float
+    temperature: float
+    max_tokens: int
 
-    def chat(
+    async def chat(
         self,
-        messages: List[Dict[str, str]],
-        temperature: float = 0.7,
-        max_tokens: int = 1024,
+        system_prompt: str,
+        user_content: str,
     ) -> str:
-        url = self.base_url.rstrip("/") + "/chat/completions"
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-            method="POST",
+        chat = ChatOpenAI(
+            base_url=self.base_url,
+            model=self.model,
+            api_key=self.api_key,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+        )
+        agent = create_deep_agent(
+            model=chat,
+            tools=[],
+            system_prompt=system_prompt,
+            middleware=[
+                ToolRetryMiddleware(
+                    max_retries=self.max_retries,
+                    backoff_factor=self.backoff_factor,
+                    initial_delay=self.initial_delay,
+                )
+            ],
+        )
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": user_content}]}
         )
 
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                body = resp.read().decode("utf-8")
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(f"HTTPError {e.code}: {detail}") from e
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"Request failed: {e}") from e
-
-        data = json.loads(body)
-        choices = data.get("choices", [])
-        if not choices:
-            raise RuntimeError(f"No choices returned: {data}")
-
-        content = choices[0].get("message", {}).get("content")
-        if not isinstance(content, str):
-            raise RuntimeError(f"Invalid content in response: {data}")
-        return content.strip()
+        for msg in reversed(result.get("messages", [])):
+            cls_name = msg.__class__.__name__
+            if cls_name == "AIMessage":
+                return str(msg.content).strip()
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                return str(msg.get("content", "")).strip()
+        raise RuntimeError("No assistant response in deepagent result")
 
 
 def ensure_dir(path: str) -> None:
@@ -99,7 +99,7 @@ def extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def build_score_prompt(traj: Dict[str, Any]) -> List[Dict[str, str]]:
+def build_score_prompt(traj: Dict[str, Any]) -> Dict[str, str]:
     rubric = (
         "你是严格评审。请根据任务完成度、正确性、清晰度、鲁棒性、冗余度对轨迹评分。"
         "返回严格 JSON，不要额外文本。"
@@ -119,18 +119,13 @@ def build_score_prompt(traj: Dict[str, Any]) -> List[Dict[str, str]]:
             "brief_reason": "string",
         },
     }
-    return [
-        {"role": "system", "content": rubric},
-        {"role": "user", "content": json.dumps(user_content, ensure_ascii=False)},
-    ]
+    return {"system": rubric, "user": json.dumps(user_content, ensure_ascii=False)}
 
 
-def score_trajectories(
-    client: ChatClient,
+async def score_trajectories(
+    client: DeepAgentClient,
     trajectory_path: str,
     score_path: str,
-    temperature: float,
-    max_tokens: int,
 ) -> None:
     trajectories = load_jsonl(trajectory_path)
     existing = load_jsonl(score_path)
@@ -141,9 +136,8 @@ def score_trajectories(
         if key in done_keys:
             continue
 
-        raw = client.chat(
-            build_score_prompt(traj), temperature=temperature, max_tokens=max_tokens
-        )
+        prompt = build_score_prompt(traj)
+        raw = await client.chat(prompt["system"], prompt["user"])
         parsed = extract_first_json_object(raw)
         if parsed is None:
             parsed = {
@@ -166,8 +160,9 @@ def score_trajectories(
             "score": parsed,
             "meta": {
                 "model": client.model,
-                "judge_temperature": temperature,
                 "created_at": int(time.time()),
+                "method": "deep_agent",
+                "judge_temperature": client.temperature,
             },
         }
         append_jsonl(score_path, record)
@@ -193,29 +188,39 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="output/training_free_grpo/trajectory_scores.jsonl",
     )
+    parser.add_argument("--max_retries", type=int, default=3)
+    parser.add_argument("--backoff_factor", type=float, default=2.0)
+    parser.add_argument("--initial_delay", type=float, default=1.0)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max_tokens", type=int, default=1024)
     return parser.parse_args()
 
 
-def main() -> None:
+async def async_main() -> None:
     args = parse_args()
     output_dir = os.path.dirname(args.score_path)
     if output_dir:
         ensure_dir(output_dir)
 
-    client = ChatClient(
+    client = DeepAgentClient(
         base_url=args.base_url,
         model=args.model,
         api_key=args.api_key,
-    )
-    score_trajectories(
-        client=client,
-        trajectory_path=args.trajectory_path,
-        score_path=args.score_path,
+        max_retries=args.max_retries,
+        backoff_factor=args.backoff_factor,
+        initial_delay=args.initial_delay,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
     )
+    await score_trajectories(
+        client=client,
+        trajectory_path=args.trajectory_path,
+        score_path=args.score_path,
+    )
+
+
+def main() -> None:
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":
