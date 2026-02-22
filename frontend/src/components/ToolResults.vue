@@ -2,6 +2,27 @@
   <div class="tool-results">
     <div class="header">工具结果</div>
     <div class="body">
+        <div v-if="hasUsage" class="usage-wrap">
+          <div class="usage-head">
+            <h4>Token 用量</h4>
+            <span class="usage-time">{{ usageTime }}</span>
+          </div>
+          <div class="usage-grid">
+            <div class="usage-cell">
+              <span class="k">Prompt</span>
+              <strong class="v">{{ tokenUsage.prompt_tokens }}</strong>
+            </div>
+            <div class="usage-cell">
+              <span class="k">Completion</span>
+              <strong class="v">{{ tokenUsage.completion_tokens }}</strong>
+            </div>
+            <div class="usage-cell total">
+              <span class="k">Total</span>
+              <strong class="v">{{ tokenUsage.total_tokens }}</strong>
+            </div>
+          </div>
+        </div>
+
         <div v-if="planningSteps.length" class="plan-wrap">
           <div class="plan-head">
             <h4>执行计划</h4>
@@ -88,7 +109,8 @@ export default {
     result: { type: [Object, String, null], default: null },
     liveFrame: { type: [Object, null], default: null },
     planning: { type: [Object, null], default: null },
-    timeline: { type: [Object, null], default: null }
+    timeline: { type: [Object, null], default: null },
+    tokenUsage: { type: [Object, null], default: null }
   },
   computed: {
     planningSteps () {
@@ -99,6 +121,15 @@ export default {
       const items = this.timeline?.items
       if (!Array.isArray(items)) return []
       return [...items].reverse()
+    },
+    hasUsage () {
+      return Number(this.tokenUsage?.total_tokens || 0) > 0
+    },
+    usageTime () {
+      const ts = Number(this.tokenUsage?.updatedAt || 0)
+      const ms = ts * 1000
+      if (!Number.isFinite(ms) || ms <= 0) return ''
+      return new Date(ms).toLocaleTimeString()
     }
   },
   methods: {
@@ -142,6 +173,61 @@ export default {
   flex-wrap: wrap;
   font-size: 12px;
   opacity: 0.8;
+}
+
+.usage-wrap {
+  margin-bottom: 12px;
+  border: 1px solid rgba(12, 105, 89, 0.2);
+  border-radius: 10px;
+  background: linear-gradient(180deg, #f2fbf7, #e9f8f2);
+  padding: 10px;
+}
+
+.usage-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+.usage-head h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.usage-time {
+  font-size: 11px;
+  color: #5b6974;
+}
+
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.usage-cell {
+  border: 1px solid rgba(31, 42, 51, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.75);
+  padding: 8px;
+}
+
+.usage-cell .k {
+  display: block;
+  font-size: 11px;
+  color: #65717a;
+}
+
+.usage-cell .v {
+  display: block;
+  margin-top: 3px;
+  font-size: 16px;
+}
+
+.usage-cell.total {
+  border-color: rgba(12, 105, 89, 0.25);
+  background: rgba(222, 245, 236, 0.9);
 }
 
 .plan-wrap {

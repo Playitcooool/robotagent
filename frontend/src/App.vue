@@ -38,6 +38,7 @@
           :liveFrame="liveFrame"
           :planning="planningState"
           :timeline="timelineState"
+          :tokenUsage="tokenUsageState"
         />
       </aside>
     </div>
@@ -70,6 +71,7 @@ export default {
     const liveFrame = ref(null)
     const planningState = ref({ steps: [], updatedAt: 0 })
     const timelineState = ref({ items: [], updatedAt: 0 })
+    const tokenUsageState = ref({ prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, updatedAt: 0 })
     let liveFrameSource = null
     let liveFramePollStart = 0
 
@@ -140,6 +142,7 @@ export default {
       liveFrame.value = null
       planningState.value = { steps: [], updatedAt: 0 }
       timelineState.value = { items: [], updatedAt: 0 }
+      tokenUsageState.value = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, updatedAt: 0 }
       stopLiveFrameStream()
     }
 
@@ -198,6 +201,7 @@ export default {
       toolResult.value = null
       planningState.value = { steps: [], updatedAt: 0 }
       timelineState.value = { items: [], updatedAt: 0 }
+      tokenUsageState.value = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, updatedAt: 0 }
     }
 
     async function onSendMessage (text) {
@@ -206,6 +210,7 @@ export default {
       liveFrame.value = null
       planningState.value = { steps: [], updatedAt: 0 }
       timelineState.value = { items: [], updatedAt: 0 }
+      tokenUsageState.value = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, updatedAt: 0 }
       startLiveFrameStream()
       const userMsg = { id: Date.now(), role: 'user', text }
       conversation.value.push(userMsg)
@@ -374,6 +379,14 @@ export default {
                 items: merged,
                 updatedAt: next.timestamp
               }
+            } else if (obj.type === 'usage') {
+              const usage = obj.usage || {}
+              tokenUsageState.value = {
+                prompt_tokens: Number(usage.prompt_tokens || 0),
+                completion_tokens: Number(usage.completion_tokens || 0),
+                total_tokens: Number(usage.total_tokens || 0),
+                updatedAt: Number(obj.updated_at || Date.now() / 1000)
+              }
             } else if (obj.type === 'done') {
               const idxDone = conversation.value.findIndex(m => m.id === assistantId)
               if (idxDone !== -1) {
@@ -433,6 +446,7 @@ export default {
       liveFrame,
       planningState,
       timelineState,
+      tokenUsageState,
       currentSessionId,
       sidebarReloadToken,
       onAuthed,

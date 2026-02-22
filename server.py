@@ -414,6 +414,106 @@ def _truncate_text(text: str, max_len: int = 200) -> str:
     return raw[: max_len - 3] + "..."
 
 
+def _safe_int(value) -> int:
+    try:
+        if value is None:
+            return 0
+        return int(value)
+    except Exception:
+        return 0
+
+
+def _normalize_usage_payload(raw_usage) -> dict[str, int]:
+    if not isinstance(raw_usage, dict):
+        return {}
+
+    prompt_tokens = _safe_int(
+        raw_usage.get("prompt_tokens")
+        or raw_usage.get("input_tokens")
+        or raw_usage.get("prompt_token_count")
+    )
+    completion_tokens = _safe_int(
+        raw_usage.get("completion_tokens")
+        or raw_usage.get("output_tokens")
+        or raw_usage.get("completion_token_count")
+    )
+    total_tokens = _safe_int(raw_usage.get("total_tokens"))
+    if total_tokens <= 0:
+        total_tokens = prompt_tokens + completion_tokens
+
+    if prompt_tokens <= 0 and completion_tokens <= 0 and total_tokens <= 0:
+        return {}
+
+    return {
+        "prompt_tokens": max(prompt_tokens, 0),
+        "completion_tokens": max(completion_tokens, 0),
+        "total_tokens": max(total_tokens, 0),
+    }
+
+
+def _extract_message_token_usage(msg) -> dict[str, int]:
+    usage_candidates = []
+    if isinstance(msg, dict):
+        usage_candidates.append(msg.get("usage_metadata"))
+        usage_candidates.append(msg.get("token_usage"))
+        usage_candidates.append(msg.get("usage"))
+        response_meta = msg.get("response_metadata")
+        if isinstance(response_meta, dict):
+            usage_candidates.append(response_meta.get("token_usage"))
+            usage_candidates.append(response_meta.get("usage"))
+            usage_candidates.append(response_meta.get("usage_metadata"))
+    else:
+        usage_candidates.append(getattr(msg, "usage_metadata", None))
+        usage_candidates.append(getattr(msg, "token_usage", None))
+        response_meta = getattr(msg, "response_metadata", None)
+        if isinstance(response_meta, dict):
+            usage_candidates.append(response_meta.get("token_usage"))
+            usage_candidates.append(response_meta.get("usage"))
+            usage_candidates.append(response_meta.get("usage_metadata"))
+
+    for raw in usage_candidates:
+        normalized = _normalize_usage_payload(raw)
+        if normalized:
+            return normalized
+    return {}
+
+
+def _extract_message_id(msg) -> str:
+    if isinstance(msg, dict):
+        msg_id = msg.get("id")
+        msg_type = msg.get("type") or msg.get("role")
+        content = _normalize_text(msg.get("content") or msg.get("text"))
+    else:
+        msg_id = getattr(msg, "id", None)
+        msg_type = msg.__class__.__name__
+        content = _normalize_text(
+            getattr(msg, "content", None) or getattr(msg, "text", None)
+        )
+
+    if msg_id is not None and str(msg_id).strip():
+        return str(msg_id).strip()
+
+    fingerprint = f"{msg_type}:{content[:120]}"
+    return hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()
+
+
+def _sum_usage_map(usage_by_message: dict[str, dict[str, int]]) -> dict[str, int]:
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+    for usage in usage_by_message.values():
+        prompt_tokens += _safe_int(usage.get("prompt_tokens"))
+        completion_tokens += _safe_int(usage.get("completion_tokens"))
+        total_tokens += _safe_int(usage.get("total_tokens"))
+    if total_tokens <= 0:
+        total_tokens = prompt_tokens + completion_tokens
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
 # ========== 10. 接口定义 ==========
 @app.get("/api/ping")
 async def ping():
@@ -726,6 +826,8 @@ async def chat_send(
         assistant_latest_text = ""
         last_planning_signature = ""
         last_timeline_signature = ""
+        usage_by_message: dict[str, dict[str, int]] = {}
+        last_usage_signature = ""
         try:
             # 调用全局active_agent的流式接口，传递配置包含thread_id
             async for event in active_agent.astream(
@@ -733,6 +835,58 @@ async def chat_send(
                 stream_mode="values",
                 config={"configurable": {"thread_id": f"{user_id}:{session_id}"}},
             ):
+                messages = event.get("messages") if isinstance(event, dict) else None
+                if isinstance(messages, list):
+                    for message in messages:
+                        role_name = _normalize_message_role(message)
+                        if role_name not in {"assistant", "ai"}:
+                            continue
+                        usage = _extract_message_token_usage(message)
+                        if not usage:
+                            continue
+                        msg_id = _extract_message_id(message)
+                        prev = usage_by_message.get(msg_id) or {
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "total_tokens": 0,
+                        }
+                        merged = {
+                            "prompt_tokens": max(
+                                _safe_int(prev.get("prompt_tokens")),
+                                _safe_int(usage.get("prompt_tokens")),
+                            ),
+                            "completion_tokens": max(
+                                _safe_int(prev.get("completion_tokens")),
+                                _safe_int(usage.get("completion_tokens")),
+                            ),
+                            "total_tokens": max(
+                                _safe_int(prev.get("total_tokens")),
+                                _safe_int(usage.get("total_tokens")),
+                            ),
+                        }
+                        if merged["total_tokens"] <= 0:
+                            merged["total_tokens"] = (
+                                merged["prompt_tokens"] + merged["completion_tokens"]
+                            )
+                        usage_by_message[msg_id] = merged
+
+                    usage_summary = _sum_usage_map(usage_by_message)
+                    usage_signature = json.dumps(
+                        usage_summary, ensure_ascii=False, sort_keys=True
+                    )
+                    if usage_signature != last_usage_signature and usage_summary.get(
+                        "total_tokens", 0
+                    ) > 0:
+                        last_usage_signature = usage_signature
+                        yield json.dumps(
+                            {
+                                "type": "usage",
+                                "usage": usage_summary,
+                                "updated_at": time.time(),
+                            },
+                            ensure_ascii=False,
+                        ) + "\n"
+
                 try:
                     last = event["messages"][-1]
                     print(last)
