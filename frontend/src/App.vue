@@ -33,7 +33,12 @@
       </main>
 
       <aside class="right">
-        <ToolResults :result="toolResult" :liveFrame="liveFrame" />
+        <ToolResults
+          :result="toolResult"
+          :liveFrame="liveFrame"
+          :planning="planningState"
+          :timeline="timelineState"
+        />
       </aside>
     </div>
   </div>
@@ -63,6 +68,8 @@ export default {
     const assistantStreams = {}
     const toolResult = ref(null)
     const liveFrame = ref(null)
+    const planningState = ref({ steps: [], updatedAt: 0 })
+    const timelineState = ref({ items: [], updatedAt: 0 })
     let liveFrameSource = null
     let liveFramePollStart = 0
 
@@ -131,6 +138,8 @@ export default {
       conversation.value = [{ id: Date.now(), role: 'assistant', text: WELCOME_TEXT }]
       toolResult.value = null
       liveFrame.value = null
+      planningState.value = { steps: [], updatedAt: 0 }
+      timelineState.value = { items: [], updatedAt: 0 }
       stopLiveFrameStream()
     }
 
@@ -187,12 +196,16 @@ export default {
         conversation.value = [{ id: Date.now(), role: 'assistant', text: WELCOME_TEXT }]
       }
       toolResult.value = null
+      planningState.value = { steps: [], updatedAt: 0 }
+      timelineState.value = { items: [], updatedAt: 0 }
     }
 
     async function onSendMessage (text) {
       if (!authUser.value) return
 
       liveFrame.value = null
+      planningState.value = { steps: [], updatedAt: 0 }
+      timelineState.value = { items: [], updatedAt: 0 }
       startLiveFrameStream()
       const userMsg = { id: Date.now(), role: 'user', text }
       conversation.value.push(userMsg)
@@ -324,6 +337,43 @@ export default {
               }
             } else if (obj.type === 'tool') {
               toolResult.value = obj.result ?? obj.data ?? obj.payload ?? null
+            } else if (obj.type === 'planning') {
+              const incoming = Array.isArray(obj.plan) ? obj.plan : []
+              const normalized = incoming
+                .map((item, idx) => {
+                  const statusRaw = String(item?.status || '').toLowerCase()
+                  let status = 'pending'
+                  if (statusRaw === 'in_progress') status = 'in_progress'
+                  if (statusRaw === 'completed') status = 'completed'
+                  const stepText = String(item?.step || item?.content || '').trim()
+                  if (!stepText) return null
+                  return {
+                    id: String(item?.id || idx + 1),
+                    step: stepText,
+                    status
+                  }
+                })
+                .filter(Boolean)
+
+              planningState.value = {
+                steps: normalized,
+                updatedAt: Number(obj.updated_at || Date.now() / 1000)
+              }
+            } else if (obj.type === 'timeline') {
+              const item = obj.item || {}
+              const next = {
+                kind: String(item.kind || 'event'),
+                title: String(item.title || 'event'),
+                detail: String(item.detail || ''),
+                timestamp: Number(obj.updated_at || Date.now() / 1000)
+              }
+              const prevItems = Array.isArray(timelineState.value.items) ? timelineState.value.items : []
+              const merged = [...prevItems, next]
+              if (merged.length > 80) merged.splice(0, merged.length - 80)
+              timelineState.value = {
+                items: merged,
+                updatedAt: next.timestamp
+              }
             } else if (obj.type === 'done') {
               const idxDone = conversation.value.findIndex(m => m.id === assistantId)
               if (idxDone !== -1) {
@@ -381,6 +431,8 @@ export default {
       conversation,
       toolResult,
       liveFrame,
+      planningState,
+      timelineState,
       currentSessionId,
       sidebarReloadToken,
       onAuthed,

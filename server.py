@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pathlib import Path
 import base64
+import ast
 from deepagents import create_deep_agent
 from tools.SubAgentTool import init_subagents
 import logging
@@ -306,6 +307,111 @@ def _normalize_text(content) -> str:
                     parts.append(text)
         return "".join(parts)
     return str(content)
+
+
+def _normalize_message_role(msg) -> str:
+    role = None
+    if isinstance(msg, dict):
+        role = msg.get("role")
+    else:
+        role = getattr(msg, "role", None)
+
+    if isinstance(role, str):
+        lowered = role.lower()
+        if lowered in {"assistant", "ai"}:
+            return "assistant"
+        if lowered in {"user", "human"}:
+            return "user"
+        if lowered in {"tool", "function"}:
+            return "tool"
+        return lowered
+
+    cls_name = msg.__class__.__name__
+    if cls_name == "AIMessage":
+        return "assistant"
+    if cls_name == "HumanMessage":
+        return "user"
+    if cls_name == "ToolMessage":
+        return "tool"
+    return "unknown"
+
+
+def _extract_message_name(msg) -> str:
+    if isinstance(msg, dict):
+        name = msg.get("name")
+    else:
+        name = getattr(msg, "name", None)
+    return str(name or "").strip().lower()
+
+
+def _normalize_todo_status(raw_status: str) -> str:
+    s = (raw_status or "").strip().lower()
+    if s in {"completed", "done", "finished", "success"}:
+        return "completed"
+    if s in {"in_progress", "in progress", "running", "active", "doing"}:
+        return "in_progress"
+    return "pending"
+
+
+def _extract_todo_list_from_text(text: str):
+    if not text:
+        return []
+
+    candidates = []
+    bracket_match = re.search(r"\[[\s\S]*\]", text)
+    if bracket_match:
+        candidates.append(bracket_match.group(0))
+    candidates.append(text)
+
+    for raw in candidates:
+        candidate = (raw or "").strip()
+        if not candidate:
+            continue
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                parsed = parser(candidate)
+                if isinstance(parsed, list):
+                    return parsed
+            except Exception:
+                continue
+    return []
+
+
+def _extract_planning_steps_from_write_todos(content):
+    text = _normalize_text(content).strip()
+    todo_items = _extract_todo_list_from_text(text)
+    if not isinstance(todo_items, list) or not todo_items:
+        return []
+
+    steps = []
+    for idx, item in enumerate(todo_items, start=1):
+        if not isinstance(item, dict):
+            continue
+        step_text = (
+            item.get("content")
+            or item.get("step")
+            or item.get("title")
+            or item.get("task")
+            or ""
+        )
+        step_text = str(step_text).strip()
+        if not step_text:
+            continue
+        steps.append(
+            {
+                "id": str(item.get("id") or idx),
+                "step": step_text,
+                "status": _normalize_todo_status(str(item.get("status") or "")),
+            }
+        )
+    return steps
+
+
+def _truncate_text(text: str, max_len: int = 200) -> str:
+    raw = (text or "").strip()
+    if len(raw) <= max_len:
+        return raw
+    return raw[: max_len - 3] + "..."
 
 
 # ========== 10. 接口定义 ==========
@@ -618,6 +724,8 @@ async def chat_send(
 
     async def event_stream():
         assistant_latest_text = ""
+        last_planning_signature = ""
+        last_timeline_signature = ""
         try:
             # 调用全局active_agent的流式接口，传递配置包含thread_id
             async for event in active_agent.astream(
@@ -634,6 +742,8 @@ async def chat_send(
                 if last is None:
                     continue
 
+                role = _normalize_message_role(last)
+                name = _extract_message_name(last)
                 content = None
                 if isinstance(last, dict):
                     content = last.get("content") or last.get("text")
@@ -642,7 +752,43 @@ async def chat_send(
                         last, "text", None
                     )
 
-                if content is not None:
+                if role == "tool" and name == "write_todos":
+                    planning_steps = _extract_planning_steps_from_write_todos(content)
+                    if planning_steps:
+                        signature = json.dumps(
+                            planning_steps, ensure_ascii=False, sort_keys=True
+                        )
+                        if signature != last_planning_signature:
+                            last_planning_signature = signature
+                            planning_payload = {
+                                "type": "planning",
+                                "plan": planning_steps,
+                                "updated_at": time.time(),
+                            }
+                            yield json.dumps(planning_payload, ensure_ascii=False) + "\n"
+
+                if role == "tool":
+                    tool_text = _normalize_text(content)
+                    timeline_item = {
+                        "kind": "tool",
+                        "title": name or "tool",
+                        "detail": _truncate_text(tool_text, max_len=220),
+                    }
+                    timeline_signature = json.dumps(
+                        timeline_item, ensure_ascii=False, sort_keys=True
+                    )
+                    if timeline_signature != last_timeline_signature:
+                        last_timeline_signature = timeline_signature
+                        yield json.dumps(
+                            {
+                                "type": "timeline",
+                                "item": timeline_item,
+                                "updated_at": time.time(),
+                            },
+                            ensure_ascii=False,
+                        ) + "\n"
+
+                if role == "assistant" and content is not None:
                     text = _normalize_text(content)
                     assistant_latest_text = text
                     payload = {"type": "delta", "text": text}
