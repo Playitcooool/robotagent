@@ -176,16 +176,15 @@ export default {
   gap: 8px;
   flex-wrap: wrap;
   font-size: 12px;
-  opacity: 0.8;
+  color: #9aa4b2;
 }
 
 .usage-wrap {
   margin-bottom: 12px;
-  border: 1px solid rgba(16, 125, 106, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
-  background: linear-gradient(180deg, rgba(236, 250, 246, 0.9), rgba(226, 244, 238, 0.9));
+  background: #101521;
   padding: 10px;
-  box-shadow: 0 10px 18px rgba(16, 125, 106, 0.08);
 }
 
 .usage-head {
@@ -202,7 +201,7 @@ export default {
 
 .usage-time {
   font-size: 11px;
-  color: #5b6974;
+  color: #9aa4b2;
 }
 
 .usage-grid {
@@ -212,16 +211,16 @@ export default {
 }
 
 .usage-cell {
-  border: 1px solid rgba(31, 42, 51, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.85);
+  background: #0f131b;
   padding: 8px;
 }
 
 .usage-cell .k {
   display: block;
   font-size: 11px;
-  color: #65717a;
+  color: #9aa4b2;
 }
 
 .usage-cell .v {
@@ -231,15 +230,15 @@ export default {
 }
 
 .usage-cell.total {
-  border-color: rgba(16, 125, 106, 0.4);
-  background: rgba(209, 241, 232, 0.95);
+  border-color: rgba(47, 125, 255, 0.4);
+  background: #122033;
 }
 
 .plan-wrap {
   margin-bottom: 12px;
-  border: 1px solid rgba(16, 125, 106, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(239, 248, 245, 0.9));
+  background: #101521;
   padding: 10px;
 }
 
@@ -269,22 +268,15 @@ export default {
 }
 
 .plan-item {
-  border: 1px solid rgba(31, 42, 51, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
   padding: 8px;
-  background: rgba(255, 255, 255, 0.85);
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-
-.plan-item:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 10px 18px rgba(44, 95, 115, 0.08);
+  background: #0f131b;
 }
 
 .plan-item.active {
-  border-color: rgba(208, 135, 0, 0.6);
-  background: linear-gradient(180deg, rgba(255, 247, 233, 0.95), rgba(255, 239, 219, 0.95));
-  box-shadow: inset 0 0 0 1px rgba(208, 135, 0, 0.18);
+  border-color: rgba(47, 125, 255, 0.5);
+  background: #122033;
 }
 
 .plan-item-top {
@@ -301,8 +293,8 @@ export default {
   place-items: center;
   font-size: 11px;
   font-weight: 700;
-  background: rgba(16, 125, 106, 0.12);
-  color: #0c6f5d;
+  background: rgba(47, 125, 255, 0.18);
+  color: #9fc1ff;
   flex: 0 0 18px;
 }
 
@@ -322,25 +314,25 @@ export default {
 }
 
 .status-pending {
-  color: #6f7882;
-  background: rgba(111, 120, 130, 0.15);
+  color: #9aa4b2;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .status-in_progress {
-  color: #8a5a05;
-  background: rgba(208, 135, 0, 0.2);
+  color: #9fc1ff;
+  background: rgba(47, 125, 255, 0.2);
 }
 
 .status-completed {
-  color: #0c6f5d;
-  background: rgba(13, 122, 102, 0.18);
+  color: #a5f3c7;
+  background: rgba(32, 196, 120, 0.2);
 }
 
 .timeline-wrap {
   margin-bottom: 12px;
-  border: 1px solid rgba(31, 42, 51, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.86);
+  background: #101521;
   padding: 10px;
 }
 
@@ -381,15 +373,15 @@ export default {
   height: 8px;
   margin-top: 6px;
   border-radius: 50%;
-  background: #0d7a66;
-  box-shadow: 0 0 0 3px rgba(13, 122, 102, 0.12);
+  background: #2f7dff;
+  box-shadow: 0 0 0 3px rgba(47, 125, 255, 0.18);
 }
 
 .timeline-content {
-  border: 1px solid rgba(31, 42, 51, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
   padding: 7px 8px;
-  background: rgba(255, 255, 255, 0.92);
+  background: #0f131b;
 }
 
 .timeline-top {
@@ -405,7 +397,7 @@ export default {
 
 .timeline-time {
   font-size: 11px;
-  color: #6f7882;
+  color: #9aa4b2;
   flex: 0 0 auto;
 }
 
