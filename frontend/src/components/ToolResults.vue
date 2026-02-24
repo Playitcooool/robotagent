@@ -181,10 +181,11 @@ export default {
 
 .usage-wrap {
   margin-bottom: 12px;
-  border: 1px solid rgba(12, 105, 89, 0.2);
-  border-radius: 10px;
-  background: linear-gradient(180deg, #f2fbf7, #e9f8f2);
+  border: 1px solid rgba(16, 125, 106, 0.22);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(236, 250, 246, 0.9), rgba(226, 244, 238, 0.9));
   padding: 10px;
+  box-shadow: 0 10px 18px rgba(16, 125, 106, 0.08);
 }
 
 .usage-head {
@@ -212,8 +213,8 @@ export default {
 
 .usage-cell {
   border: 1px solid rgba(31, 42, 51, 0.1);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.75);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.85);
   padding: 8px;
 }
 
@@ -230,15 +231,15 @@ export default {
 }
 
 .usage-cell.total {
-  border-color: rgba(12, 105, 89, 0.25);
-  background: rgba(222, 245, 236, 0.9);
+  border-color: rgba(16, 125, 106, 0.4);
+  background: rgba(209, 241, 232, 0.95);
 }
 
 .plan-wrap {
   margin-bottom: 12px;
-  border: 1px solid rgba(13, 122, 102, 0.16);
-  border-radius: 10px;
-  background: linear-gradient(180deg, #fbfffd, #f3fbf8);
+  border: 1px solid rgba(16, 125, 106, 0.18);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(239, 248, 245, 0.9));
   padding: 10px;
 }
 
@@ -269,15 +270,21 @@ export default {
 
 .plan-item {
   border: 1px solid rgba(31, 42, 51, 0.1);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 8px;
-  background: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.85);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.plan-item:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 18px rgba(44, 95, 115, 0.08);
 }
 
 .plan-item.active {
-  border-color: rgba(224, 156, 9, 0.5);
-  background: linear-gradient(180deg, #fff7e9, #fff1d9);
-  box-shadow: inset 0 0 0 1px rgba(224, 156, 9, 0.18);
+  border-color: rgba(208, 135, 0, 0.6);
+  background: linear-gradient(180deg, rgba(255, 247, 233, 0.95), rgba(255, 239, 219, 0.95));
+  box-shadow: inset 0 0 0 1px rgba(208, 135, 0, 0.18);
 }
 
 .plan-item-top {
@@ -294,7 +301,7 @@ export default {
   place-items: center;
   font-size: 11px;
   font-weight: 700;
-  background: rgba(13, 122, 102, 0.12);
+  background: rgba(16, 125, 106, 0.12);
   color: #0c6f5d;
   flex: 0 0 18px;
 }
@@ -321,7 +328,7 @@ export default {
 
 .status-in_progress {
   color: #8a5a05;
-  background: rgba(224, 156, 9, 0.2);
+  background: rgba(208, 135, 0, 0.2);
 }
 
 .status-completed {
@@ -332,8 +339,8 @@ export default {
 .timeline-wrap {
   margin-bottom: 12px;
   border: 1px solid rgba(31, 42, 51, 0.12);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.82);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
   padding: 10px;
 }
 
@@ -380,9 +387,9 @@ export default {
 
 .timeline-content {
   border: 1px solid rgba(31, 42, 51, 0.1);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 7px 8px;
-  background: #fffefc;
+  background: rgba(255, 255, 255, 0.92);
 }
 
 .timeline-top {
