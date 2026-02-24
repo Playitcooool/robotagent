@@ -3,7 +3,7 @@ from fastapi import Request
 from fastapi import Depends, Header, HTTPException, status
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pathlib import Path
 import base64
 import ast
@@ -41,6 +41,11 @@ SIM_STREAM_DIR = Path(
 ).resolve()
 SIM_META_FILE = SIM_STREAM_DIR / "latest.json"
 SIM_FRAME_FILE = SIM_STREAM_DIR / "latest.png"
+_SIM_FRAME_CACHE = {
+    "meta_mtime": 0.0,
+    "frame_mtime": 0.0,
+    "payload": {"status": "idle", "has_frame": False},
+}
 # ========== 1. 日志配置（确保输出到Uvicorn控制台） ==========
 logger = logging.getLogger("uvicorn")
 logger.setLevel(logging.INFO)
@@ -669,10 +674,18 @@ async def get_sessions(
 
     result = []
     user_id = current_user.get("uid", "unknown")
-    for session_id, score in ranked:
+    pipe = chat_redis.pipeline()
+    for session_id, _ in ranked:
         key = _chat_history_key(user_id, session_id)
-        first_raw = await chat_redis.lindex(key, 0)
-        last_raw = await chat_redis.lindex(key, -1)
+        pipe.lindex(key, 0)
+        pipe.lindex(key, -1)
+    raw_items = await pipe.execute()
+
+    idx = 0
+    for session_id, score in ranked:
+        first_raw = raw_items[idx]
+        last_raw = raw_items[idx + 1]
+        idx += 2
         title = ""
         preview = ""
         last_role = "assistant"
@@ -720,22 +733,23 @@ def _load_latest_frame_payload():
         return {"status": "idle", "has_frame": False}
 
     try:
+        meta_mtime = SIM_META_FILE.stat().st_mtime
+        frame_mtime = SIM_FRAME_FILE.stat().st_mtime
+    except Exception:
+        meta_mtime = 0.0
+        frame_mtime = 0.0
+
+    cached = _SIM_FRAME_CACHE
+    if meta_mtime == cached.get("meta_mtime") and frame_mtime == cached.get("frame_mtime"):
+        return cached.get("payload", {"status": "idle", "has_frame": False})
+
+    try:
         with open(SIM_META_FILE, "r", encoding="utf-8") as f:
             meta = json.load(f)
     except Exception as e:
         return {"status": "error", "has_frame": False, "error": f"meta read failed: {e}"}
 
-    try:
-        with open(SIM_FRAME_FILE, "rb") as f:
-            image_b64 = base64.b64encode(f.read()).decode("ascii")
-    except Exception as e:
-        return {
-            "status": "error",
-            "has_frame": False,
-            "error": f"frame read failed: {e}",
-        }
-
-    return {
+    payload = {
         "status": "done" if meta.get("done") else "running",
         "has_frame": True,
         "run_id": meta.get("run_id"),
@@ -744,13 +758,24 @@ def _load_latest_frame_payload():
         "total_steps": meta.get("total_steps"),
         "done": bool(meta.get("done")),
         "timestamp": meta.get("timestamp"),
-        "image_url": f"data:image/png;base64,{image_b64}",
+        "image_url": f"/api/sim/latest.png?ts={meta.get('timestamp')}",
     }
+    _SIM_FRAME_CACHE["meta_mtime"] = meta_mtime
+    _SIM_FRAME_CACHE["frame_mtime"] = frame_mtime
+    _SIM_FRAME_CACHE["payload"] = payload
+    return payload
 
 
 @app.get("/api/sim/latest-frame")
 async def get_latest_sim_frame():
     return _load_latest_frame_payload()
+
+
+@app.get("/api/sim/latest.png")
+async def get_latest_sim_png():
+    if not SIM_FRAME_FILE.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="frame not found")
+    return FileResponse(SIM_FRAME_FILE, media_type="image/png")
 
 
 @app.get("/api/sim/stream")
@@ -760,6 +785,7 @@ async def stream_sim_frames(request: Request, since: float = 0.0):
     async def event_stream():
         last_ts = float(since or 0.0)
         idle_ticks = 0
+        last_emit_ts = 0.0
 
         while True:
             if await request.is_disconnected():
@@ -771,6 +797,7 @@ async def stream_sim_frames(request: Request, since: float = 0.0):
                 if current_ts > last_ts:
                     last_ts = current_ts
                     idle_ticks = 0
+                    last_emit_ts = time.time()
                     yield f"event: frame\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 else:
                     idle_ticks += 1
@@ -782,7 +809,15 @@ async def stream_sim_frames(request: Request, since: float = 0.0):
                 idle_ticks = 0
                 yield "event: ping\ndata: {}\n\n"
 
-            await asyncio.sleep(0.05)
+            now = time.time()
+            is_running = payload.get("status") == "running"
+            if is_running and now - last_emit_ts < 2.0:
+                sleep_s = 0.05
+            elif idle_ticks > 200:
+                sleep_s = 0.5
+            else:
+                sleep_s = 0.2
+            await asyncio.sleep(sleep_s)
 
     return StreamingResponse(
         event_stream(),
@@ -824,6 +859,7 @@ async def chat_send(
 
     async def event_stream():
         assistant_latest_text = ""
+        assistant_sent_text = ""
         last_planning_signature = ""
         last_timeline_signature = ""
         usage_by_message: dict[str, dict[str, int]] = {}
@@ -889,7 +925,6 @@ async def chat_send(
 
                 try:
                     last = event["messages"][-1]
-                    print(last)
                 except Exception:
                     last = None
 
@@ -945,8 +980,14 @@ async def chat_send(
                 if role == "assistant" and content is not None:
                     text = _normalize_text(content)
                     assistant_latest_text = text
-                    payload = {"type": "delta", "text": text}
-                    yield json.dumps(payload, ensure_ascii=False) + "\n"
+                    if text.startswith(assistant_sent_text):
+                        delta = text[len(assistant_sent_text) :]
+                    else:
+                        delta = text
+                    if delta:
+                        assistant_sent_text = text
+                        payload = {"type": "delta", "text": delta}
+                        yield json.dumps(payload, ensure_ascii=False) + "\n"
 
             if assistant_latest_text:
                 await _append_chat_message(

@@ -135,7 +135,11 @@ export default {
   methods: {
     isImage (r) {
       if (!r) return false
-      if (typeof r === 'string') return r.match(/https?:.*\.(png|jpg|jpeg|gif|svg)/i)
+      if (typeof r === 'string') {
+        if (r.startsWith('data:image/')) return true
+        if (r.startsWith('blob:')) return true
+        return r.match(/\.(png|jpg|jpeg|gif|svg)(\?|#|$)/i) || r.startsWith('/api/')
+      }
       if (typeof r === 'object') return r.image || r.image_url || r.url
       return false
     },
