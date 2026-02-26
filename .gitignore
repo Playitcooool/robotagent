@@ -15,3 +15,5 @@ dist
 *.jsonl
 *.png
 *.jpg
+*.md
+*.doc

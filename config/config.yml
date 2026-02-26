@@ -1,10 +1,10 @@
 llm:
-  chat: 'lmstudio-community:qwen3-4b-instruct-2507-mlx'
-  analysis: 'lmstudio-community:qwen3-4b-instruct-2507-mlx'
-  simulation: 'lmstudio-community:qwen3-4b-instruct-2507-mlx'
+  chat: 'gpt-oss-20b-mlx'
+  analysis: 'gpt-oss-20b-mlx'
+  simulation: 'gpt-oss-20b-mlx'
   summary: 'qwen3-1.7b-mlx'
   tool_selector: 'qwen3-0.6b-mlx'
-  judge: 'lmstudio-community:qwen3-4b-instruct-2507-mlx'
+  judge: 'gpt-oss-20b-mlx'
 
 model_url: "http://localhost:1234/v1"
 
