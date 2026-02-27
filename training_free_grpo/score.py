@@ -156,6 +156,7 @@ async def score_trajectories(
             "prompt_id": traj.get("prompt_id"),
             "attempt_id": traj.get("attempt_id"),
             "prompt": traj.get("prompt", ""),
+            "messages": traj.get("messages", []),
             "response": traj.get("response", ""),
             "score": parsed,
             "meta": {

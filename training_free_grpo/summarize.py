@@ -95,14 +95,24 @@ def extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
 
 
 def build_summary_prompt(
-    top: List[Dict[str, Any]], bottom: List[Dict[str, Any]]
+    agent_name: str,
+    top: List[Dict[str, Any]],
+    bottom: List[Dict[str, Any]],
 ) -> Dict[str, str]:
+    agent_focus_map = {
+        "main_agent": "主Agent的任务拆解、路由决策、结果汇总策略",
+        "simulation_agent": "仿真Agent的参数设置、工具调用顺序、状态校验策略",
+        "analysis_agent": "分析Agent的数据清洗、统计解释、可视化与结论表达策略",
+    }
+    focus = agent_focus_map.get(agent_name, "通用智能体策略")
     system = (
         "你是经验提炼器。基于高分/低分样本，提炼可执行策略。"
+        f"本轮必须聚焦：{focus}。"
         "仅返回严格 JSON，不要额外文本。"
     )
     payload = {
         "task": "提炼可迁移经验",
+        "agent_name": agent_name,
         "top_examples": top,
         "bottom_examples": bottom,
         "output_schema": {
@@ -132,6 +142,69 @@ def pick_top_bottom(
     return top, bottom
 
 
+def _contains_any(text: str, terms: List[str]) -> bool:
+    lower = text.lower()
+    return any(t in lower for t in terms)
+
+
+def detect_agent_bucket(score_item: Dict[str, Any]) -> str:
+    messages = score_item.get("messages", [])
+    response = str(score_item.get("response", ""))
+    prompt = str(score_item.get("prompt", ""))
+    whole_text = f"{response}\n{prompt}"
+
+    simulation_terms = [
+        "simulation",
+        "pybullet",
+        "path_planning",
+        "push_cube_step",
+        "grab_and_place",
+        "cleanup_simulation",
+        "simulator",
+    ]
+    analysis_terms = [
+        "analysis",
+        "plot",
+        "histogram",
+        "correlation",
+        "describe_stats",
+        "summarize_csv",
+        "time_series",
+        "统计",
+        "分析",
+        "可视化",
+    ]
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        name = str(msg.get("name", "")).lower()
+        content = str(msg.get("content", "")).lower()
+        merged = f"{name}\n{content}"
+        if _contains_any(merged, simulation_terms):
+            return "simulation_agent"
+        if _contains_any(merged, analysis_terms):
+            return "analysis_agent"
+
+    if _contains_any(whole_text, simulation_terms):
+        return "simulation_agent"
+    if _contains_any(whole_text, analysis_terms):
+        return "analysis_agent"
+    return "main_agent"
+
+
+def split_scores_by_agent(scores: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {
+        "main_agent": [],
+        "simulation_agent": [],
+        "analysis_agent": [],
+    }
+    for item in scores:
+        bucket = detect_agent_bucket(item)
+        grouped[bucket].append(item)
+    return grouped
+
+
 async def summarize_experience(
     client: DeepAgentClient,
     score_path: str,
@@ -144,19 +217,41 @@ async def summarize_experience(
     if not scores:
         raise RuntimeError("No score data found. Run score step first.")
 
-    top, bottom = pick_top_bottom(scores, top_k=top_k, bottom_k=bottom_k)
-    prompt = build_summary_prompt(top=top, bottom=bottom)
-    raw = await client.chat(prompt["system"], prompt["user"])
+    grouped = split_scores_by_agent(scores)
+    per_agent_experience: Dict[str, Dict[str, Any]] = {}
+    per_agent_stats: Dict[str, Dict[str, int]] = {}
 
-    parsed = extract_first_json_object(raw)
-    if parsed is None:
-        parsed = {
-            "principles": [],
-            "dos": [],
-            "donts": [],
-            "failure_patterns": ["summary_output_not_json"],
-            "checklist": [],
-            "one_paragraph_summary": raw[:800],
+    for agent_name, agent_scores in grouped.items():
+        if not agent_scores:
+            per_agent_experience[agent_name] = {
+                "principles": [],
+                "dos": [],
+                "donts": [],
+                "failure_patterns": ["no_samples_for_agent"],
+                "checklist": [],
+                "one_paragraph_summary": "No trajectories available for this agent.",
+            }
+            per_agent_stats[agent_name] = {"total": 0, "top_used": 0, "bottom_used": 0}
+            continue
+
+        top, bottom = pick_top_bottom(agent_scores, top_k=top_k, bottom_k=bottom_k)
+        prompt = build_summary_prompt(agent_name=agent_name, top=top, bottom=bottom)
+        raw = await client.chat(prompt["system"], prompt["user"])
+        parsed = extract_first_json_object(raw)
+        if parsed is None:
+            parsed = {
+                "principles": [],
+                "dos": [],
+                "donts": [],
+                "failure_patterns": ["summary_output_not_json"],
+                "checklist": [],
+                "one_paragraph_summary": raw[:800],
+            }
+        per_agent_experience[agent_name] = parsed
+        per_agent_stats[agent_name] = {
+            "total": len(agent_scores),
+            "top_used": len(top),
+            "bottom_used": len(bottom),
         }
 
     external_memory = {
@@ -168,7 +263,8 @@ async def summarize_experience(
             "source_score_file": score_path,
             "method": "training_free_grpo_deep_agent",
         },
-        "experience": parsed,
+        "per_agent_stats": per_agent_stats,
+        "experience": per_agent_experience,
     }
 
     with open(memory_json_path, "w", encoding="utf-8") as f:
@@ -182,25 +278,40 @@ async def summarize_experience(
         f"- top_k: {top_k}",
         f"- bottom_k: {bottom_k}",
         "",
-        "## Summary",
-        parsed.get("one_paragraph_summary", ""),
-        "",
-        "## Principles",
+        "## Agent Sample Stats",
     ]
-    for x in parsed.get("principles", []):
-        lines.append(f"- {x}")
-    lines.extend(["", "## Dos"])
-    for x in parsed.get("dos", []):
-        lines.append(f"- {x}")
-    lines.extend(["", "## Donts"])
-    for x in parsed.get("donts", []):
-        lines.append(f"- {x}")
-    lines.extend(["", "## Failure Patterns"])
-    for x in parsed.get("failure_patterns", []):
-        lines.append(f"- {x}")
-    lines.extend(["", "## Checklist"])
-    for x in parsed.get("checklist", []):
-        lines.append(f"- {x}")
+    for agent_name, stat in per_agent_stats.items():
+        lines.append(
+            f"- {agent_name}: total={stat.get('total', 0)}, top_used={stat.get('top_used', 0)}, bottom_used={stat.get('bottom_used', 0)}"
+        )
+
+    for agent_name in ["main_agent", "simulation_agent", "analysis_agent"]:
+        exp = per_agent_experience.get(agent_name, {})
+        lines.extend(
+            [
+                "",
+                f"## {agent_name}",
+                "",
+                "### Summary",
+                str(exp.get("one_paragraph_summary", "")),
+                "",
+                "### Principles",
+            ]
+        )
+        for x in exp.get("principles", []):
+            lines.append(f"- {x}")
+        lines.extend(["", "### Dos"])
+        for x in exp.get("dos", []):
+            lines.append(f"- {x}")
+        lines.extend(["", "### Donts"])
+        for x in exp.get("donts", []):
+            lines.append(f"- {x}")
+        lines.extend(["", "### Failure Patterns"])
+        for x in exp.get("failure_patterns", []):
+            lines.append(f"- {x}")
+        lines.extend(["", "### Checklist"])
+        for x in exp.get("checklist", []):
+            lines.append(f"- {x}")
 
     with open(memory_md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
