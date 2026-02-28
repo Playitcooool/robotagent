@@ -173,12 +173,6 @@ python training_free_grpo/collect.py
 
 `collect.py` 已内置每轮闭环：采样 -> 打分 -> 总结单条经验 -> 写入经验库 -> 经验注入下一轮 system prompt。
 
-如需离线重打分或重总结，仍可单独运行：
-```bash
-python training_free_grpo/score.py
-python training_free_grpo/summarize.py
-```
-
 详细参数见：`training_free_grpo/README.md`。
 
 ## 常见问题
