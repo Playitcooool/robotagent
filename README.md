@@ -165,15 +165,21 @@ python SFT/train.py --data trajectories.jsonl --model Qwen/Qwen2.5-1.5B-Instruct
 python SFT/sample_trajectory.py
 ```
 
-### Training-Free GRPO（三段）
+### Training-Free GRPO（在线经验闭环）
 
 ```bash
-python SFT/training_free_grpo/collect.py
-python SFT/training_free_grpo/score.py
-python SFT/training_free_grpo/summarize.py
+python training_free_grpo/collect.py
 ```
 
-详细参数见：`SFT/training_free_grpo/README.md`。
+`collect.py` 已内置每轮闭环：采样 -> 打分 -> 总结单条经验 -> 写入经验库 -> 经验注入下一轮 system prompt。
+
+如需离线重打分或重总结，仍可单独运行：
+```bash
+python training_free_grpo/score.py
+python training_free_grpo/summarize.py
+```
+
+详细参数见：`training_free_grpo/README.md`。
 
 ## 常见问题
 
