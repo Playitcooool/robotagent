@@ -69,6 +69,7 @@ _SIM_FRAME_CACHE = {
 # ========== 1. 日志配置（确保输出到Uvicorn控制台） ==========
 logger = logging.getLogger("uvicorn")
 logger.setLevel(logging.INFO)
+DEBUG_STREAM_FIELDS = os.environ.get("DEBUG_STREAM_FIELDS", "0") == "1"
 
 # ========== 2. 全局变量定义（关键：提前声明active_agent） ==========
 active_agent = None  # 全局agent，启动事件中初始化
@@ -977,6 +978,7 @@ async def chat_send(
         last_timeline_signature = ""
         usage_by_message: dict[str, dict[str, int]] = {}
         last_usage_signature = ""
+        debug_msg_count = 0
         try:
             # 同时订阅 messages(增量token) 与 values(状态事件)，保证前端实时流式显示。
             async for mode, event in active_agent.astream(
@@ -989,6 +991,16 @@ async def chat_send(
                         msg, _meta = event
                     except Exception:
                         msg = event
+                    if DEBUG_STREAM_FIELDS and debug_msg_count < 6:
+                        debug_msg_count += 1
+                        if isinstance(msg, dict):
+                            logger.info(
+                                f"[stream-debug] msg(dict) keys={list(msg.keys())}"
+                            )
+                        else:
+                            logger.info(
+                                f"[stream-debug] msg(type={msg.__class__.__name__}) has content_blocks={hasattr(msg, 'content_blocks')} additional_kwargs={hasattr(msg, 'additional_kwargs')} response_metadata={hasattr(msg, 'response_metadata')}"
+                            )
                     role_name = _normalize_message_role(msg)
                     if role_name in {"assistant", "ai"}:
                         thinking_text = _extract_thinking_from_message(msg)
@@ -1024,7 +1036,6 @@ async def chat_send(
                 messages = event.get("messages") if isinstance(event, dict) else None
                 if isinstance(messages, list):
                     for message in messages:
-                        print(message)
                         role_name = _normalize_message_role(message)
                         if role_name not in {"assistant", "ai"}:
                             continue

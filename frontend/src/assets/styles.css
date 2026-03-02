@@ -255,6 +255,27 @@ body {
   flex: 1;
   overflow: auto;
   padding-right: 3px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(154, 164, 178, 0.45) #111521;
+}
+
+.sidebar .list::-webkit-scrollbar {
+  width: 9px;
+}
+
+.sidebar .list::-webkit-scrollbar-track {
+  background: #111521;
+  border-radius: 999px;
+}
+
+.sidebar .list::-webkit-scrollbar-thumb {
+  background: rgba(154, 164, 178, 0.45);
+  border-radius: 999px;
+  border: 2px solid #111521;
+}
+
+.sidebar .list::-webkit-scrollbar-thumb:hover {
+  background: rgba(154, 164, 178, 0.7);
 }
 
 .sidebar .item {
@@ -303,6 +324,10 @@ body {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .sidebar .delete-mini {

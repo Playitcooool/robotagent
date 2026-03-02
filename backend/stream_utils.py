@@ -72,14 +72,35 @@ def extract_text_from_message(msg) -> str:
 
 
 def extract_thinking_from_message(msg) -> str:
+    def _get_from_container(container):
+        if not isinstance(container, dict):
+            return ""
+        parts_local = []
+        for key in (
+            "reasoning",
+            "reasoning_content",
+            "thinking",
+            "thinking_content",
+        ):
+            value = container.get(key)
+            if value is not None:
+                _collect_texts_deep(value, parts_local)
+        return "".join(parts_local).strip()
+
     content_blocks = None
+    additional_kwargs = None
+    response_metadata = None
     if isinstance(msg, dict):
         content_blocks = msg.get("content_blocks")
+        additional_kwargs = msg.get("additional_kwargs")
+        response_metadata = msg.get("response_metadata")
     else:
         content_blocks = getattr(msg, "content_blocks", None)
+        additional_kwargs = getattr(msg, "additional_kwargs", None)
+        response_metadata = getattr(msg, "response_metadata", None)
 
     if not isinstance(content_blocks, list):
-        return ""
+        content_blocks = []
 
     parts = []
     for block in content_blocks:
@@ -90,6 +111,13 @@ def extract_thinking_from_message(msg) -> str:
         if btype not in {"reasoning", "thinking"}:
             continue
         _collect_texts_deep(block, parts)
+
+    extra_text = _get_from_container(additional_kwargs)
+    if extra_text:
+        parts.append(extra_text)
+    meta_text = _get_from_container(response_metadata)
+    if meta_text:
+        parts.append(meta_text)
 
     text = "".join(parts).strip()
     return text
