@@ -28,7 +28,7 @@
             :disabled="deletingSessionId === s.session_id"
             @click.stop="removeSession(s)"
           >
-            删除
+            ×
           </button>
         </div>
       </div>

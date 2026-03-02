@@ -335,8 +335,11 @@ body {
   background: transparent;
   color: var(--danger);
   border-radius: 999px;
-  padding: 2px 8px;
-  font-size: 11px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
   cursor: pointer;
   flex: 0 0 auto;
 }
@@ -376,6 +379,27 @@ body {
   overflow-y: auto;
   padding: 12px 14px 16px;
   scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(154, 164, 178, 0.45) #151922;
+}
+
+.messages::-webkit-scrollbar {
+  width: 9px;
+}
+
+.messages::-webkit-scrollbar-track {
+  background: #151922;
+  border-radius: 999px;
+}
+
+.messages::-webkit-scrollbar-thumb {
+  background: rgba(154, 164, 178, 0.45);
+  border-radius: 999px;
+  border: 2px solid #151922;
+}
+
+.messages::-webkit-scrollbar-thumb:hover {
+  background: rgba(154, 164, 178, 0.7);
 }
 
 .message {
@@ -535,6 +559,27 @@ body {
   border-radius: var(--radius-md);
   background: #101521;
   padding: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(154, 164, 178, 0.45) #101521;
+}
+
+.tool-results .body::-webkit-scrollbar {
+  width: 9px;
+}
+
+.tool-results .body::-webkit-scrollbar-track {
+  background: #101521;
+  border-radius: 999px;
+}
+
+.tool-results .body::-webkit-scrollbar-thumb {
+  background: rgba(154, 164, 178, 0.45);
+  border-radius: 999px;
+  border: 2px solid #101521;
+}
+
+.tool-results .body::-webkit-scrollbar-thumb:hover {
+  background: rgba(154, 164, 178, 0.7);
 }
 
 .tool-results .empty {

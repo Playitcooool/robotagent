@@ -1,32 +1,25 @@
 from fastapi import FastAPI
-from fastapi import Request
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse
 from pathlib import Path
-import base64
 import ast
 from deepagents import create_deep_agent
 from tools.SubAgentTool import init_subagents
 import logging
 import json
 import yaml
-from langchain_mcp_adapters.client import MultiServerMCPClient
-from langgraph.checkpoint.memory import InMemorySaver
 from tools import GeneralTool
-import asyncio
 import time
 from langchain_openai import ChatOpenAI
 import os
 import re
-import hmac
 import hashlib
-import secrets
 from prompts import MainAgentPrompt
 from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 from redis.asyncio import Redis
 from typing import Optional
-from backend.schemas import ChatIn, AuthRegisterIn, AuthLoginIn
+from backend.schemas import ChatIn
 from backend.auth_utils import (
     validate_username,
     validate_password,
@@ -46,6 +39,8 @@ from backend.stream_utils import (
     extract_message_id,
     sum_usage_map,
 )
+from backend.routes_auth import register_auth_routes
+from backend.routes_sim import register_sim_routes
 
 os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
 # Chat history Redis should be separated from agent checkpoint Redis.
@@ -198,100 +193,6 @@ def _auth_user_key(username: str) -> str:
 
 def _auth_session_key(token: str) -> str:
     return f"{AUTH_SESSION_PREFIX}:{token}"
-
-
-def _validate_username(username: str) -> str:
-    cleaned = (username or "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9._-]{3,32}", cleaned):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="用户名需为3-32位，仅支持字母/数字/._-",
-        )
-    return cleaned
-
-
-def _validate_password(password: str) -> str:
-    cleaned = password or ""
-    if len(cleaned) < 6:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="密码长度至少6位",
-        )
-    return cleaned
-
-
-def _hash_password(password: str, salt_b64: Optional[str] = None):
-    if salt_b64:
-        salt = base64.b64decode(salt_b64.encode("ascii"))
-    else:
-        salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt,
-        PASSWORD_PBKDF2_ITERATIONS,
-    )
-    return (
-        base64.b64encode(salt).decode("ascii"),
-        base64.b64encode(digest).decode("ascii"),
-    )
-
-
-def _verify_password(password: str, salt_b64: str, expected_hash_b64: str) -> bool:
-    _, actual_hash = _hash_password(password, salt_b64=salt_b64)
-    return hmac.compare_digest(actual_hash, expected_hash_b64)
-
-
-async def _get_auth_user(authorization: Optional[str]) -> dict:
-    if auth_redis is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="认证服务未就绪",
-        )
-
-    header = (authorization or "").strip()
-    if not header.lower().startswith("bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="缺少认证令牌",
-        )
-
-    token = header[7:].strip()
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="令牌无效",
-        )
-
-    session_raw = await auth_redis.get(_auth_session_key(token))
-    if not session_raw:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="登录已过期，请重新登录",
-        )
-    try:
-        session = json.loads(session_raw)
-        if not isinstance(session, dict):
-            raise ValueError("invalid session")
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="登录会话无效",
-        )
-
-    # Sliding session window for easier debugging.
-    await auth_redis.expire(_auth_session_key(token), AUTH_SESSION_TTL_SECONDS)
-    return {
-        "token": token,
-        "uid": session.get("uid"),
-        "username": session.get("username"),
-    }
-
-
-async def require_auth_user(
-    authorization: Optional[str] = Header(default=None),
-) -> dict:
-    return await _get_auth_user(authorization)
 
 
 async def _append_chat_message(user_id: str, session_id: str, role: str, text: str):
@@ -579,6 +480,31 @@ _extract_message_id = extract_message_id
 _sum_usage_map = sum_usage_map
 
 
+def _get_auth_redis():
+    return auth_redis
+
+
+require_auth_user = register_auth_routes(
+    app,
+    get_auth_redis=_get_auth_redis,
+    auth_session_ttl_seconds=AUTH_SESSION_TTL_SECONDS,
+    auth_user_key=_auth_user_key,
+    auth_session_key=_auth_session_key,
+    validate_username=_validate_username,
+    validate_password=_validate_password,
+    hash_password=_hash_password,
+    verify_password=_verify_password,
+)
+
+register_sim_routes(
+    app,
+    sim_stream_dir=SIM_STREAM_DIR,
+    sim_meta_file=SIM_META_FILE,
+    sim_frame_file=SIM_FRAME_FILE,
+    sim_frame_cache=_SIM_FRAME_CACHE,
+)
+
+
 # ========== 10. 接口定义 ==========
 @app.get("/api/ping")
 async def ping():
@@ -586,121 +512,6 @@ async def ping():
         "status": "ok",
         "agent_ready": active_agent is not None,  # 新增：返回agent状态
     }
-
-
-@app.post("/api/auth/register")
-async def auth_register(payload: AuthRegisterIn):
-    if auth_redis is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="认证服务未就绪",
-        )
-
-    username = _validate_username(payload.username)
-    password = _validate_password(payload.password)
-    user_key = _auth_user_key(username)
-    existing = await auth_redis.get(user_key)
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="用户名已存在",
-        )
-
-    salt_b64, password_hash_b64 = _hash_password(password)
-    created_at = time.time()
-    user_doc = {
-        "uid": secrets.token_hex(12),
-        "username": username,
-        "password_salt": salt_b64,
-        "password_hash": password_hash_b64,
-        "created_at": created_at,
-    }
-    await auth_redis.set(user_key, json.dumps(user_doc, ensure_ascii=False))
-
-    token = secrets.token_urlsafe(32)
-    session_doc = {
-        "uid": user_doc["uid"],
-        "username": user_doc["username"],
-        "created_at": created_at,
-    }
-    await auth_redis.setex(
-        _auth_session_key(token),
-        AUTH_SESSION_TTL_SECONDS,
-        json.dumps(session_doc, ensure_ascii=False),
-    )
-    return {
-        "token": token,
-        "user": {"uid": user_doc["uid"], "username": user_doc["username"]},
-        "expires_in": AUTH_SESSION_TTL_SECONDS,
-    }
-
-
-@app.post("/api/auth/login")
-async def auth_login(payload: AuthLoginIn):
-    if auth_redis is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="认证服务未就绪",
-        )
-
-    username = _validate_username(payload.username)
-    password = _validate_password(payload.password)
-    user_raw = await auth_redis.get(_auth_user_key(username))
-    if not user_raw:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户名或密码错误",
-        )
-    try:
-        user_doc = json.loads(user_raw)
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="用户数据损坏",
-        )
-
-    ok = _verify_password(
-        password, user_doc.get("password_salt", ""), user_doc.get("password_hash", "")
-    )
-    if not ok:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户名或密码错误",
-        )
-
-    token = secrets.token_urlsafe(32)
-    session_doc = {
-        "uid": user_doc["uid"],
-        "username": user_doc["username"],
-        "created_at": time.time(),
-    }
-    await auth_redis.setex(
-        _auth_session_key(token),
-        AUTH_SESSION_TTL_SECONDS,
-        json.dumps(session_doc, ensure_ascii=False),
-    )
-    return {
-        "token": token,
-        "user": {"uid": user_doc["uid"], "username": user_doc["username"]},
-        "expires_in": AUTH_SESSION_TTL_SECONDS,
-    }
-
-
-@app.get("/api/auth/me")
-async def auth_me(current_user: dict = Depends(require_auth_user)):
-    return {
-        "user": {
-            "uid": current_user.get("uid"),
-            "username": current_user.get("username"),
-        }
-    }
-
-
-@app.post("/api/auth/logout")
-async def auth_logout(current_user: dict = Depends(require_auth_user)):
-    if auth_redis is not None:
-        await auth_redis.delete(_auth_session_key(current_user.get("token", "")))
-    return {"ok": True}
 
 
 @app.get("/api/messages")
@@ -819,125 +630,6 @@ async def delete_session(
         ),
         "session_id": session_id,
     }
-
-
-@app.get("/api/sim/debug")
-async def sim_debug():
-    return {
-        "stream_dir": str(SIM_STREAM_DIR),
-        "meta_exists": SIM_META_FILE.exists(),
-        "frame_exists": SIM_FRAME_FILE.exists(),
-    }
-
-
-def _load_latest_frame_payload():
-    if not SIM_META_FILE.exists() or not SIM_FRAME_FILE.exists():
-        return {"status": "idle", "has_frame": False}
-
-    try:
-        meta_mtime = SIM_META_FILE.stat().st_mtime
-        frame_mtime = SIM_FRAME_FILE.stat().st_mtime
-    except Exception:
-        meta_mtime = 0.0
-        frame_mtime = 0.0
-
-    cached = _SIM_FRAME_CACHE
-    if meta_mtime == cached.get("meta_mtime") and frame_mtime == cached.get(
-        "frame_mtime"
-    ):
-        return cached.get("payload", {"status": "idle", "has_frame": False})
-
-    try:
-        with open(SIM_META_FILE, "r", encoding="utf-8") as f:
-            meta = json.load(f)
-    except Exception as e:
-        return {
-            "status": "error",
-            "has_frame": False,
-            "error": f"meta read failed: {e}",
-        }
-
-    payload = {
-        "status": "done" if meta.get("done") else "running",
-        "has_frame": True,
-        "run_id": meta.get("run_id"),
-        "task": meta.get("task"),
-        "step": meta.get("step"),
-        "total_steps": meta.get("total_steps"),
-        "done": bool(meta.get("done")),
-        "timestamp": meta.get("timestamp"),
-        "image_url": f"/api/sim/latest.png?ts={meta.get('timestamp')}",
-    }
-    _SIM_FRAME_CACHE["meta_mtime"] = meta_mtime
-    _SIM_FRAME_CACHE["frame_mtime"] = frame_mtime
-    _SIM_FRAME_CACHE["payload"] = payload
-    return payload
-
-
-@app.get("/api/sim/latest-frame")
-async def get_latest_sim_frame():
-    return _load_latest_frame_payload()
-
-
-@app.get("/api/sim/latest.png")
-async def get_latest_sim_png():
-    if not SIM_FRAME_FILE.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="frame not found"
-        )
-    return FileResponse(SIM_FRAME_FILE, media_type="image/png")
-
-
-@app.get("/api/sim/stream")
-async def stream_sim_frames(request: Request, since: float = 0.0):
-    """SSE endpoint that actively pushes latest simulation frames."""
-
-    async def event_stream():
-        last_ts = float(since or 0.0)
-        idle_ticks = 0
-        last_emit_ts = 0.0
-
-        while True:
-            if await request.is_disconnected():
-                break
-
-            payload = _load_latest_frame_payload()
-            if payload.get("has_frame"):
-                current_ts = float(payload.get("timestamp") or 0.0)
-                if current_ts > last_ts:
-                    last_ts = current_ts
-                    idle_ticks = 0
-                    last_emit_ts = time.time()
-                    yield f"event: frame\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                else:
-                    idle_ticks += 1
-            else:
-                idle_ticks += 1
-
-            # keep-alive every ~5s (100 * 50ms) so proxies won't close idle SSE
-            if idle_ticks >= 100:
-                idle_ticks = 0
-                yield "event: ping\ndata: {}\n\n"
-
-            now = time.time()
-            is_running = payload.get("status") == "running"
-            if is_running and now - last_emit_ts < 2.0:
-                sleep_s = 0.05
-            elif idle_ticks > 200:
-                sleep_s = 0.5
-            else:
-                sleep_s = 0.2
-            await asyncio.sleep(sleep_s)
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
 
 
 @app.post("/api/chat/send")
