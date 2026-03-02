@@ -41,28 +41,32 @@ async def init_subagents():
         system_prompt=AnalysisAgentPrompt.SYSTEM_PROMPT,
     )
 
-    client = MultiServerMCPClient(
-        {"pybullet": {"transport": "http", "url": "http://localhost:8001/mcp"}}
+    sim_client = MultiServerMCPClient(
+        {
+            "pybullet": {"transport": "http", "url": "http://localhost:8001/mcp"},
+            "gazebo": {"transport": "http", "url": "http://localhost:8002/mcp"},
+        }
     )
     simulation_chat = ChatOpenAI(
         base_url=config["model_url"],
         model=config["llm"]["simulation"],
         api_key="no_need",
     )
-    simulation_tools = await client.get_tools()
+    simulation_tools = await sim_client.get_tools()
     simulation_graph = create_agent(
         model=simulation_chat,
         tools=simulation_tools,
         system_prompt=SimulationAgentPrompt.SYSTEM_PROMPT,
     )
+
     analysis_agent = CompiledSubAgent(
         name="data-analyzer",
         description="Specialized agent for complex data analysis tasks",
         runnable=analysis_graph,
     )
     simulation_agent = CompiledSubAgent(
-        name="pybullet_simulator",
-        description="Specialzied agent for execute pybullet simulation",
+        name="simulator",
+        description="Specialized agent for executing PyBullet and Gazebo simulations",
         runnable=simulation_graph,
     )
     return analysis_agent, simulation_agent

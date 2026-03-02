@@ -1,13 +1,13 @@
 version: "3.8"
 
 services:
-  robotagent:
+  pybullet-mcp:
     build:
       context: .
       dockerfile: Dockerfile
-    image: robotagent:latest
+    image: robotagent-pybullet:latest
     volumes:
-      - ../mcp:/app/mcp
+      - ../../mcp:/app/mcp
     working_dir: /app/mcp
     environment:
       - TZ=UTC

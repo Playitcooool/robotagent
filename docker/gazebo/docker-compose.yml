@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  gazebo-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: robotagent-gazebo:latest
+    volumes:
+      - ../../mcp:/app/mcp
+    working_dir: /app/mcp
+    environment:
+      - TZ=UTC
+      - ROS_DOMAIN_ID=0
+    # network_mode: host 让容器能通过 DDS 发现宿主机上的 Gazebo 节点
+    network_mode: host
+    tty: true
+    command:
+      - /bin/bash
+      - -c
+      - |
+        source /opt/ros/humble/setup.bash
+        python3 gazebo_mcp_server.py
