@@ -226,9 +226,11 @@ export default {
       conversation.value.push(userMsg)
 
       const assistantId = Date.now() + 1
-      conversation.value.push({ id: assistantId, role: 'assistant', text: '', loading: true })
+      conversation.value.push({ id: assistantId, role: 'assistant', text: '', thinking: '', thinkingDone: false, thinkingTruncated: false, loading: true })
       assistantStreams[assistantId] = {
-        text: ''
+        text: '',
+        thinking: '',
+        thinkingTruncated: false
       }
 
       try {
@@ -290,7 +292,7 @@ export default {
 
               let st = assistantStreams[assistantId]
               if (!st) {
-                st = assistantStreams[assistantId] = { text: '' }
+                st = assistantStreams[assistantId] = { text: '', thinking: '', thinkingTruncated: false }
               }
 
               if (idx !== -1) {
@@ -301,7 +303,44 @@ export default {
                 conversation.value[idx].text = st.text
               } else {
                 st.text += chunk
-                conversation.value.push({ id: assistantId, role: 'assistant', text: st.text })
+                conversation.value.push({ id: assistantId, role: 'assistant', text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated) })
+              }
+            } else if (obj.type === 'thinking') {
+              const idx = conversation.value.findIndex(m => m.id === assistantId)
+              const chunk = String(obj.text || '')
+              if (!chunk) continue
+              let st = assistantStreams[assistantId]
+              if (!st) {
+                st = assistantStreams[assistantId] = { text: '', thinking: '', thinkingTruncated: false }
+              }
+              st.thinking += chunk
+              if (idx !== -1) {
+                if (conversation.value[idx].loading) {
+                  conversation.value[idx].loading = false
+                }
+                conversation.value[idx].thinking = st.thinking
+                conversation.value[idx].thinkingDone = false
+                conversation.value[idx].thinkingTruncated = Boolean(st.thinkingTruncated)
+              } else {
+                conversation.value.push({
+                  id: assistantId,
+                  role: 'assistant',
+                  text: st.text || '',
+                  thinking: st.thinking,
+                  thinkingDone: false,
+                  thinkingTruncated: Boolean(st.thinkingTruncated),
+                  loading: false
+                })
+              }
+            } else if (obj.type === 'thinking_done') {
+              const idxThinkDone = conversation.value.findIndex(m => m.id === assistantId)
+              const st = assistantStreams[assistantId]
+              if (st && obj.truncated) {
+                st.thinkingTruncated = true
+              }
+              if (idxThinkDone !== -1) {
+                conversation.value[idxThinkDone].thinkingDone = true
+                if (obj.truncated) conversation.value[idxThinkDone].thinkingTruncated = true
               }
             } else if (obj.type === 'error') {
               const errText = `[后端错误] ${obj.error}`
@@ -309,6 +348,7 @@ export default {
               if (idxErr2 !== -1) {
                 conversation.value[idxErr2].loading = false
                 conversation.value[idxErr2].text = errText
+                conversation.value[idxErr2].thinkingDone = true
               } else {
                 conversation.value.push({ id: Date.now() + 3, role: 'assistant', text: errText })
               }
@@ -366,6 +406,9 @@ export default {
                 const stDone = assistantStreams[assistantId]
                 if (stDone) {
                   conversation.value[idxDone].text = stDone.text || conversation.value[idxDone].text
+                  conversation.value[idxDone].thinking = stDone.thinking || conversation.value[idxDone].thinking || ''
+                  conversation.value[idxDone].thinkingDone = true
+                  conversation.value[idxDone].thinkingTruncated = Boolean(stDone.thinkingTruncated || conversation.value[idxDone].thinkingTruncated)
                   delete assistantStreams[assistantId]
                 }
               }
@@ -381,14 +424,14 @@ export default {
               const idxRem = conversation.value.findIndex(m => m.id === assistantId)
               let st = assistantStreams[assistantId]
               if (!st) {
-                st = assistantStreams[assistantId] = { text: '' }
+                st = assistantStreams[assistantId] = { text: '', thinking: '', thinkingTruncated: false }
               }
               st.text += chunk
               if (idxRem !== -1) {
                 conversation.value[idxRem].loading = false
                 conversation.value[idxRem].text = st.text
               } else {
-                conversation.value.push({ id: assistantId, role: 'assistant', text: st.text })
+                conversation.value.push({ id: assistantId, role: 'assistant', text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated) })
               }
             }
           } catch (err) {

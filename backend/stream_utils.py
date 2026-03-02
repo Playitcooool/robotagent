@@ -4,6 +4,29 @@ import json
 import re
 
 
+def _collect_texts_deep(obj, out: list[str]):
+    if isinstance(obj, str):
+        if obj:
+            out.append(obj)
+        return
+    if isinstance(obj, list):
+        for item in obj:
+            _collect_texts_deep(item, out)
+        return
+    if isinstance(obj, dict):
+        for key in ("text", "content", "thinking", "reasoning"):
+            value = obj.get(key)
+            if isinstance(value, str) and value:
+                out.append(value)
+        summary = obj.get("summary")
+        if summary is not None:
+            _collect_texts_deep(summary, out)
+        summaries = obj.get("summaries")
+        if summaries is not None:
+            _collect_texts_deep(summaries, out)
+        return
+
+
 def normalize_text(content) -> str:
     if content is None:
         return ""
@@ -46,6 +69,30 @@ def extract_text_from_message(msg) -> str:
         if parts:
             return "".join(parts)
     return ""
+
+
+def extract_thinking_from_message(msg) -> str:
+    content_blocks = None
+    if isinstance(msg, dict):
+        content_blocks = msg.get("content_blocks")
+    else:
+        content_blocks = getattr(msg, "content_blocks", None)
+
+    if not isinstance(content_blocks, list):
+        return ""
+
+    parts = []
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+        btype = str(block.get("type") or "").lower()
+        # Only collect model reasoning/thinking traces, keep answer text out.
+        if btype not in {"reasoning", "thinking"}:
+            continue
+        _collect_texts_deep(block, parts)
+
+    text = "".join(parts).strip()
+    return text
 
 
 def normalize_message_role(msg) -> str:

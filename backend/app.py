@@ -36,6 +36,7 @@ from backend.auth_utils import (
 from backend.stream_utils import (
     normalize_text,
     extract_text_from_message,
+    extract_thinking_from_message,
     normalize_message_role,
     extract_message_name,
     extract_planning_steps_from_write_todos,
@@ -80,8 +81,12 @@ CHAT_HISTORY_MAX_LEN = int(os.environ.get("CHAT_HISTORY_MAX_LEN", "200"))
 CHAT_SESSIONS_ZSET_PREFIX = "robotagent:chat:sessions"
 AUTH_USER_PREFIX = "robotagent:auth:user"
 AUTH_SESSION_PREFIX = "robotagent:auth:session"
-AUTH_SESSION_TTL_SECONDS = int(os.environ.get("AUTH_SESSION_TTL_SECONDS", str(30 * 24 * 3600)))
-PASSWORD_PBKDF2_ITERATIONS = int(os.environ.get("AUTH_PASSWORD_PBKDF2_ITERATIONS", "200000"))
+AUTH_SESSION_TTL_SECONDS = int(
+    os.environ.get("AUTH_SESSION_TTL_SECONDS", str(30 * 24 * 3600))
+)
+PASSWORD_PBKDF2_ITERATIONS = int(
+    os.environ.get("AUTH_PASSWORD_PBKDF2_ITERATIONS", "200000")
+)
 with open(ROOT_DIR / "config" / "config.yml", "r", encoding="utf-8") as f:
     config = yaml.load(f.read(), Loader=yaml.FullLoader)
 
@@ -275,10 +280,16 @@ async def _get_auth_user(authorization: Optional[str]) -> dict:
 
     # Sliding session window for easier debugging.
     await auth_redis.expire(_auth_session_key(token), AUTH_SESSION_TTL_SECONDS)
-    return {"token": token, "uid": session.get("uid"), "username": session.get("username")}
+    return {
+        "token": token,
+        "uid": session.get("uid"),
+        "username": session.get("username"),
+    }
 
 
-async def require_auth_user(authorization: Optional[str] = Header(default=None)) -> dict:
+async def require_auth_user(
+    authorization: Optional[str] = Header(default=None),
+) -> dict:
     return await _get_auth_user(authorization)
 
 
@@ -556,6 +567,7 @@ _hash_password = hash_password
 _verify_password = verify_password
 _normalize_text = normalize_text
 _extract_text_from_message = extract_text_from_message
+_extract_thinking_from_message = extract_thinking_from_message
 _normalize_message_role = normalize_message_role
 _extract_message_name = extract_message_name
 _extract_planning_steps_from_write_todos = extract_planning_steps_from_write_todos
@@ -611,7 +623,9 @@ async def auth_register(payload: AuthRegisterIn):
         "created_at": created_at,
     }
     await auth_redis.setex(
-        _auth_session_key(token), AUTH_SESSION_TTL_SECONDS, json.dumps(session_doc, ensure_ascii=False)
+        _auth_session_key(token),
+        AUTH_SESSION_TTL_SECONDS,
+        json.dumps(session_doc, ensure_ascii=False),
     )
     return {
         "token": token,
@@ -644,7 +658,9 @@ async def auth_login(payload: AuthLoginIn):
             detail="用户数据损坏",
         )
 
-    ok = _verify_password(password, user_doc.get("password_salt", ""), user_doc.get("password_hash", ""))
+    ok = _verify_password(
+        password, user_doc.get("password_salt", ""), user_doc.get("password_hash", "")
+    )
     if not ok:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -658,7 +674,9 @@ async def auth_login(payload: AuthLoginIn):
         "created_at": time.time(),
     }
     await auth_redis.setex(
-        _auth_session_key(token), AUTH_SESSION_TTL_SECONDS, json.dumps(session_doc, ensure_ascii=False)
+        _auth_session_key(token),
+        AUTH_SESSION_TTL_SECONDS,
+        json.dumps(session_doc, ensure_ascii=False),
     )
     return {
         "token": token,
@@ -669,7 +687,12 @@ async def auth_login(payload: AuthLoginIn):
 
 @app.get("/api/auth/me")
 async def auth_me(current_user: dict = Depends(require_auth_user)):
-    return {"user": {"uid": current_user.get("uid"), "username": current_user.get("username")}}
+    return {
+        "user": {
+            "uid": current_user.get("uid"),
+            "username": current_user.get("username"),
+        }
+    }
 
 
 @app.post("/api/auth/logout")
@@ -714,7 +737,10 @@ async def get_sessions(
 
     normalized_limit = max(1, min(limit, 500))
     ranked = await chat_redis.zrevrange(
-        _chat_sessions_key(current_user.get("uid", "unknown")), 0, normalized_limit - 1, withscores=True
+        _chat_sessions_key(current_user.get("uid", "unknown")),
+        0,
+        normalized_limit - 1,
+        withscores=True,
     )
     if not ranked:
         return []
@@ -787,7 +813,9 @@ async def delete_session(
 
     return {
         "ok": True,
-        "deleted": bool(_safe_int(deleted_messages) > 0 or _safe_int(removed_session) > 0),
+        "deleted": bool(
+            _safe_int(deleted_messages) > 0 or _safe_int(removed_session) > 0
+        ),
         "session_id": session_id,
     }
 
@@ -813,14 +841,20 @@ def _load_latest_frame_payload():
         frame_mtime = 0.0
 
     cached = _SIM_FRAME_CACHE
-    if meta_mtime == cached.get("meta_mtime") and frame_mtime == cached.get("frame_mtime"):
+    if meta_mtime == cached.get("meta_mtime") and frame_mtime == cached.get(
+        "frame_mtime"
+    ):
         return cached.get("payload", {"status": "idle", "has_frame": False})
 
     try:
         with open(SIM_META_FILE, "r", encoding="utf-8") as f:
             meta = json.load(f)
     except Exception as e:
-        return {"status": "error", "has_frame": False, "error": f"meta read failed: {e}"}
+        return {
+            "status": "error",
+            "has_frame": False,
+            "error": f"meta read failed: {e}",
+        }
 
     payload = {
         "status": "done" if meta.get("done") else "running",
@@ -847,7 +881,9 @@ async def get_latest_sim_frame():
 @app.get("/api/sim/latest.png")
 async def get_latest_sim_png():
     if not SIM_FRAME_FILE.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="frame not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="frame not found"
+        )
     return FileResponse(SIM_FRAME_FILE, media_type="image/png")
 
 
@@ -933,6 +969,10 @@ async def chat_send(
     async def event_stream():
         assistant_latest_text = ""
         assistant_stream_text = ""
+        thinking_stream_text = ""
+        thinking_sent_text = ""
+        thinking_truncated = False
+        MAX_THINKING_CHARS = 1600
         last_planning_signature = ""
         last_timeline_signature = ""
         usage_by_message: dict[str, dict[str, int]] = {}
@@ -951,6 +991,25 @@ async def chat_send(
                         msg = event
                     role_name = _normalize_message_role(msg)
                     if role_name in {"assistant", "ai"}:
+                        thinking_text = _extract_thinking_from_message(msg)
+                        if thinking_text:
+                            if len(thinking_text) > MAX_THINKING_CHARS:
+                                thinking_text = thinking_text[:MAX_THINKING_CHARS]
+                                thinking_truncated = True
+                            if thinking_text.startswith(thinking_sent_text):
+                                thinking_delta = thinking_text[
+                                    len(thinking_sent_text) :
+                                ]
+                            else:
+                                thinking_delta = thinking_text
+                            if thinking_delta:
+                                thinking_sent_text = thinking_text
+                                thinking_stream_text = thinking_text
+                                yield json.dumps(
+                                    {"type": "thinking", "text": thinking_delta},
+                                    ensure_ascii=False,
+                                ) + "\n"
+
                         delta = _extract_text_from_message(msg)
                         if delta:
                             assistant_stream_text += delta
@@ -965,6 +1024,7 @@ async def chat_send(
                 messages = event.get("messages") if isinstance(event, dict) else None
                 if isinstance(messages, list):
                     for message in messages:
+                        print(message)
                         role_name = _normalize_message_role(message)
                         if role_name not in {"assistant", "ai"}:
                             continue
@@ -1001,9 +1061,10 @@ async def chat_send(
                     usage_signature = json.dumps(
                         usage_summary, ensure_ascii=False, sort_keys=True
                     )
-                    if usage_signature != last_usage_signature and usage_summary.get(
-                        "total_tokens", 0
-                    ) > 0:
+                    if (
+                        usage_signature != last_usage_signature
+                        and usage_summary.get("total_tokens", 0) > 0
+                    ):
                         last_usage_signature = usage_signature
                         yield json.dumps(
                             {
@@ -1045,7 +1106,9 @@ async def chat_send(
                                 "plan": planning_steps,
                                 "updated_at": time.time(),
                             }
-                            yield json.dumps(planning_payload, ensure_ascii=False) + "\n"
+                            yield json.dumps(
+                                planning_payload, ensure_ascii=False
+                            ) + "\n"
 
                 if role == "tool":
                     tool_text = _normalize_text(content)
@@ -1071,11 +1134,15 @@ async def chat_send(
                 if role == "assistant" and content is not None:
                     assistant_latest_text = _normalize_text(content)
 
+            if thinking_stream_text:
+                yield json.dumps(
+                    {"type": "thinking_done", "truncated": thinking_truncated},
+                    ensure_ascii=False,
+                ) + "\n"
+
             final_text = assistant_latest_text or assistant_stream_text
             if final_text:
-                await _append_chat_message(
-                    user_id, session_id, "assistant", final_text
-                )
+                await _append_chat_message(user_id, session_id, "assistant", final_text)
             # 发送完成信号
             yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
         except Exception as e:
@@ -1085,6 +1152,11 @@ async def chat_send(
             await _append_chat_message(
                 user_id, session_id, "assistant", f"[后端错误] 处理请求失败：{str(e)}"
             )
+            if thinking_stream_text:
+                yield json.dumps(
+                    {"type": "thinking_done", "truncated": thinking_truncated},
+                    ensure_ascii=False,
+                ) + "\n"
             yield json.dumps(
                 {"type": "error", "error": f"处理请求失败：{str(e)}"},
                 ensure_ascii=False,

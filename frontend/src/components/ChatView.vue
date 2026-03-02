@@ -24,11 +24,18 @@
         </div>
 
         <!-- markdown-rendered message -->
-        <div
-          v-else
-          class="bubble markdown"
-          v-html="renderMarkdown(m.text)"
-        ></div>
+        <div v-else class="bubble">
+          <ThinkingTrace
+            v-if="m.role === 'assistant' && m.thinking"
+            :content="m.thinking"
+            :done="Boolean(m.thinkingDone)"
+            :truncated="Boolean(m.thinkingTruncated)"
+          />
+          <div
+            class="markdown answer"
+            v-html="renderMarkdown(m.text)"
+          ></div>
+        </div>
       </div>
     </div>
 
@@ -55,6 +62,7 @@ import markdownItGfm from 'markdown-it-multimd-table'
 import markdownItKatex from 'markdown-it-katex'
 import markdownItHighlightjs from 'markdown-it-highlightjs'
 import hljs from 'highlight.js'
+import ThinkingTrace from './ThinkingTrace.vue'
 
 const md = new MarkdownIt({
   html: false,
@@ -85,6 +93,7 @@ md.renderer.rules.link_open = function (tokens, idx, options, env, self) {
 
 export default {
   name: 'ChatView',
+  components: { ThinkingTrace },
   props: {
     conversation: {
       type: Array,
@@ -109,7 +118,12 @@ export default {
     }
 
     function renderMarkdown (content) {
-      return md.render(content || '')
+      const raw = String(content || '')
+      // Some upstream responses contain escaped newlines as literal "\n".
+      const normalized = raw.includes('\\n') && !raw.includes('\n')
+        ? raw.replace(/\\n/g, '\n').replace(/\\t/g, '\t')
+        : raw
+      return md.render(normalized)
     }
 
     function onKeydown (e) {
@@ -155,7 +169,7 @@ export default {
     )
 
     watch(
-      () => props.conversation.map(item => `${item.id}:${item.text}:${item.loading}`).join('|'),
+      () => props.conversation.map(item => `${item.id}:${item.text}:${item.thinking || ''}:${item.loading}:${item.thinkingDone ? 1 : 0}:${item.thinkingTruncated ? 1 : 0}`).join('|'),
       () => {
         nextTick(scrollToBottom)
       }
