@@ -32,10 +32,13 @@
             <li
               v-for="(item, idx) in planningSteps"
               :key="item.id || idx"
-              :class="['plan-item', { active: item.status === 'in_progress' }]"
+              :class="['plan-item', item.status === 'in_progress' ? 'active' : item.status === 'completed' ? 'done' : '']"
             >
               <div class="plan-item-top">
-                <span class="plan-index">{{ idx + 1 }}</span>
+                <span :class="['plan-index', item.status === 'completed' ? 'index-done' : '']">
+                  <template v-if="item.status === 'completed'">✓</template>
+                  <template v-else>{{ idx + 1 }}</template>
+                </span>
                 <span class="plan-step">{{ item.step }}</span>
               </div>
               <span :class="['plan-status', `status-${item.status}`]">{{ statusLabel(item.status) }}</span>
@@ -153,9 +156,9 @@ export default {
       try { return typeof r === 'string' ? r : JSON.stringify(r, null, 2) } catch (e) { return String(r) }
     },
     statusLabel (status) {
-      if (status === 'completed') return 'completed'
-      if (status === 'in_progress') return 'in progress'
-      return 'pending'
+      if (status === 'completed') return '已完成'
+      if (status === 'in_progress') return '进行中'
+      return '待执行'
     },
     formatTime (timestamp) {
       const ms = Number(timestamp || 0) * 1000
@@ -274,6 +277,10 @@ export default {
   background: #0f131b;
 }
 
+.plan-item.done {
+  opacity: 0.55;
+}
+
 .plan-item.active {
   border-color: rgba(47, 125, 255, 0.5);
   background: #122033;
@@ -298,9 +305,15 @@ export default {
   flex: 0 0 18px;
 }
 
+.plan-index.index-done {
+  background: rgba(32, 196, 120, 0.2);
+  color: #a5f3c7;
+}
+
 .plan-step {
   font-size: 13px;
   line-height: 1.35;
+  word-break: break-word;
 }
 
 .plan-status {
@@ -404,7 +417,7 @@ export default {
 .timeline-detail {
   margin-top: 4px;
   font-size: 12px;
-  color: #2f3a42;
+  color: #9aa4b2;
   white-space: pre-wrap;
   word-break: break-word;
 }
