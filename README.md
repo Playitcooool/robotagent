@@ -1,205 +1,194 @@
 # RobotAgent
 
-RobotAgent 是一个带工具调用能力的多代理系统，包含：
+RobotAgent 是一个多代理聊天系统，支持工具调用、会话管理、认证登录和仿真画面实时流。
 
-- FastAPI 后端（聊天、会话、鉴权、实时仿真帧转发）
-- Vue 3 前端（登录注册、聊天、工具结果、实时 PyBullet 画面）
-- MCP PyBullet 服务（创建/操作仿真环境并持续输出实时帧）
-- SFT 数据与训练脚本（含 training-free GRPO 流程）
+## 当前架构
 
-## 功能概览
+- 后端：FastAPI（`backend/` 模块化）
+- 前端：Vue 3 + Vite（`frontend/`）
+- 仿真服务：MCP（PyBullet / Gazebo）
+- 存储：Redis（会话/聊天/认证）
+- 模型接入：OpenAI-compatible API（例如 LM Studio）
 
-- Deep Agent 对话与工具调用
-- 登录/注册与登录态保持（token + Redis session）
-- 聊天记录按用户隔离存储
-- MCP 工具执行时实时渲染仿真画面（右侧面板）
-- SFT 训练与 Training-Free GRPO 轨迹流程
+## 目录结构（最新）
 
-## 目录结构
+- `server.py`：后端统一入口（转发到 `backend.app:app`）
+- `dev.sh`：一键启动前后端（支持重复执行自动重启）
+- `backend/app.py`：主应用装配 + chat/messages/sessions 相关接口
+- `backend/routes_auth.py`：认证与登录相关接口
+- `backend/routes_sim.py`：仿真帧接口（debug/latest/stream）
+- `backend/schemas.py`：Pydantic 请求模型
+- `backend/auth_utils.py`：认证辅助函数
+- `backend/stream_utils.py`：流式消息解析与文本提取
+- `frontend/`：前端工程
+- `mcp/`：MCP 服务代码
+- `config/config.yml`：模型与 MCP 基础配置
 
-- `server.py`: 主后端服务（FastAPI）
-- `frontend/`: Vue 3 前端
-- `mcp/mcp_server.py`: PyBullet MCP 服务
-- `config/config.yml`: LLM 与 MCP 配置
-- `SFT/train.py`: SFT 训练脚本
-- `SFT/sample_trajectory.py`: 轨迹采样脚本
-- `SFT/training_free_grpo/`: collect / score / summarize 三段脚本
-
-## 运行前准备
-
-### 1) Python 与 Node
-
-建议：
+## 环境要求
 
 - Python 3.10+
 - Node.js 18+
+- Redis 6+
 
-### 2) Redis
+## 依赖安装
 
-后端默认使用 3 个 Redis DB（同一实例，不同库）：
-
-- `redis://127.0.0.1:6379/0`: 现有默认 Redis（保留）
-- `redis://127.0.0.1:6379/1`: 聊天记录
-- `redis://127.0.0.1:6379/2`: 用户与登录会话
-
-快速启动（Docker）：
-
-```bash
-docker run -d --name redis-stack -p 6379:6379 redis/redis-stack:latest
-```
-
-### 3) Python 依赖
-
-本仓库未提供统一 `requirements.txt`，请按你当前环境安装项目所需依赖（例如 FastAPI、langchain、deepagents、redis、pybullet、numpy 等）。
-
-### 4) 前端依赖
+### 前端
 
 ```bash
 cd frontend
 npm install
 ```
 
-## 配置说明
+### 后端
 
-### 模型与 MCP 配置
+项目未提供统一 `requirements.txt`，请按你当前环境安装依赖（FastAPI、uvicorn、langchain、redis、deepagents 等）。
+
+## 配置
 
 编辑 `config/config.yml`：
 
-- `model_url`: OpenAI-compatible 模型服务地址（如 LM Studio）
-- `llm.*`: 各角色模型名
-- `mcp.ip` 与 `mcp.port`: MCP 服务地址（默认 `http://localhost:8001`）
+- `model_url`：OpenAI-compatible 地址（例如 `http://localhost:1234/v1`）
+- `llm.chat / llm.analysis / llm.simulation`：模型名
 
-### 实时仿真帧共享目录（关键）
+后端默认 Redis：
 
-后端 `server.py` 与 MCP `mcp/mcp_server.py` 通过同一目录共享帧文件。
+- `redis://127.0.0.1:6379/1`：聊天记录
+- `redis://127.0.0.1:6379/2`：认证与会话
 
-请确保两边 `PYBULLET_STREAM_DIR` 一致。
+## 启动（推荐）
 
-默认：
-
-- 后端：`<repo>/mcp/.sim_stream`
-- MCP：`<repo>/mcp/.sim_stream`
-
-如果你自定义目录，需要同时设置两端环境变量。
-
-## 启动顺序（推荐）
-
-在项目根目录执行。
-
-### 1) 启动 MCP 服务（PyBullet）
-
-方式 A：直接运行
+在项目根目录：
 
 ```bash
-python mcp/mcp_server.py
+./dev.sh
 ```
 
-方式 B：Docker Compose
+会同时启动：
+
+- 后端：`http://127.0.0.1:8000`
+- 前端：`http://127.0.0.1:5173`
+
+### 指定后端 Python（例如 conda 环境）
 
 ```bash
-cd docker
-docker-compose up -d --build
+BACKEND_PYTHON=/opt/miniconda3/envs/langchain/bin/python ./dev.sh
 ```
 
-### 2) 启动后端
+### 后端单独启动
 
 ```bash
 python server.py
 ```
 
-默认监听：`http://0.0.0.0:8000`
+## MCP 服务
 
-### 3) 启动前端
+根据你的使用场景单独启动对应 MCP：
+
+- `mcp/mcp_server.py`（PyBullet）
+- `mcp/gazebo_mcp_server.py`（Gazebo）
+
+### Docker 启动（推荐）
+
+#### 启动 PyBullet MCP（映射到宿主机 `8001`）
 
 ```bash
-cd frontend
-npm run dev
+docker compose -f docker/pybullet/docker-compose.yml up -d --build
 ```
 
-打开 Vite 输出的地址（通常 `http://localhost:5173`）。
+- 容器内监听：`8000`
+- 宿主机访问：`http://127.0.0.1:8001/mcp`
 
-## 登录与会话
+#### 启动 Gazebo MCP（映射到宿主机 `8002`）
 
-前端已内置登录/注册页：
+```bash
+docker compose -f docker/gazebo/docker-compose.yml up -d --build
+```
 
-- 首次使用先注册
-- 登录成功后 token 存在 `localStorage`
-- 刷新页面后会通过 `/api/auth/me` 自动恢复登录态
-- 退出登录调用 `/api/auth/logout`
+- 容器内监听：`8002`
+- 宿主机访问：`http://127.0.0.1:8002/mcp`
 
-后端鉴权接口：
+#### 查看状态与日志
+
+```bash
+docker ps
+docker logs -f docker-robotagent-1
+docker logs -f gazebo-gazebo-mcp-1
+```
+
+如果你已修改 compose 中的 `container_name` 或 project 名称，请按实际容器名查看日志。
+
+## 主要后端接口
+
+### 通用
+
+- `GET /api/ping`
+
+### 认证（`backend/routes_auth.py`）
 
 - `POST /api/auth/register`
 - `POST /api/auth/login`
 - `GET /api/auth/me`
 - `POST /api/auth/logout`
 
-聊天与历史接口需要 `Authorization: Bearer <token>`。
+### 聊天与会话（`backend/app.py`）
 
-## 实时 PyBullet 画面说明
+- `GET /api/messages`
+- `GET /api/sessions`
+- `DELETE /api/sessions/{session_id}`
+- `POST /api/chat/send`（NDJSON 流式输出）
 
-- MCP 工具在执行过程中持续写入 `latest.png` + `latest.json`
-- 后端 `/api/sim/stream` 通过 SSE 推送最新帧
-- 前端右侧 `ToolResults` 实时显示 `image_url`
+### 仿真（`backend/routes_sim.py`）
 
-典型流程：
+- `GET /api/sim/debug`
+- `GET /api/sim/latest-frame`
+- `GET /api/sim/latest.png`
+- `GET /api/sim/stream`（SSE）
 
-1. 在聊天中触发仿真类工具（如推箱子）
-2. 右侧实时显示创建环境、创建物体、动作执行过程
-3. 本次动作结束后保留最后一帧
-4. 下一次动作继续在同一仿真环境上执行（除非显式清理）
+## 前端说明
 
-清理仿真环境可调用 MCP 的 `cleanup_simulation_tool`。
+前端包含：
 
-## SFT 与 Training-Free GRPO
+- 登录/注册
+- 左侧会话列表（支持删除会话）
+- 中间聊天区（流式回答）
+- 右侧工具结果与仿真画面
 
-### SFT 训练
+## 开发与调试
 
-```bash
-python SFT/train.py --data trajectories.jsonl --model Qwen/Qwen2.5-1.5B-Instruct --output sft_ckpt
-```
-
-### 轨迹采样
-
-```bash
-python SFT/sample_trajectory.py
-```
-
-### Training-Free GRPO（在线经验闭环）
+### 前端构建检查
 
 ```bash
-python training_free_grpo/collect.py
+cd frontend && npm run build
 ```
 
-`collect.py` 已内置每轮闭环：采样 -> 打分 -> 总结单条经验 -> 写入经验库 -> 经验注入下一轮 system prompt。
+### 后端语法检查
 
-详细参数见：`training_free_grpo/README.md`。
+```bash
+python -m py_compile server.py backend/app.py backend/routes_auth.py backend/routes_sim.py
+```
+
+### 流字段调试（可选）
+
+```bash
+DEBUG_STREAM_FIELDS=1 BACKEND_PYTHON=/opt/miniconda3/envs/langchain/bin/python ./dev.sh
+```
+
+用于查看前几个流式 chunk 的字段情况，便于确认是否有 reasoning/thinking 字段透传。
 
 ## 常见问题
 
-### 1) 前端看不到实时仿真画面
+### 1) 重新运行 `./dev.sh` 报端口占用
 
-优先检查：
+`dev.sh` 已内置端口清理。直接再次运行即可自动重启。
 
-- MCP 是否已启动
-- `PYBULLET_STREAM_DIR` 两端是否一致
-- `mcp/.sim_stream/latest.json` 与 `latest.png` 是否在更新
-- 后端 `/api/sim/debug` 返回是否正常
+### 2) 前端能聊天但无仿真画面
 
-### 2) 登录后请求 401
+检查：
 
-- token 可能过期，重新登录
-- 检查浏览器本地是否有 `robotagent_auth_token`
-- 检查后端 `AUTH_REDIS_URL` 连接状态
+- MCP 服务是否已启动
+- 后端能否访问 MCP 端口
+- `/api/sim/debug` 是否显示帧文件存在
 
-### 3) 模型不返回内容
+### 3) 看不到独立 thinking 字段
 
-- 检查 `config/config.yml` 的 `model_url` 与模型名
-- 确认本地模型服务已启动并支持 OpenAI-compatible API
-
-## 开发提示
-
-- 前端构建：`cd frontend && npm run build`
-- 后端语法检查：`python -m py_compile server.py`
-- MCP 服务默认端口：`8001`
-- 后端默认端口：`8000`
+若 `astream` 的 chunk 只有 `content`，没有 `content_blocks/additional_kwargs.reasoning*`，说明当前模型/网关没有透传 reasoning 通道。
