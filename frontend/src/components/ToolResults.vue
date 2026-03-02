@@ -26,9 +26,9 @@
         <div v-if="planningSteps.length" class="plan-wrap">
           <div class="plan-head">
             <h4>执行计划</h4>
-            <span class="plan-count">{{ planningSteps.length }} steps</span>
+            <span class="plan-count">{{ planningSteps.length }} 步</span>
           </div>
-          <ol class="plan-list">
+          <TransitionGroup tag="ol" class="plan-list" name="plan">
             <li
               v-for="(item, idx) in planningSteps"
               :key="item.id || idx"
@@ -43,13 +43,13 @@
               </div>
               <span :class="['plan-status', `status-${item.status}`]">{{ statusLabel(item.status) }}</span>
             </li>
-          </ol>
+          </TransitionGroup>
         </div>
 
         <div v-if="timelineItems.length" class="timeline-wrap">
           <div class="timeline-head">
             <h4>执行时间轴</h4>
-            <span class="timeline-count">{{ timelineItems.length }} events</span>
+            <span class="timeline-count">{{ timelineItems.length }} 条</span>
           </div>
           <ul class="timeline-list">
             <li v-for="(item, idx) in timelineItems" :key="`${idx}-${item.timestamp}`" class="timeline-item">
@@ -72,7 +72,7 @@
           <div class="live-meta">
             <span>{{ liveFrame.task || 'simulation' }}</span>
             <span v-if="typeof liveFrame.step === 'number'">step {{ liveFrame.step }}/{{ liveFrame.total_steps || '?' }}</span>
-            <span>{{ liveFrame.done ? 'done' : 'running' }}</span>
+            <span>{{ liveFrame.done ? '完成' : '运行中' }}</span>
           </div>
         </div>
 
@@ -150,8 +150,8 @@ export default {
       if (typeof r === 'string') return r
       return r.image || r.image_url || r.url
     },
-    isText (r) { return typeof r === 'string' },
-    isJson (r) { return typeof r === 'object' },
+    isText (r) { return typeof r === 'string' && !this.isImage(r) },
+    isJson (r) { return r !== null && typeof r === 'object' && !this.isImage(r) },
     pretty (r) {
       try { return typeof r === 'string' ? r : JSON.stringify(r, null, 2) } catch (e) { return String(r) }
     },
@@ -275,6 +275,7 @@ export default {
   border-radius: 10px;
   padding: 8px;
   background: #0f131b;
+  transition: background 0.25s, border-color 0.25s, opacity 0.3s;
 }
 
 .plan-item.done {
@@ -303,6 +304,7 @@ export default {
   background: rgba(47, 125, 255, 0.18);
   color: #9fc1ff;
   flex: 0 0 18px;
+  transition: background 0.25s, color 0.25s;
 }
 
 .plan-index.index-done {
@@ -323,7 +325,6 @@ export default {
   padding: 2px 8px;
   font-size: 11px;
   font-weight: 700;
-  text-transform: lowercase;
 }
 
 .status-pending {
@@ -420,5 +421,14 @@ export default {
   color: #9aa4b2;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.plan-enter-active {
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.plan-enter-from {
+  opacity: 0;
+  transform: translateY(-5px);
 }
 </style>
