@@ -17,9 +17,19 @@
         :class="['item', { active: s.session_id === currentSessionId }]"
         @click="select(s)"
       >
-        <div class="meta">
-          <strong>{{ sessionTitle(s) }}</strong>
-          <span class="snippet">{{ snippet(s.preview) || '空会话' }}</span>
+        <div class="item-row">
+          <div class="meta">
+            <strong>{{ sessionTitle(s) }}</strong>
+            <span class="snippet">{{ snippet(s.preview) || '空会话' }}</span>
+          </div>
+          <button
+            class="delete-mini"
+            title="删除会话"
+            :disabled="deletingSessionId === s.session_id"
+            @click.stop="removeSession(s)"
+          >
+            删除
+          </button>
         </div>
       </div>
     </div>
@@ -40,9 +50,10 @@ export default {
     authToken: { type: String, default: '' },
     authUser: { type: Object, default: null }
   },
-  emits: ['selectSession', 'logout'],
+  emits: ['selectSession', 'logout', 'sessionDeleted'],
   setup (props, { emit }) {
     const sessions = ref([])
+    const deletingSessionId = ref('')
 
     async function load () {
       if (!props.authToken) {
@@ -68,6 +79,26 @@ export default {
     function startNew () {
       emit('selectSession', { __newConversation: true, session_id: `session_${Date.now()}` })
     }
+    async function removeSession (s) {
+      const sid = String(s?.session_id || '')
+      if (!sid || !props.authToken) return
+      const ok = window.confirm(`确认删除会话「${sessionTitle(s)}」？`)
+      if (!ok) return
+      deletingSessionId.value = sid
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${props.authToken}` }
+        })
+        if (!res.ok) return
+        sessions.value = sessions.value.filter(item => item.session_id !== sid)
+        emit('sessionDeleted', sid)
+      } catch (_) {
+        // ignore network errors
+      } finally {
+        deletingSessionId.value = ''
+      }
+    }
 
     onMounted(load)
     watch(() => props.reloadToken, () => { load() })
@@ -80,7 +111,7 @@ export default {
       return t.length > 18 ? `${t.slice(0, 18)}...` : t
     }
 
-    return { sessions, select, startNew, snippet, sessionTitle }
+    return { sessions, deletingSessionId, select, startNew, removeSession, snippet, sessionTitle }
   }
 }
 </script>

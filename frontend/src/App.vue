@@ -20,6 +20,7 @@
       <aside class="left">
         <Sidebar
           @selectSession="onSelectSession"
+          @sessionDeleted="onSessionDeleted"
           @logout="onLogout"
           :reloadToken="sidebarReloadToken"
           :currentSessionId="currentSessionId"
@@ -202,6 +203,15 @@ export default {
       planningState.value = { steps: [], updatedAt: 0 }
       timelineState.value = { items: [], updatedAt: 0 }
       tokenUsageState.value = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, updatedAt: 0 }
+    }
+
+    function onSessionDeleted (sessionId) {
+      const sid = String(sessionId || '')
+      if (!sid) return
+      if (sid === currentSessionId.value) {
+        resetConversation(`session_${Date.now()}`)
+      }
+      sidebarReloadToken.value += 1
     }
 
     async function onSendMessage (text) {
@@ -416,6 +426,7 @@ export default {
       onAuthed,
       onLogout,
       onSelectSession,
+      onSessionDeleted,
       onSendMessage
     }
   }

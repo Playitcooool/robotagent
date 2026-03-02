@@ -278,6 +278,14 @@ body {
 .sidebar .meta {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.sidebar .item-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
 }
 
 .sidebar .meta strong {
@@ -295,6 +303,26 @@ body {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
+}
+
+.sidebar .delete-mini {
+  border: 1px solid rgba(255, 107, 107, 0.35);
+  background: transparent;
+  color: var(--danger);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.sidebar .delete-mini:hover {
+  background: rgba(255, 107, 107, 0.1);
+}
+
+.sidebar .delete-mini:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .sidebar .footer {

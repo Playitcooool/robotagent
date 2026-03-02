@@ -746,6 +746,32 @@ async def get_sessions(
     return result
 
 
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(
+    session_id: str,
+    current_user: dict = Depends(require_auth_user),
+):
+    if chat_redis is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="聊天存储未就绪",
+        )
+
+    user_id = current_user.get("uid", "unknown")
+    key = _chat_history_key(user_id, session_id)
+    sessions_key = _chat_sessions_key(user_id)
+    pipe = chat_redis.pipeline()
+    pipe.delete(key)
+    pipe.zrem(sessions_key, session_id)
+    deleted_messages, removed_session = await pipe.execute()
+
+    return {
+        "ok": True,
+        "deleted": bool(_safe_int(deleted_messages) > 0 or _safe_int(removed_session) > 0),
+        "session_id": session_id,
+    }
+
+
 @app.get("/api/sim/debug")
 async def sim_debug():
     return {
