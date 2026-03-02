@@ -218,9 +218,7 @@ export default {
       const assistantId = Date.now() + 1
       conversation.value.push({ id: assistantId, role: 'assistant', text: '', loading: true })
       assistantStreams[assistantId] = {
-        buffer: '',
-        displayed: '',
-        interval: null
+        text: ''
       }
 
       try {
@@ -257,7 +255,6 @@ export default {
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
         let buf = ''
-        const originalUserText = text || ''
 
         while (true) {
           const { done, value } = await reader.read()
@@ -278,58 +275,23 @@ export default {
 
             if (obj.type === 'delta') {
               const idx = conversation.value.findIndex(m => m.id === assistantId)
-              let incoming = obj.text || ''
-              if (idx !== -1) {
-                const currentlyShown = conversation.value[idx].text || ''
-                if ((!currentlyShown || currentlyShown === '') && originalUserText && incoming.startsWith(originalUserText)) {
-                  incoming = incoming.slice(originalUserText.length)
-                  incoming = incoming.replace(/^\s*[:：\-–—]?\s*/, '')
-                }
+              const chunk = String(obj.text || '')
+              if (!chunk) continue
 
+              let st = assistantStreams[assistantId]
+              if (!st) {
+                st = assistantStreams[assistantId] = { text: '' }
+              }
+
+              if (idx !== -1) {
                 if (conversation.value[idx].loading) {
                   conversation.value[idx].loading = false
                 }
-
-                let st = assistantStreams[assistantId]
-                if (!st) {
-                  st = assistantStreams[assistantId] = { buffer: '', displayed: '', interval: null }
-                }
-
-                const prev = st.buffer || ''
-                const growth = incoming.length - prev.length
-                if (incoming.startsWith(prev) && growth > 0 && growth <= 50) {
-                  st.buffer = incoming
-                  st.displayed = incoming
-                  const idx2 = conversation.value.findIndex(m => m.id === assistantId)
-                  if (idx2 !== -1) conversation.value[idx2].text = st.displayed
-                } else if (incoming.length > prev.length && incoming.startsWith(prev) && growth > 50) {
-                  st.buffer = incoming
-                  if (!st.interval) {
-                    st.interval = setInterval(() => {
-                      try {
-                        const nextLen = Math.min(st.displayed.length + 6, st.buffer.length)
-                        if (nextLen > st.displayed.length) {
-                          st.displayed = st.buffer.slice(0, nextLen)
-                          const idx2 = conversation.value.findIndex(m => m.id === assistantId)
-                          if (idx2 !== -1) conversation.value[idx2].text = st.displayed
-                        }
-                      } catch (e) {
-                        // ignore interval update errors
-                      }
-                    }, 25)
-                  }
-                } else {
-                  st.buffer = incoming
-                  st.displayed = incoming
-                  const idx2 = conversation.value.findIndex(m => m.id === assistantId)
-                  if (idx2 !== -1) conversation.value[idx2].text = st.displayed
-                }
+                st.text += chunk
+                conversation.value[idx].text = st.text
               } else {
-                if (originalUserText && incoming.startsWith(originalUserText)) {
-                  incoming = incoming.slice(originalUserText.length).replace(/^\s*[:：\-–—]?\s*/, '')
-                }
-                conversation.value.push({ id: assistantId, role: 'assistant', text: incoming })
-                assistantStreams[assistantId] = { buffer: incoming, displayed: incoming, interval: null }
+                st.text += chunk
+                conversation.value.push({ id: assistantId, role: 'assistant', text: st.text })
               }
             } else if (obj.type === 'error') {
               const errText = `[后端错误] ${obj.error}`
@@ -393,11 +355,7 @@ export default {
                 conversation.value[idxDone].loading = false
                 const stDone = assistantStreams[assistantId]
                 if (stDone) {
-                  conversation.value[idxDone].text = stDone.buffer || stDone.displayed || conversation.value[idxDone].text
-                  if (stDone.interval) {
-                    clearInterval(stDone.interval)
-                    stDone.interval = null
-                  }
+                  conversation.value[idxDone].text = stDone.text || conversation.value[idxDone].text
                   delete assistantStreams[assistantId]
                 }
               }
@@ -409,12 +367,18 @@ export default {
           try {
             const obj = JSON.parse(buf)
             if (obj && obj.type === 'delta') {
+              const chunk = String(obj.text || '')
               const idxRem = conversation.value.findIndex(m => m.id === assistantId)
+              let st = assistantStreams[assistantId]
+              if (!st) {
+                st = assistantStreams[assistantId] = { text: '' }
+              }
+              st.text += chunk
               if (idxRem !== -1) {
                 conversation.value[idxRem].loading = false
-                conversation.value[idxRem].text = obj.text
+                conversation.value[idxRem].text = st.text
               } else {
-                conversation.value.push({ id: assistantId, role: 'assistant', text: obj.text })
+                conversation.value.push({ id: assistantId, role: 'assistant', text: st.text })
               }
             }
           } catch (err) {

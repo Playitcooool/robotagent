@@ -314,6 +314,33 @@ def _normalize_text(content) -> str:
     return str(content)
 
 
+def _extract_text_from_message(msg) -> str:
+    """Extract plain text from message/message-chunk structures."""
+    content = None
+    content_blocks = None
+    if isinstance(msg, dict):
+        content = msg.get("content") or msg.get("text")
+        content_blocks = msg.get("content_blocks")
+    else:
+        content = getattr(msg, "content", None) or getattr(msg, "text", None)
+        content_blocks = getattr(msg, "content_blocks", None)
+
+    text = _normalize_text(content)
+    if text:
+        return text
+
+    if isinstance(content_blocks, list):
+        parts = []
+        for block in content_blocks:
+            if isinstance(block, dict):
+                t = block.get("text") or block.get("content")
+                if isinstance(t, str) and t:
+                    parts.append(t)
+        if parts:
+            return "".join(parts)
+    return ""
+
+
 def _normalize_message_role(msg) -> str:
     role = None
     if isinstance(msg, dict):
@@ -332,11 +359,11 @@ def _normalize_message_role(msg) -> str:
         return lowered
 
     cls_name = msg.__class__.__name__
-    if cls_name == "AIMessage":
+    if cls_name in {"AIMessage", "AIMessageChunk"}:
         return "assistant"
     if cls_name == "HumanMessage":
         return "user"
-    if cls_name == "ToolMessage":
+    if cls_name in {"ToolMessage", "ToolMessageChunk"}:
         return "tool"
     return "unknown"
 
@@ -859,18 +886,36 @@ async def chat_send(
 
     async def event_stream():
         assistant_latest_text = ""
-        assistant_sent_text = ""
+        assistant_stream_text = ""
         last_planning_signature = ""
         last_timeline_signature = ""
         usage_by_message: dict[str, dict[str, int]] = {}
         last_usage_signature = ""
         try:
-            # 调用全局active_agent的流式接口，传递配置包含thread_id
-            async for event in active_agent.astream(
+            # 同时订阅 messages(增量token) 与 values(状态事件)，保证前端实时流式显示。
+            async for mode, event in active_agent.astream(
                 {"messages": [{"role": "user", "content": user_message}]},
-                stream_mode="values",
+                stream_mode=["messages", "values"],
                 config={"configurable": {"thread_id": f"{user_id}:{session_id}"}},
             ):
+                if mode == "messages":
+                    try:
+                        msg, _meta = event
+                    except Exception:
+                        msg = event
+                    role_name = _normalize_message_role(msg)
+                    if role_name in {"assistant", "ai"}:
+                        delta = _extract_text_from_message(msg)
+                        if delta:
+                            assistant_stream_text += delta
+                            yield json.dumps(
+                                {"type": "delta", "text": delta}, ensure_ascii=False
+                            ) + "\n"
+                    continue
+
+                if mode != "values":
+                    continue
+
                 messages = event.get("messages") if isinstance(event, dict) else None
                 if isinstance(messages, list):
                     for message in messages:
@@ -978,20 +1023,12 @@ async def chat_send(
                         ) + "\n"
 
                 if role == "assistant" and content is not None:
-                    text = _normalize_text(content)
-                    assistant_latest_text = text
-                    if text.startswith(assistant_sent_text):
-                        delta = text[len(assistant_sent_text) :]
-                    else:
-                        delta = text
-                    if delta:
-                        assistant_sent_text = text
-                        payload = {"type": "delta", "text": delta}
-                        yield json.dumps(payload, ensure_ascii=False) + "\n"
+                    assistant_latest_text = _normalize_text(content)
 
-            if assistant_latest_text:
+            final_text = assistant_latest_text or assistant_stream_text
+            if final_text:
                 await _append_chat_message(
-                    user_id, session_id, "assistant", assistant_latest_text
+                    user_id, session_id, "assistant", final_text
                 )
             # 发送完成信号
             yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"

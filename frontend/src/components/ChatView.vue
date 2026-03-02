@@ -38,6 +38,8 @@
         v-model="text"
         placeholder="向模型提问：Enter 发送，Shift+Enter 换行"
         @keydown="onKeydown"
+        @compositionstart="onCompositionStart"
+        @compositionend="onCompositionEnd"
         @input="onInput"
         rows="2"
       ></textarea>
@@ -95,6 +97,7 @@ export default {
     const messagesRef = ref(null)
     const textareaRef = ref(null)
     const canSend = ref(false)
+    const composing = ref(false)
 
     function send () {
       const payload = text.value.trim()
@@ -110,10 +113,19 @@ export default {
     }
 
     function onKeydown (e) {
+      if (composing.value || e.isComposing || e.keyCode === 229) return
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         send()
       }
+    }
+
+    function onCompositionStart () {
+      composing.value = true
+    }
+
+    function onCompositionEnd () {
+      composing.value = false
     }
 
     function onInput () {
@@ -160,6 +172,8 @@ export default {
       send,
       renderMarkdown,
       onKeydown,
+      onCompositionStart,
+      onCompositionEnd,
       onInput,
       messagesRef,
       textareaRef

@@ -12,8 +12,8 @@ services:
     environment:
       - TZ=UTC
       - ROS_DOMAIN_ID=0
-    # network_mode: host 让容器能通过 DDS 发现宿主机上的 Gazebo 节点
-    network_mode: host
+    ports:
+      - "8002:8002"
     tty: true
     command:
       - /bin/bash
