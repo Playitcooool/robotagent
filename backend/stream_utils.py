@@ -71,6 +71,53 @@ def extract_text_from_message(msg) -> str:
     return ""
 
 
+def split_think_and_answer_delta(
+    text: str,
+    *,
+    in_think: bool = False,
+    carry: str = "",
+):
+    """
+    Split incremental text into answer/thinking deltas by parsing <think>...</think>.
+    Works across chunk boundaries using `carry`.
+    """
+    if not text and not carry:
+        return "", "", in_think, ""
+
+    open_tag = "<think>"
+    close_tag = "</think>"
+    combined = f"{carry}{text or ''}"
+    i = 0
+    out_answer = []
+    out_thinking = []
+    next_carry = ""
+
+    while i < len(combined):
+        if combined.startswith(open_tag, i):
+            in_think = True
+            i += len(open_tag)
+            continue
+        if combined.startswith(close_tag, i):
+            in_think = False
+            i += len(close_tag)
+            continue
+
+        rem = combined[i:]
+        # keep possible partial tag in carry for next chunk
+        if open_tag.startswith(rem) or close_tag.startswith(rem):
+            next_carry = rem
+            break
+
+        ch = combined[i]
+        if in_think:
+            out_thinking.append(ch)
+        else:
+            out_answer.append(ch)
+        i += 1
+
+    return "".join(out_answer), "".join(out_thinking), in_think, next_carry
+
+
 def extract_thinking_from_message(msg) -> str:
     def _get_from_container(container):
         if not isinstance(container, dict):

@@ -1,10 +1,10 @@
 llm:
-  chat: 'gpt-oss-20b-mlx'
-  analysis: 'gpt-oss-20b-mlx'
-  simulation: 'gpt-oss-20b-mlx'
+  chat: 'qwen3-4b-thinking-2507-claude-4.5-opus-high-reasoning-distill-heretic-qx86-hi-mlx'
+  analysis: 'qwen3-4b-thinking-2507-claude-4.5-opus-high-reasoning-distill-heretic-qx86-hi-mlx'
+  simulation: 'qwen3-4b-thinking-2507-claude-4.5-opus-high-reasoning-distill-heretic-qx86-hi-mlx'
   summary: 'qwen3-1.7b-mlx'
   tool_selector: 'qwen3-0.6b-mlx'
-  judge: 'gpt-oss-20b-mlx'
+  judge: 'qwen3-4b-thinking-2507-claude-4.5-opus-high-reasoning-distill-heretic-qx86-hi-mlx'
 
 model_url: "http://localhost:1234/v1"
 

@@ -30,6 +30,7 @@ from backend.stream_utils import (
     normalize_text,
     extract_text_from_message,
     extract_thinking_from_message,
+    split_think_and_answer_delta,
     normalize_message_role,
     extract_message_name,
     extract_planning_steps_from_write_todos,
@@ -470,6 +471,7 @@ _verify_password = verify_password
 _normalize_text = normalize_text
 _extract_text_from_message = extract_text_from_message
 _extract_thinking_from_message = extract_thinking_from_message
+_split_think_and_answer_delta = split_think_and_answer_delta
 _normalize_message_role = normalize_message_role
 _extract_message_name = extract_message_name
 _extract_planning_steps_from_write_todos = extract_planning_steps_from_write_todos
@@ -664,6 +666,8 @@ async def chat_send(
         assistant_stream_text = ""
         thinking_stream_text = ""
         thinking_sent_text = ""
+        in_think_tag = False
+        think_tag_carry = ""
         thinking_truncated = False
         MAX_THINKING_CHARS = 1600
         last_planning_signature = ""
@@ -716,10 +720,33 @@ async def chat_send(
 
                         delta = _extract_text_from_message(msg)
                         if delta:
-                            assistant_stream_text += delta
-                            yield json.dumps(
-                                {"type": "delta", "text": delta}, ensure_ascii=False
-                            ) + "\n"
+                            answer_delta, think_tag_delta, in_think_tag, think_tag_carry = (
+                                _split_think_and_answer_delta(
+                                    delta,
+                                    in_think=in_think_tag,
+                                    carry=think_tag_carry,
+                                )
+                            )
+
+                            if think_tag_delta:
+                                remain = MAX_THINKING_CHARS - len(thinking_stream_text)
+                                if remain > 0:
+                                    to_emit = think_tag_delta[:remain]
+                                    thinking_stream_text += to_emit
+                                    if to_emit:
+                                        yield json.dumps(
+                                            {"type": "thinking", "text": to_emit},
+                                            ensure_ascii=False,
+                                        ) + "\n"
+                                if len(think_tag_delta) > max(remain, 0):
+                                    thinking_truncated = True
+
+                            if answer_delta:
+                                assistant_stream_text += answer_delta
+                                yield json.dumps(
+                                    {"type": "delta", "text": answer_delta},
+                                    ensure_ascii=False,
+                                ) + "\n"
                     continue
 
                 if mode != "values":

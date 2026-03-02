@@ -3,7 +3,7 @@
     <button class="thinking-head" type="button" @click="expanded = !expanded">
       <span class="title">思考过程</span>
       <span class="status" v-if="!done">生成中...</span>
-      <span class="chevron">{{ expanded ? '收起' : '展开' }}</span>
+      <span :class="['chevron', expanded ? 'open' : '']">▾</span>
     </button>
     <div v-if="expanded" class="thinking-body">{{ contentText }}</div>
     <div v-if="expanded && truncated" class="thinking-note">已省略部分思考内容</div>
@@ -72,6 +72,11 @@ export default {
 
 .thinking-head .chevron {
   color: #c2c9d3;
+  transition: transform 0.16s ease;
+}
+
+.thinking-head .chevron.open {
+  transform: rotate(180deg);
 }
 
 .thinking-body {
