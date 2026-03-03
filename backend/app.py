@@ -10,6 +10,7 @@ import logging
 import json
 import yaml
 from tools import GeneralTool
+from tools import AnalysisTool
 import time
 from langchain_openai import ChatOpenAI
 import os
@@ -701,8 +702,12 @@ async def chat_send(
         usage_by_message: dict[str, dict[str, int]] = {}
         last_usage_signature = ""
         last_status_signature = ""
+        last_tool_output_signature = ""
         debug_msg_count = 0
         try:
+            analysis_tool_names = set(getattr(AnalysisTool, "__all__", []))
+            main_tool_names = set(getattr(GeneralTool, "__all__", []))
+
             def _resolve_agent_source(meta) -> str:
                 if not isinstance(meta, dict):
                     return "main"
@@ -724,6 +729,16 @@ async def chat_send(
                 if any(k in text for k in ("data-analyzer", "analysis", "analyzer")):
                     return "analysis"
                 return "main"
+
+            def _resolve_tool_source(tool_name: str) -> str:
+                name = str(tool_name or "").strip()
+                if name == "write_todos":
+                    return "main"
+                if name in analysis_tool_names:
+                    return "analysis"
+                if name in main_tool_names:
+                    return "main"
+                return "simulator"
 
             def _is_main_agent_message(meta) -> bool:
                 if not isinstance(meta, dict):
@@ -959,6 +974,7 @@ async def chat_send(
                             continue
 
                         # Timeline output disabled by product requirement.
+                        tool_source = _resolve_tool_source(name_msg)
                         tool_status_text = f"正在执行工具：{name_msg or 'tool'}"
                         signature = f"tool:{name_msg}:{_truncate_text(_normalize_text(content_msg), max_len=60)}"
                         if signature != last_status_signature:
@@ -967,10 +983,52 @@ async def chat_send(
                                 {
                                     "type": "status",
                                     "text": tool_status_text,
-                                    "source": "main",
+                                    "source": tool_source,
                                 },
                                 ensure_ascii=False,
                             ) + "\n"
+                        tool_text = _normalize_text(content_msg)
+                        if tool_text and tool_source in {"simulator", "analysis"}:
+                            # Parse <think>...</think> in subagent/tool output to avoid leaking
+                            # reasoning tags into final visible answer text.
+                            think_matches = re.findall(
+                                r"<think>([\s\S]*?)</think>", tool_text, flags=re.IGNORECASE
+                            )
+                            if think_matches:
+                                tool_thinking_text = "\n".join(
+                                    part.strip() for part in think_matches if part and part.strip()
+                                ).strip()
+                                if tool_thinking_text:
+                                    tool_thinking_text = tool_thinking_text[:MAX_THINKING_CHARS]
+                                    yield json.dumps(
+                                        {
+                                            "type": "thinking",
+                                            "text": tool_thinking_text,
+                                            "source": tool_source,
+                                        },
+                                        ensure_ascii=False,
+                                    ) + "\n"
+                            tool_text = re.sub(
+                                r"<think>[\s\S]*?</think>",
+                                "",
+                                tool_text,
+                                flags=re.IGNORECASE,
+                            ).strip()
+
+                            output_signature = (
+                                f"{tool_source}:{name_msg}:"
+                                f"{hashlib.md5(tool_text.encode('utf-8', errors='ignore')).hexdigest()}"
+                            )
+                            if output_signature != last_tool_output_signature:
+                                last_tool_output_signature = output_signature
+                                yield json.dumps(
+                                    {
+                                        "type": "delta",
+                                        "text": _truncate_text(tool_text, max_len=600),
+                                        "source": tool_source,
+                                    },
+                                    ensure_ascii=False,
+                                ) + "\n"
 
                 try:
                     last = event["messages"][-1]
@@ -1002,11 +1060,33 @@ async def chat_send(
                 else:
                     final_delta = assistant_latest_text
                 if final_delta:
-                    assistant_stream_text = assistant_latest_text
-                    yield json.dumps(
-                        {"type": "delta", "text": final_delta, "source": "main"},
-                        ensure_ascii=False,
-                    ) + "\n"
+                    answer_delta, think_tag_delta, in_think_tag, think_tag_carry = (
+                        _split_think_and_answer_delta(
+                            final_delta, in_think=in_think_tag, carry=think_tag_carry
+                        )
+                    )
+                    if think_tag_delta:
+                        remain = MAX_THINKING_CHARS - len(thinking_stream_text)
+                        if remain > 0:
+                            to_emit = think_tag_delta[:remain]
+                            thinking_stream_text += to_emit
+                            if to_emit:
+                                yield json.dumps(
+                                    {
+                                        "type": "thinking",
+                                        "text": to_emit,
+                                        "source": "main",
+                                    },
+                                    ensure_ascii=False,
+                                ) + "\n"
+                        if len(think_tag_delta) > max(remain, 0):
+                            thinking_truncated = True
+                    if answer_delta:
+                        assistant_stream_text += answer_delta
+                        yield json.dumps(
+                            {"type": "delta", "text": answer_delta, "source": "main"},
+                            ensure_ascii=False,
+                        ) + "\n"
 
             if thinking_stream_text:
                 yield json.dumps(

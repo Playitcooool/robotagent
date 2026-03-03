@@ -86,6 +86,7 @@ def register_sim_routes(
             last_ts = float(since or 0.0)
             idle_ticks = 0
             last_emit_ts = 0.0
+            initial_sent = False
 
             while True:
                 if await request.is_disconnected():
@@ -94,7 +95,16 @@ def register_sim_routes(
                 payload = load_latest_frame_payload()
                 if payload.get("has_frame"):
                     current_ts = float(payload.get("timestamp") or 0.0)
-                    if current_ts > last_ts:
+                    if not initial_sent:
+                        initial_sent = True
+                        last_ts = max(last_ts, current_ts)
+                        idle_ticks = 0
+                        last_emit_ts = time.time()
+                        yield (
+                            f"event: frame\\ndata: "
+                            f"{json.dumps(payload, ensure_ascii=False)}\\n\\n"
+                        )
+                    elif current_ts > last_ts:
                         last_ts = current_ts
                         idle_ticks = 0
                         last_emit_ts = time.time()

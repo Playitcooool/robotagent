@@ -185,12 +185,7 @@ export default {
         try {
           const payload = JSON.parse(evt.data || '{}')
           if (!payload || !payload.has_frame) return
-          const ts = Number(payload.timestamp || 0)
-          if (ts > 0 && ts < liveFramePollStart) return
           liveFrame.value = payload
-          if (payload.done) {
-            setTimeout(stopLiveFrameStream, 1000)
-          }
         } catch (_) {
           // ignore parse errors
         }
