@@ -1,10 +1,4 @@
-llm:
-  chat: 'republicofkorokke-qwen3.5-4b-mlx-lm'
-  analysis: 'republicofkorokke-qwen3.5-4b-mlx-lm'
-  simulation: 'republicofkorokke-qwen3.5-4b-mlx-lm'
-  summary: 'qwen3-1.7b-mlx'
-  tool_selector: 'qwen3-0.6b-mlx'
-  judge: 'republicofkorokke-qwen3.5-4b-mlx-lm'
+llm: 'republicofkorokke-qwen3.5-4b-mlx-lm'
 
 model_url: "http://localhost:1234/v1"
 

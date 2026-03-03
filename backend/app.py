@@ -109,7 +109,7 @@ def get_tools():
 # ========== 5. 初始化LLM模型 ==========
 chatBot = ChatOpenAI(
     base_url=config["model_url"],
-    model=config["llm"]["chat"],
+    model=config["llm"],
     api_key="no_need",
     streaming=True,
 )
