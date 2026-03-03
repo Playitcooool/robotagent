@@ -698,7 +698,6 @@ async def chat_send(
         thinking_truncated = False
         MAX_THINKING_CHARS = 1600
         last_planning_signature = ""
-        last_timeline_signature = ""
         usage_by_message: dict[str, dict[str, int]] = {}
         last_usage_signature = ""
         debug_msg_count = 0
@@ -846,7 +845,7 @@ async def chat_send(
                             ensure_ascii=False,
                         ) + "\n"
 
-                    # process all tool messages in current state so planning/timeline
+                    # process all tool messages in current state so planning
                     # can update multiple times instead of only tracking the last one.
                     for message in messages:
                         role_msg = _normalize_message_role(message)
@@ -882,25 +881,7 @@ async def chat_send(
                             # write_todos 属于 planning 源，不写入右侧工具时间轴，避免重复展示。
                             continue
 
-                        tool_text = _normalize_text(content_msg)
-                        timeline_item = {
-                            "kind": "tool",
-                            "title": name_msg or "tool",
-                            "detail": _truncate_text(tool_text, max_len=220),
-                        }
-                        timeline_signature = json.dumps(
-                            timeline_item, ensure_ascii=False, sort_keys=True
-                        )
-                        if timeline_signature != last_timeline_signature:
-                            last_timeline_signature = timeline_signature
-                            yield json.dumps(
-                                {
-                                    "type": "timeline",
-                                    "item": timeline_item,
-                                    "updated_at": time.time(),
-                                },
-                                ensure_ascii=False,
-                            ) + "\n"
+                        # Timeline output disabled by product requirement.
 
                 try:
                     last = event["messages"][-1]
