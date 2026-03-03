@@ -879,6 +879,8 @@ async def chat_send(
                                     yield json.dumps(
                                         planning_payload, ensure_ascii=False
                                     ) + "\n"
+                            # write_todos 属于 planning 源，不写入右侧工具时间轴，避免重复展示。
+                            continue
 
                         tool_text = _normalize_text(content_msg)
                         timeline_item = {

@@ -393,14 +393,20 @@ export default {
             } else if (obj.type === 'tool') {
               toolResult.value = obj.result ?? obj.data ?? obj.payload ?? null
             } else if (obj.type === 'planning') {
-              const incoming = Array.isArray(obj.plan) ? obj.plan : []
+              const incoming = Array.isArray(obj.plan)
+                ? obj.plan
+                : (Array.isArray(obj.steps)
+                    ? obj.steps
+                    : (Array.isArray(obj.plan?.steps) ? obj.plan.steps : []))
               const normalized = incoming
                 .map((item, idx) => {
-                  const statusRaw = String(item?.status || '').toLowerCase()
+                  const statusRaw = String(item?.status || item?.state || '').toLowerCase().replace('-', '_')
                   let status = 'pending'
-                  if (statusRaw === 'in_progress') status = 'in_progress'
-                  if (statusRaw === 'completed') status = 'completed'
-                  const stepText = String(item?.step || item?.content || '').trim()
+                  if (statusRaw === 'in_progress' || statusRaw === 'running' || statusRaw === 'active') status = 'in_progress'
+                  if (statusRaw === 'completed' || statusRaw === 'done' || statusRaw === 'success') status = 'completed'
+                  const stepText = String(
+                    item?.step || item?.content || item?.title || item?.task || item?.text || ''
+                  ).trim()
                   if (!stepText) return null
                   return {
                     id: String(item?.id || idx + 1),
@@ -416,9 +422,19 @@ export default {
               }
             } else if (obj.type === 'timeline') {
               const item = obj.item || {}
+              const rawTitle = String(item.title || 'event')
+              const loweredTitle = rawTitle.toLowerCase()
+              if (
+                loweredTitle === 'write_todos' ||
+                loweredTitle === 'planning' ||
+                loweredTitle === 'plan' ||
+                loweredTitle.includes('todo')
+              ) {
+                continue
+              }
               const next = {
                 kind: String(item.kind || 'event'),
-                title: String(item.title || 'event'),
+                title: rawTitle,
                 detail: String(item.detail || ''),
                 timestamp: Number(obj.updated_at || Date.now() / 1000)
               }
