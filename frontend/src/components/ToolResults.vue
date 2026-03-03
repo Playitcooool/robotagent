@@ -133,7 +133,22 @@ export default {
       return new Date(ms).toLocaleTimeString()
     },
     renderMarkdown (content) {
-      return md.render(content || '')
+      return md.render(this.preprocessMarkdown(content || ''))
+    },
+    preprocessMarkdown (raw) {
+      let text = String(raw || '')
+      if (text.includes('\\n') && !text.includes('\n')) {
+        text = text.replace(/\\n/g, '\n').replace(/\\t/g, '\t')
+      }
+
+      const parts = text.split(/(```[\s\S]*?```)/g)
+      const normalized = parts.map((part) => {
+        if (part.startsWith('```')) return part
+        return part
+          .replace(/\\\(([\s\S]*?)\\\)/g, (_m, expr) => `$${String(expr).trim()}$`)
+          .replace(/\\\[([\s\S]*?)\\\]/g, (_m, expr) => `$$\n${String(expr).trim()}\n$$`)
+      })
+      return normalized.join('')
     }
   }
 }
