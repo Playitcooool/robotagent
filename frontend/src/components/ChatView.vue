@@ -37,6 +37,8 @@
       </div>
     </div>
 
+    <PlanningPanel :planning="planning" />
+
     <form class="composer" @submit.prevent="send">
       <textarea
         ref="textareaRef"
@@ -61,6 +63,7 @@ import markdownItKatex from 'markdown-it-katex'
 import markdownItHighlightjs from 'markdown-it-highlightjs'
 import hljs from 'highlight.js'
 import ThinkingTrace from './ThinkingTrace.vue'
+import PlanningPanel from './PlanningPanel.vue'
 
 const md = new MarkdownIt({
   html: false,
@@ -91,11 +94,15 @@ md.renderer.rules.link_open = function (tokens, idx, options, env, self) {
 
 export default {
   name: 'ChatView',
-  components: { ThinkingTrace },
+  components: { ThinkingTrace, PlanningPanel },
   props: {
     conversation: {
       type: Array,
       default: () => []
+    },
+    planning: {
+      type: [Object, null],
+      default: null
     }
   },
   emits: ['sendMessage'],

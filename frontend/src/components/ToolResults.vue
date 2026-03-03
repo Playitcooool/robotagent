@@ -2,6 +2,15 @@
   <div class="tool-results">
     <div class="header">工具结果</div>
     <div class="body">
+        <div v-if="liveFrame && liveFrame.image_url" class="image-wrap">
+          <img :src="liveFrame.image_url" alt="pybullet live frame" />
+          <div class="live-meta">
+            <span>{{ liveFrame.task || 'simulation' }}</span>
+            <span v-if="typeof liveFrame.step === 'number'">step {{ liveFrame.step }}/{{ liveFrame.total_steps || '?' }}</span>
+            <span>{{ liveFrame.done ? '完成' : '运行中' }}</span>
+          </div>
+        </div>
+
         <div v-if="hasUsage" class="usage-wrap">
           <div class="usage-head">
             <h4>Token 用量</h4>
@@ -23,29 +32,6 @@
           </div>
         </div>
 
-        <div v-if="planningSteps.length" class="plan-wrap">
-          <div class="plan-head">
-            <h4>执行计划</h4>
-            <span class="plan-count">{{ planningSteps.length }} 步</span>
-          </div>
-          <TransitionGroup tag="ol" class="plan-list" name="plan">
-            <li
-              v-for="(item, idx) in planningSteps"
-              :key="item.id || idx"
-              :class="['plan-item', item.status === 'in_progress' ? 'active' : item.status === 'completed' ? 'done' : '']"
-            >
-              <div class="plan-item-top">
-                <span :class="['plan-index', item.status === 'completed' ? 'index-done' : '']">
-                  <template v-if="item.status === 'completed'">✓</template>
-                  <template v-else>{{ idx + 1 }}</template>
-                </span>
-                <span class="plan-step">{{ item.step }}</span>
-              </div>
-              <span :class="['plan-status', `status-${item.status}`]">{{ statusLabel(item.status) }}</span>
-            </li>
-          </TransitionGroup>
-        </div>
-
         <div v-if="timelineItems.length" class="timeline-wrap">
           <div class="timeline-head">
             <h4>执行时间轴</h4>
@@ -65,18 +51,9 @@
           </ul>
         </div>
 
-        <div v-if="!planningSteps.length && !timelineItems.length && !result && !liveFrame" class="empty">无工具执行信息</div>
+        <div v-if="!timelineItems.length && !result && !liveFrame" class="empty">无工具执行信息</div>
 
-        <div v-if="liveFrame && liveFrame.image_url" class="image-wrap">
-          <img :src="liveFrame.image_url" alt="pybullet live frame" />
-          <div class="live-meta">
-            <span>{{ liveFrame.task || 'simulation' }}</span>
-            <span v-if="typeof liveFrame.step === 'number'">step {{ liveFrame.step }}/{{ liveFrame.total_steps || '?' }}</span>
-            <span>{{ liveFrame.done ? '完成' : '运行中' }}</span>
-          </div>
-        </div>
-
-        <div v-else>
+        <div>
           <div v-if="isImage(result)" class="image-wrap">
             <img :src="getImageUrl(result)" alt="tool image" />
           </div>
@@ -111,15 +88,10 @@ export default {
   props: {
     result: { type: [Object, String, null], default: null },
     liveFrame: { type: [Object, null], default: null },
-    planning: { type: [Object, null], default: null },
     timeline: { type: [Object, null], default: null },
     tokenUsage: { type: [Object, null], default: null }
   },
   computed: {
-    planningSteps () {
-      const steps = this.planning?.steps
-      return Array.isArray(steps) ? steps : []
-    },
     timelineItems () {
       const items = this.timeline?.items
       if (!Array.isArray(items)) return []
@@ -154,11 +126,6 @@ export default {
     isJson (r) { return r !== null && typeof r === 'object' && !this.isImage(r) },
     pretty (r) {
       try { return typeof r === 'string' ? r : JSON.stringify(r, null, 2) } catch (e) { return String(r) }
-    },
-    statusLabel (status) {
-      if (status === 'completed') return '已完成'
-      if (status === 'in_progress') return '进行中'
-      return '待执行'
     },
     formatTime (timestamp) {
       const ms = Number(timestamp || 0) * 1000
@@ -237,110 +204,6 @@ export default {
   background: #122033;
 }
 
-.plan-wrap {
-  margin-bottom: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  background: #101521;
-  padding: 10px;
-}
-
-.plan-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.plan-head h4 {
-  margin: 0;
-  font-size: 14px;
-}
-
-.plan-count {
-  font-size: 12px;
-  opacity: 0.7;
-}
-
-.plan-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: 8px;
-}
-
-.plan-item {
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  padding: 8px;
-  background: #0f131b;
-  transition: background 0.25s, border-color 0.25s, opacity 0.3s;
-}
-
-.plan-item.done {
-  opacity: 0.55;
-}
-
-.plan-item.active {
-  border-color: rgba(47, 125, 255, 0.5);
-  background: #122033;
-}
-
-.plan-item-top {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-}
-
-.plan-index {
-  width: 18px;
-  height: 18px;
-  border-radius: 999px;
-  display: inline-grid;
-  place-items: center;
-  font-size: 11px;
-  font-weight: 700;
-  background: rgba(47, 125, 255, 0.18);
-  color: #9fc1ff;
-  flex: 0 0 18px;
-  transition: background 0.25s, color 0.25s;
-}
-
-.plan-index.index-done {
-  background: rgba(32, 196, 120, 0.2);
-  color: #a5f3c7;
-}
-
-.plan-step {
-  font-size: 13px;
-  line-height: 1.35;
-  word-break: break-word;
-}
-
-.plan-status {
-  display: inline-flex;
-  margin-top: 6px;
-  border-radius: 999px;
-  padding: 2px 8px;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.status-pending {
-  color: #9aa4b2;
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.status-in_progress {
-  color: #9fc1ff;
-  background: rgba(47, 125, 255, 0.2);
-}
-
-.status-completed {
-  color: #a5f3c7;
-  background: rgba(32, 196, 120, 0.2);
-}
 
 .timeline-wrap {
   margin-bottom: 12px;
@@ -423,12 +286,4 @@ export default {
   word-break: break-word;
 }
 
-.plan-enter-active {
-  transition: opacity 0.22s ease, transform 0.22s ease;
-}
-
-.plan-enter-from {
-  opacity: 0;
-  transform: translateY(-5px);
-}
 </style>

@@ -30,14 +30,17 @@
       </aside>
 
       <main class="center">
-        <ChatView :conversation="conversation" @sendMessage="onSendMessage" />
+        <ChatView
+          :conversation="conversation"
+          :planning="planningState"
+          @sendMessage="onSendMessage"
+        />
       </main>
 
       <aside class="right">
         <ToolResults
           :result="toolResult"
           :liveFrame="liveFrame"
-          :planning="planningState"
           :timeline="timelineState"
           :tokenUsage="tokenUsageState"
         />
