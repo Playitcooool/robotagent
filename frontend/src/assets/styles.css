@@ -484,6 +484,41 @@ body {
   background: #101521;
 }
 
+.agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.agent-chip .agent-icon {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.agent-main {
+  color: #bfd5ff;
+  background: rgba(47, 125, 255, 0.18);
+  border: 1px solid rgba(47, 125, 255, 0.35);
+}
+
+.agent-simulator {
+  color: #ffd7b1;
+  background: rgba(255, 143, 64, 0.16);
+  border: 1px solid rgba(255, 143, 64, 0.35);
+}
+
+.agent-analysis {
+  color: #b6f2d3;
+  background: rgba(46, 194, 126, 0.16);
+  border: 1px solid rgba(46, 194, 126, 0.34);
+}
+
 .typing-card {
   min-width: 260px;
   padding: 12px 14px;

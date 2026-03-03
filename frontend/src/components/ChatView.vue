@@ -26,6 +26,10 @@
 
           <!-- markdown-rendered message -->
           <div v-else class="bubble">
+            <div v-if="m.role === 'assistant'" :class="['agent-chip', `agent-${agentKey(m.agent)}`]">
+              <span class="agent-icon">{{ agentIcon(m.agent) }}</span>
+              <span class="agent-name">{{ agentName(m.agent) }}</span>
+            </div>
             <ThinkingTrace
               v-if="m.role === 'assistant' && m.thinking"
               :done="Boolean(m.thinkingDone)"
@@ -177,6 +181,27 @@ export default {
       autoResizeTextarea()
     }
 
+    function agentKey (agent) {
+      const a = String(agent || '').toLowerCase()
+      if (a === 'simulator') return 'simulator'
+      if (a === 'analysis' || a === 'data-analyzer' || a === 'data_analyzer') return 'analysis'
+      return 'main'
+    }
+
+    function agentName (agent) {
+      const key = agentKey(agent)
+      if (key === 'simulator') return 'Simulator Agent'
+      if (key === 'analysis') return 'Analysis Agent'
+      return 'Main Agent'
+    }
+
+    function agentIcon (agent) {
+      const key = agentKey(agent)
+      if (key === 'simulator') return '🛠'
+      if (key === 'analysis') return '📊'
+      return '🧠'
+    }
+
     function autoResizeTextarea () {
       const el = textareaRef.value
       if (!el) return
@@ -232,6 +257,9 @@ export default {
       onCompositionStart,
       onCompositionEnd,
       onInput,
+      agentKey,
+      agentName,
+      agentIcon,
       messagesRef,
       textareaRef
     }

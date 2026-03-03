@@ -88,6 +88,7 @@ export default {
     const sidebarReloadToken = ref(0)
 
     const assistantStreams = {}
+    const assistantMessageIds = {}
     const liveFrame = ref(null)
     const planningState = ref({ steps: [], updatedAt: 0 })
     let liveFrameSource = null
@@ -248,11 +249,40 @@ export default {
       conversation.value.push(userMsg)
 
       const assistantId = Date.now() + 1
-      conversation.value.push({ id: assistantId, role: 'assistant', text: '', thinking: '', thinkingDone: false, thinkingTruncated: false, loading: true })
-      assistantStreams[assistantId] = {
+      const mainMessageId = `${assistantId}:main`
+      conversation.value.push({ id: mainMessageId, role: 'assistant', agent: 'main', text: '', thinking: '', thinkingDone: false, thinkingTruncated: false, loading: true })
+      assistantStreams[mainMessageId] = {
         text: '',
         thinking: '',
         thinkingTruncated: false
+      }
+      assistantMessageIds[assistantId] = { main: mainMessageId }
+
+      function normalizeSource (raw) {
+        const s = String(raw || '').trim().toLowerCase()
+        if (s === 'simulator') return 'simulator'
+        if (s === 'analysis' || s === 'data-analyzer' || s === 'data_analyzer') return 'analysis'
+        return 'main'
+      }
+
+      function ensureAgentMessage (sourceRaw) {
+        const source = normalizeSource(sourceRaw)
+        const bucket = assistantMessageIds[assistantId] || (assistantMessageIds[assistantId] = {})
+        if (bucket[source]) return bucket[source]
+        const msgId = `${assistantId}:${source}`
+        bucket[source] = msgId
+        assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false }
+        conversation.value.push({
+          id: msgId,
+          role: 'assistant',
+          agent: source,
+          text: '',
+          thinking: '',
+          thinkingDone: false,
+          thinkingTruncated: false,
+          loading: true
+        })
+        return msgId
       }
 
       try {
@@ -308,13 +338,14 @@ export default {
             }
 
             if (obj.type === 'delta') {
-              const idx = conversation.value.findIndex(m => m.id === assistantId)
+              const msgId = ensureAgentMessage(obj.source)
+              const idx = conversation.value.findIndex(m => m.id === msgId)
               const chunk = String(obj.text || '')
               if (!chunk) continue
 
-              let st = assistantStreams[assistantId]
+              let st = assistantStreams[msgId]
               if (!st) {
-                st = assistantStreams[assistantId] = { text: '', thinking: '', thinkingTruncated: false }
+                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false }
               }
 
               if (idx !== -1) {
@@ -325,15 +356,16 @@ export default {
                 conversation.value[idx].text = st.text
               } else {
                 st.text += chunk
-                conversation.value.push({ id: assistantId, role: 'assistant', text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated) })
+                conversation.value.push({ id: msgId, role: 'assistant', agent: normalizeSource(obj.source), text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated) })
               }
             } else if (obj.type === 'thinking') {
-              const idx = conversation.value.findIndex(m => m.id === assistantId)
+              const msgId = ensureAgentMessage(obj.source)
+              const idx = conversation.value.findIndex(m => m.id === msgId)
               const chunk = String(obj.text || '')
               if (!chunk) continue
-              let st = assistantStreams[assistantId]
+              let st = assistantStreams[msgId]
               if (!st) {
-                st = assistantStreams[assistantId] = { text: '', thinking: '', thinkingTruncated: false }
+                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false }
               }
               st.thinking += chunk
               if (idx !== -1) {
@@ -345,8 +377,9 @@ export default {
                 conversation.value[idx].thinkingTruncated = Boolean(st.thinkingTruncated)
               } else {
                 conversation.value.push({
-                  id: assistantId,
+                  id: msgId,
                   role: 'assistant',
+                  agent: normalizeSource(obj.source),
                   text: st.text || '',
                   thinking: st.thinking,
                   thinkingDone: false,
@@ -355,8 +388,9 @@ export default {
                 })
               }
             } else if (obj.type === 'thinking_done') {
-              const idxThinkDone = conversation.value.findIndex(m => m.id === assistantId)
-              const st = assistantStreams[assistantId]
+              const msgId = ensureAgentMessage(obj.source)
+              const idxThinkDone = conversation.value.findIndex(m => m.id === msgId)
+              const st = assistantStreams[msgId]
               if (st && obj.truncated) {
                 st.thinkingTruncated = true
               }
@@ -366,13 +400,42 @@ export default {
               }
             } else if (obj.type === 'error') {
               const errText = `[后端错误] ${obj.error}`
-              const idxErr2 = conversation.value.findIndex(m => m.id === assistantId)
+              const msgId = ensureAgentMessage('main')
+              const idxErr2 = conversation.value.findIndex(m => m.id === msgId)
               if (idxErr2 !== -1) {
                 conversation.value[idxErr2].loading = false
                 conversation.value[idxErr2].text = errText
                 conversation.value[idxErr2].thinkingDone = true
               } else {
-                conversation.value.push({ id: Date.now() + 3, role: 'assistant', text: errText })
+                conversation.value.push({ id: Date.now() + 3, role: 'assistant', agent: 'main', text: errText })
+              }
+            } else if (obj.type === 'status') {
+              const statusText = String(obj.text || '').trim()
+              if (!statusText) continue
+              const msgId = ensureAgentMessage(obj.source)
+              const idxStatus = conversation.value.findIndex(m => m.id === msgId)
+              let st = assistantStreams[msgId]
+              if (!st) {
+                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false }
+              }
+              if (idxStatus !== -1) {
+                if (conversation.value[idxStatus].loading) {
+                  conversation.value[idxStatus].loading = false
+                }
+                if (!String(st.text || '').trim()) {
+                  conversation.value[idxStatus].text = statusText
+                }
+              } else {
+                conversation.value.push({
+                  id: msgId,
+                  role: 'assistant',
+                  agent: normalizeSource(obj.source),
+                  text: statusText,
+                  thinking: st.thinking || '',
+                  thinkingDone: false,
+                  thinkingTruncated: Boolean(st.thinkingTruncated),
+                  loading: false
+                })
               }
             } else if (obj.type === 'planning') {
               const incoming = Array.isArray(obj.plan)
@@ -403,18 +466,21 @@ export default {
                 updatedAt: Number(obj.updated_at || Date.now() / 1000)
               }
             } else if (obj.type === 'done') {
-              const idxDone = conversation.value.findIndex(m => m.id === assistantId)
-              if (idxDone !== -1) {
+              const bucket = assistantMessageIds[assistantId] || {}
+              for (const msgId of Object.values(bucket)) {
+                const idxDone = conversation.value.findIndex(m => m.id === msgId)
+                if (idxDone === -1) continue
                 conversation.value[idxDone].loading = false
-                const stDone = assistantStreams[assistantId]
+                const stDone = assistantStreams[msgId]
                 if (stDone) {
                   conversation.value[idxDone].text = stDone.text || conversation.value[idxDone].text
                   conversation.value[idxDone].thinking = stDone.thinking || conversation.value[idxDone].thinking || ''
                   conversation.value[idxDone].thinkingDone = true
                   conversation.value[idxDone].thinkingTruncated = Boolean(stDone.thinkingTruncated || conversation.value[idxDone].thinkingTruncated)
-                  delete assistantStreams[assistantId]
+                  delete assistantStreams[msgId]
                 }
               }
+              delete assistantMessageIds[assistantId]
             }
           }
         }
@@ -424,17 +490,18 @@ export default {
             const obj = JSON.parse(buf)
             if (obj && obj.type === 'delta') {
               const chunk = String(obj.text || '')
-              const idxRem = conversation.value.findIndex(m => m.id === assistantId)
-              let st = assistantStreams[assistantId]
+              const msgId = ensureAgentMessage(obj.source)
+              const idxRem = conversation.value.findIndex(m => m.id === msgId)
+              let st = assistantStreams[msgId]
               if (!st) {
-                st = assistantStreams[assistantId] = { text: '', thinking: '', thinkingTruncated: false }
+                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false }
               }
               st.text += chunk
               if (idxRem !== -1) {
                 conversation.value[idxRem].loading = false
                 conversation.value[idxRem].text = st.text
               } else {
-                conversation.value.push({ id: assistantId, role: 'assistant', text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated) })
+                conversation.value.push({ id: msgId, role: 'assistant', agent: normalizeSource(obj.source), text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated) })
               }
             }
           } catch (err) {

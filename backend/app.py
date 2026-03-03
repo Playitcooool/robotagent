@@ -700,8 +700,31 @@ async def chat_send(
         last_planning_signature = ""
         usage_by_message: dict[str, dict[str, int]] = {}
         last_usage_signature = ""
+        last_status_signature = ""
         debug_msg_count = 0
         try:
+            def _resolve_agent_source(meta) -> str:
+                if not isinstance(meta, dict):
+                    return "main"
+                parts = []
+                for key in (
+                    "langgraph_path",
+                    "langgraph_node",
+                    "langgraph_checkpoint_ns",
+                    "checkpoint_ns",
+                ):
+                    value = meta.get(key)
+                    if isinstance(value, (list, tuple)):
+                        parts.extend(str(x).lower() for x in value)
+                    elif value is not None:
+                        parts.append(str(value).lower())
+                text = " ".join(parts)
+                if any(k in text for k in ("simulator", "pybullet", "gazebo")):
+                    return "simulator"
+                if any(k in text for k in ("data-analyzer", "analysis", "analyzer")):
+                    return "analysis"
+                return "main"
+
             def _is_main_agent_message(meta) -> bool:
                 if not isinstance(meta, dict):
                     return True
@@ -738,7 +761,41 @@ async def chat_send(
                                 f"[stream-debug] msg(type={msg.__class__.__name__}) has content_blocks={hasattr(msg, 'content_blocks')} additional_kwargs={hasattr(msg, 'additional_kwargs')} response_metadata={hasattr(msg, 'response_metadata')}"
                             )
                     role_name = _normalize_message_role(msg)
-                    if role_name in {"assistant", "ai"} and _is_main_agent_message(_meta):
+                    source = _resolve_agent_source(_meta)
+                    if role_name in {"assistant", "ai"} and not _is_main_agent_message(_meta):
+                        node = ""
+                        path_text = ""
+                        if isinstance(_meta, dict):
+                            node = str(_meta.get("langgraph_node") or "")
+                            raw_path = _meta.get("langgraph_path")
+                            if isinstance(raw_path, (list, tuple)):
+                                path_text = "/".join(str(x) for x in raw_path)
+                            elif raw_path is not None:
+                                path_text = str(raw_path)
+
+                        target = ""
+                        lowered_path = path_text.lower()
+                        if "simulator" in lowered_path:
+                            target = "simulator"
+                        elif "data-analyzer" in lowered_path:
+                            target = "data-analyzer"
+
+                        if target:
+                            status_text = f"已转交 {target} 执行，正在处理中..."
+                        elif node and node != "model":
+                            status_text = f"正在执行节点：{node}"
+                        else:
+                            status_text = "正在调用子代理执行任务..."
+
+                        signature = f"subagent:{status_text}"
+                        if signature != last_status_signature:
+                            last_status_signature = signature
+                            yield json.dumps(
+                                {"type": "status", "text": status_text, "source": source},
+                                ensure_ascii=False,
+                            ) + "\n"
+
+                    if role_name in {"assistant", "ai"}:
                         thinking_text = _extract_thinking_from_message(msg)
                         if thinking_text:
                             if len(thinking_text) > MAX_THINKING_CHARS:
@@ -754,7 +811,11 @@ async def chat_send(
                                 thinking_sent_text = thinking_text
                                 thinking_stream_text = thinking_text
                                 yield json.dumps(
-                                    {"type": "thinking", "text": thinking_delta},
+                                    {
+                                        "type": "thinking",
+                                        "text": thinking_delta,
+                                        "source": source,
+                                    },
                                     ensure_ascii=False,
                                 ) + "\n"
 
@@ -775,7 +836,11 @@ async def chat_send(
                                     thinking_stream_text += to_emit
                                     if to_emit:
                                         yield json.dumps(
-                                            {"type": "thinking", "text": to_emit},
+                                            {
+                                                "type": "thinking",
+                                                "text": to_emit,
+                                                "source": source,
+                                            },
                                             ensure_ascii=False,
                                         ) + "\n"
                                 if len(think_tag_delta) > max(remain, 0):
@@ -784,7 +849,11 @@ async def chat_send(
                             if answer_delta:
                                 assistant_stream_text += answer_delta
                                 yield json.dumps(
-                                    {"type": "delta", "text": answer_delta},
+                                    {
+                                        "type": "delta",
+                                        "text": answer_delta,
+                                        "source": source,
+                                    },
                                     ensure_ascii=False,
                                 ) + "\n"
                     continue
@@ -864,6 +933,14 @@ async def chat_send(
                             planning_steps = _extract_planning_steps_from_write_todos(
                                 content_msg
                             )
+                            status_text = "正在规划执行步骤..."
+                            signature = f"tool:{name_msg}:{status_text}"
+                            if signature != last_status_signature:
+                                last_status_signature = signature
+                                yield json.dumps(
+                                    {"type": "status", "text": status_text, "source": "main"},
+                                    ensure_ascii=False,
+                                ) + "\n"
                             if planning_steps:
                                 signature = json.dumps(
                                     planning_steps, ensure_ascii=False, sort_keys=True
@@ -882,6 +959,18 @@ async def chat_send(
                             continue
 
                         # Timeline output disabled by product requirement.
+                        tool_status_text = f"正在执行工具：{name_msg or 'tool'}"
+                        signature = f"tool:{name_msg}:{_truncate_text(_normalize_text(content_msg), max_len=60)}"
+                        if signature != last_status_signature:
+                            last_status_signature = signature
+                            yield json.dumps(
+                                {
+                                    "type": "status",
+                                    "text": tool_status_text,
+                                    "source": "main",
+                                },
+                                ensure_ascii=False,
+                            ) + "\n"
 
                 try:
                     last = event["messages"][-1]
@@ -905,6 +994,19 @@ async def chat_send(
 
                 if role == "assistant" and content is not None:
                     assistant_latest_text = _normalize_text(content)
+
+            # Fallback: if no/partial incremental output was emitted, flush final text.
+            if assistant_latest_text and assistant_latest_text != assistant_stream_text:
+                if assistant_latest_text.startswith(assistant_stream_text):
+                    final_delta = assistant_latest_text[len(assistant_stream_text) :]
+                else:
+                    final_delta = assistant_latest_text
+                if final_delta:
+                    assistant_stream_text = assistant_latest_text
+                    yield json.dumps(
+                        {"type": "delta", "text": final_delta, "source": "main"},
+                        ensure_ascii=False,
+                    ) + "\n"
 
             if thinking_stream_text:
                 yield json.dumps(
