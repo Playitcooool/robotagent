@@ -9,14 +9,28 @@
 
   <div v-else class="app-shell">
     <header class="app-topbar">
-      <div class="topbar-left">RobotAgent</div>
+      <div class="topbar-left">
+        <span class="brand">RobotAgent</span>
+        <button
+          :class="['top-nav-btn', activeTopTab === 'about' ? 'active' : '']"
+          @click="activeTopTab = 'about'"
+        >
+          项目介绍
+        </button>
+        <button
+          :class="['top-nav-btn', activeTopTab === 'chat' ? 'active' : '']"
+          @click="activeTopTab = 'chat'"
+        >
+          对话
+        </button>
+      </div>
       <div class="topbar-right">
         <span class="whoami">当前用户：{{ authUser.username }}</span>
         <button class="logout" @click="onLogout">退出登录</button>
       </div>
     </header>
 
-    <div :class="['app-grid', showToolPanel ? 'has-right' : 'no-right']">
+    <div v-if="activeTopTab === 'chat'" :class="['app-grid', showToolPanel ? 'has-right' : 'no-right']">
       <aside class="left">
         <Sidebar
           @selectSession="onSelectSession"
@@ -49,6 +63,10 @@
         </aside>
       </Transition>
     </div>
+
+    <main v-else class="about-shell">
+      <AboutView />
+    </main>
   </div>
 </template>
 
@@ -58,13 +76,14 @@ import Sidebar from './components/Sidebar.vue'
 import ChatView from './components/ChatView.vue'
 import ToolResults from './components/ToolResults.vue'
 import AuthView from './components/AuthView.vue'
+import AboutView from './components/AboutView.vue'
 
 const WELCOME_TEXT = '欢迎使用 RobotAgent！请选择左侧会话或发起新对话。'
 const AUTH_TOKEN_KEY = 'robotagent_auth_token'
 
 export default {
   name: 'App',
-  components: { Sidebar, ChatView, ToolResults, AuthView },
+  components: { Sidebar, ChatView, ToolResults, AuthView, AboutView },
   setup () {
     const initialSessionId = `session_${Date.now()}`
     const conversation = ref([
@@ -85,6 +104,7 @@ export default {
     const authToken = ref(localStorage.getItem(AUTH_TOKEN_KEY) || '')
     const authUser = ref(null)
     const authLoading = ref(true)
+    const activeTopTab = ref('chat')
     const showToolPanel = computed(() => {
       const msgs = Array.isArray(conversation.value) ? conversation.value : []
       if (msgs.length === 0) return false
@@ -474,6 +494,7 @@ export default {
 
     return {
       authLoading,
+      activeTopTab,
       authToken,
       authUser,
       conversation,
