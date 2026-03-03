@@ -135,6 +135,33 @@ async def startup_event():
         if not all_tools:
             logger.warning("未加载到任何工具，agent将使用空工具列表")
         subagents = list(await init_subagents())
+
+        def _subagent_name(sa) -> str:
+            if isinstance(sa, dict):
+                return str(sa.get("name") or "").strip()
+            return str(getattr(sa, "name", "") or "").strip()
+
+        available_subagents = [_subagent_name(sa) for sa in subagents]
+        available_subagents = [n for n in available_subagents if n]
+        logger.info(f"可用子代理：{available_subagents}")
+
+        prompt_suffix = (
+            "\n\n[Runtime Subagent Availability]\n"
+            f"- Available subagents now: {available_subagents or ['none']}\n"
+        )
+        if "simulator" not in available_subagents:
+            prompt_suffix += (
+                "- simulator is currently unavailable. "
+                "Do NOT invoke simulator. "
+                "For simulation requests, first explain simulator is unavailable and ask user to start MCP services.\n"
+            )
+        if "data-analyzer" not in available_subagents:
+            prompt_suffix += (
+                "- data-analyzer is currently unavailable. "
+                "Do NOT invoke data-analyzer.\n"
+            )
+        runtime_system_prompt = MainAgentPrompt.SYSTEM_PROMPT + prompt_suffix
+
         # 创建带工具的agent（核心修正）
         DB_URI = "redis://localhost:6379"
         async with AsyncRedisSaver.from_conn_string(DB_URI) as checkpointer:
@@ -142,7 +169,7 @@ async def startup_event():
             active_agent = create_deep_agent(
                 model=chatBot,
                 tools=all_tools,
-                system_prompt=MainAgentPrompt.SYSTEM_PROMPT,
+                system_prompt=runtime_system_prompt,
                 subagents=subagents,
                 checkpointer=checkpointer,
             )
@@ -676,6 +703,19 @@ async def chat_send(
         last_usage_signature = ""
         debug_msg_count = 0
         try:
+            def _is_main_agent_message(meta) -> bool:
+                if not isinstance(meta, dict):
+                    return True
+                node = str(meta.get("langgraph_node") or "")
+                if node and node != "model":
+                    return False
+                path = meta.get("langgraph_path")
+                # main graph model chunks are usually exactly this path;
+                # subagent/internal chunks often have longer/deeper paths.
+                if isinstance(path, (list, tuple)) and len(path) > 2:
+                    return False
+                return True
+
             # 同时订阅 messages(增量token) 与 values(状态事件)，保证前端实时流式显示。
             async for mode, event in active_agent.astream(
                 {"messages": [{"role": "user", "content": user_message}]},
@@ -687,6 +727,7 @@ async def chat_send(
                         msg, _meta = event
                     except Exception:
                         msg = event
+                        _meta = None
                     if DEBUG_STREAM_FIELDS and debug_msg_count < 6:
                         debug_msg_count += 1
                         if isinstance(msg, dict):
@@ -698,7 +739,7 @@ async def chat_send(
                                 f"[stream-debug] msg(type={msg.__class__.__name__}) has content_blocks={hasattr(msg, 'content_blocks')} additional_kwargs={hasattr(msg, 'additional_kwargs')} response_metadata={hasattr(msg, 'response_metadata')}"
                             )
                     role_name = _normalize_message_role(msg)
-                    if role_name in {"assistant", "ai"}:
+                    if role_name in {"assistant", "ai"} and _is_main_agent_message(_meta):
                         thinking_text = _extract_thinking_from_message(msg)
                         if thinking_text:
                             if len(thinking_text) > MAX_THINKING_CHARS:
@@ -805,6 +846,60 @@ async def chat_send(
                             ensure_ascii=False,
                         ) + "\n"
 
+                    # process all tool messages in current state so planning/timeline
+                    # can update multiple times instead of only tracking the last one.
+                    for message in messages:
+                        role_msg = _normalize_message_role(message)
+                        if role_msg != "tool":
+                            continue
+                        name_msg = _extract_message_name(message)
+                        content_msg = None
+                        if isinstance(message, dict):
+                            content_msg = message.get("content") or message.get("text")
+                        else:
+                            content_msg = getattr(message, "content", None) or getattr(
+                                message, "text", None
+                            )
+
+                        if name_msg == "write_todos":
+                            planning_steps = _extract_planning_steps_from_write_todos(
+                                content_msg
+                            )
+                            if planning_steps:
+                                signature = json.dumps(
+                                    planning_steps, ensure_ascii=False, sort_keys=True
+                                )
+                                if signature != last_planning_signature:
+                                    last_planning_signature = signature
+                                    planning_payload = {
+                                        "type": "planning",
+                                        "plan": planning_steps,
+                                        "updated_at": time.time(),
+                                    }
+                                    yield json.dumps(
+                                        planning_payload, ensure_ascii=False
+                                    ) + "\n"
+
+                        tool_text = _normalize_text(content_msg)
+                        timeline_item = {
+                            "kind": "tool",
+                            "title": name_msg or "tool",
+                            "detail": _truncate_text(tool_text, max_len=220),
+                        }
+                        timeline_signature = json.dumps(
+                            timeline_item, ensure_ascii=False, sort_keys=True
+                        )
+                        if timeline_signature != last_timeline_signature:
+                            last_timeline_signature = timeline_signature
+                            yield json.dumps(
+                                {
+                                    "type": "timeline",
+                                    "item": timeline_item,
+                                    "updated_at": time.time(),
+                                },
+                                ensure_ascii=False,
+                            ) + "\n"
+
                 try:
                     last = event["messages"][-1]
                 except Exception:
@@ -823,43 +918,7 @@ async def chat_send(
                         last, "text", None
                     )
 
-                if role == "tool" and name == "write_todos":
-                    planning_steps = _extract_planning_steps_from_write_todos(content)
-                    if planning_steps:
-                        signature = json.dumps(
-                            planning_steps, ensure_ascii=False, sort_keys=True
-                        )
-                        if signature != last_planning_signature:
-                            last_planning_signature = signature
-                            planning_payload = {
-                                "type": "planning",
-                                "plan": planning_steps,
-                                "updated_at": time.time(),
-                            }
-                            yield json.dumps(
-                                planning_payload, ensure_ascii=False
-                            ) + "\n"
-
-                if role == "tool":
-                    tool_text = _normalize_text(content)
-                    timeline_item = {
-                        "kind": "tool",
-                        "title": name or "tool",
-                        "detail": _truncate_text(tool_text, max_len=220),
-                    }
-                    timeline_signature = json.dumps(
-                        timeline_item, ensure_ascii=False, sort_keys=True
-                    )
-                    if timeline_signature != last_timeline_signature:
-                        last_timeline_signature = timeline_signature
-                        yield json.dumps(
-                            {
-                                "type": "timeline",
-                                "item": timeline_item,
-                                "updated_at": time.time(),
-                            },
-                            ensure_ascii=False,
-                        ) + "\n"
+                # planning/timeline are handled above by scanning all tool messages.
 
                 if role == "assistant" and content is not None:
                     assistant_latest_text = _normalize_text(content)

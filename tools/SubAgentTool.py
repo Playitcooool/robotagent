@@ -1,5 +1,6 @@
 import sys
 import os
+import asyncio
 
 # 获取当前文件的绝对路径
 current_file = os.path.abspath(__file__)
@@ -30,6 +31,48 @@ with open(
     config = yaml.load(f.read(), yaml.FullLoader)
 
 
+def _resolve_mcp_service_urls() -> dict[str, str]:
+    """Resolve MCP endpoints from config with backward compatibility."""
+    mcp_cfg = config.get("mcp") or {}
+
+    # Preferred format:
+    # mcp:
+    #   servers:
+    #     pybullet: "http://127.0.0.1:8001/mcp"
+    #     gazebo: "http://127.0.0.1:8002/mcp"
+    servers = mcp_cfg.get("servers")
+    if isinstance(servers, dict) and servers:
+        resolved = {}
+        for name, raw_url in servers.items():
+            if not raw_url:
+                continue
+            url = str(raw_url).strip()
+            if not url:
+                continue
+            if not url.endswith("/mcp"):
+                url = url.rstrip("/") + "/mcp"
+            resolved[str(name).strip()] = url
+        if resolved:
+            return resolved
+
+    # Backward compatible format:
+    # mcp:
+    #   ip: "http://localhost"
+    #   port: "8001"
+    # Optional:
+    #   gazebo_port: "8002"
+    base = str(mcp_cfg.get("ip") or "http://127.0.0.1").rstrip("/")
+    pybullet_port = str(mcp_cfg.get("port") or mcp_cfg.get("pybullet_port") or "8001")
+    gazebo_port = mcp_cfg.get("gazebo_port")
+
+    urls = {
+        "pybullet": f"{base}:{pybullet_port}/mcp",
+    }
+    if gazebo_port:
+        urls["gazebo"] = f"{base}:{str(gazebo_port)}/mcp"
+    return urls
+
+
 async def init_subagents():
     subagents = []
 
@@ -54,18 +97,57 @@ async def init_subagents():
     subagents.append(analysis_agent)
 
     try:
-        sim_client = MultiServerMCPClient(
-            {
-                "pybullet": {"transport": "http", "url": "http://127.0.0.1:8001/mcp"},
-                "gazebo": {"transport": "http", "url": "http://127.0.0.1:8002/mcp"},
-            }
+        max_retries = int(os.environ.get("SIM_MCP_MAX_RETRIES", "8"))
+        retry_delay_s = float(os.environ.get("SIM_MCP_RETRY_DELAY_SECONDS", "1.0"))
+        service_urls = _resolve_mcp_service_urls()
+        logger.info(f"MCP service endpoints: {service_urls}")
+        simulation_tools = []
+        loaded_services = []
+        errors = {}
+
+        for service_name, service_url in service_urls.items():
+            service_tools = None
+            last_error = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    client = MultiServerMCPClient(
+                        {
+                            service_name: {
+                                "transport": "http",
+                                "url": service_url,
+                            }
+                        }
+                    )
+                    service_tools = await client.get_tools()
+                    break
+                except Exception as e:
+                    last_error = e
+                    logger.warning(
+                        f"{service_name} MCP not ready (attempt {attempt}/{max_retries}): {str(e)}"
+                    )
+                    if attempt < max_retries:
+                        await asyncio.sleep(retry_delay_s)
+
+            if service_tools:
+                simulation_tools.extend(service_tools)
+                loaded_services.append(service_name)
+            else:
+                errors[service_name] = str(last_error)
+
+        if not simulation_tools:
+            raise RuntimeError(
+                f"Simulation MCP unavailable: {errors}"
+            )
+
+        logger.info(
+            f"Simulation tools loaded from services={loaded_services}, total={len(simulation_tools)}"
         )
+
         simulation_chat = ChatOpenAI(
             base_url=config["model_url"],
             model=config["llm"],
             api_key="no_need",
         )
-        simulation_tools = await sim_client.get_tools()
         simulation_graph = create_agent(
             model=simulation_chat,
             tools=simulation_tools,
