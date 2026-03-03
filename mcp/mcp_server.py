@@ -131,6 +131,18 @@ def _publish_realtime_frame(
     _write_json_atomic(LATEST_META_FILE, payload)
 
 
+def _publish_snapshot(task: str, *, done: bool = False, extra: dict[str, Any] | None = None):
+    """Publish one snapshot frame for tools that do not iterate steps."""
+    _publish_realtime_frame(
+        run_id=str(uuid.uuid4()),
+        task=task,
+        step_idx=1,
+        total_steps=1,
+        done=done,
+        extra=extra,
+    )
+
+
 def setup_simulation(gui: bool = False):
     """初始化PyBullet环境，只在首次创建时运行"""
     global simulation_instance
@@ -189,6 +201,7 @@ def initialize_simulation(args: InitializeSimulationArgs):
     Initialize PyBullet simulation environment and keep it running until the program ends.
     """
     setup_simulation(gui=args.gui)
+    _publish_snapshot("initialize_simulation", done=False, extra={"status": "running"})
 
     return {
         "task": "initialize_simulation",
@@ -413,6 +426,12 @@ def adjust_physics(args: FrictionAndElasticityArgs):
     p.changeDynamics(
         cube, -1, lateralFriction=args.friction, restitution=args.restitution
     )
+    step(1)
+    _publish_snapshot(
+        "adjust_physics",
+        done=True,
+        extra={"friction": args.friction, "restitution": args.restitution},
+    )
 
     return {
         "task": "adjust_physics",
@@ -445,6 +464,12 @@ def multi_object_grab_and_place(args: MultiObjectGrabArgs):
     # 抓取并移动到目标位置
     for cube in cubes:
         p.resetBasePositionAndOrientation(cube, args.target_position, [0, 0, 0, 1])
+    step(1)
+    _publish_snapshot(
+        "multi_object_grab_and_place",
+        done=True,
+        extra={"count": len(cubes)},
+    )
 
     return {
         "task": "multi_object_grab_and_place",
@@ -479,6 +504,7 @@ def simulate_vision_sensor(args: VisionSensorArgs):
         viewMatrix=args.view_matrix,
         projectionMatrix=args.projection_matrix,
     )
+    _publish_snapshot("simulate_vision_sensor", done=True)
     return {
         "task": "simulate_vision_sensor",
         "status": "success",
@@ -518,6 +544,12 @@ def check_simulation_state():
             obj_id
         )  # 获取物体的唯一 ID 并获取其位置和姿态
         state_data[obj_id] = pos  # 以物体 ID 为键，将位置存储在字典中
+
+    _publish_snapshot(
+        "check_simulation_state",
+        done=False,
+        extra={"num_objects": num_objects},
+    )
 
     return {
         "task": "check_simulation_state",

@@ -98,7 +98,9 @@ export default {
     const authUser = ref(null)
     const authLoading = ref(true)
     const activeTopTab = ref('chat')
+    const simStreamActive = ref(false)
     const showToolPanel = computed(() => {
+      if (simStreamActive.value) return true
       const msgs = Array.isArray(conversation.value) ? conversation.value : []
       if (msgs.length === 0) return false
       const hasUser = msgs.some(m => String(m?.role || '') === 'user')
@@ -177,6 +179,7 @@ export default {
 
     function startLiveFrameStream () {
       if (liveFrameSource || !authToken.value) return
+      simStreamActive.value = true
       liveFramePollStart = Date.now() / 1000
       const url = `/api/sim/stream?since=${encodeURIComponent(liveFramePollStart)}`
       liveFrameSource = new EventSource(url)
@@ -200,6 +203,7 @@ export default {
       if (!liveFrameSource) return
       liveFrameSource.close()
       liveFrameSource = null
+      simStreamActive.value = false
     }
 
     async function onSelectSession (session) {
