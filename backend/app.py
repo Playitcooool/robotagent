@@ -690,8 +690,8 @@ async def chat_send(
         )
 
     async def event_stream():
-        assistant_latest_text = ""
-        assistant_stream_text = ""
+        main_latest_text = ""
+        main_stream_text = ""
         thinking_stream_text = ""
         thinking_sent_text = ""
         in_think_tag = False
@@ -739,6 +739,79 @@ async def chat_send(
                 if name in main_tool_names:
                     return "main"
                 return "simulator"
+
+            def _compute_missing_delta(current_stream: str, latest_full: str) -> str:
+                """Return only the unsent tail from latest_full relative to current_stream."""
+                stream = _normalize_text(current_stream)
+                latest = _normalize_text(latest_full)
+                if not latest:
+                    return ""
+                if not stream:
+                    return latest
+                if latest == stream:
+                    return ""
+                if latest.startswith(stream):
+                    return latest[len(stream) :]
+                # If stream already contains latest (e.g. whitespace normalized differently),
+                # do not emit any fallback to avoid duplicated full paragraphs.
+                if latest in stream:
+                    return ""
+                # Longest suffix/prefix overlap fallback.
+                max_k = min(len(stream), len(latest))
+                overlap = 0
+                for k in range(max_k, 0, -1):
+                    if stream[-k:] == latest[:k]:
+                        overlap = k
+                        break
+                return latest[overlap:]
+
+            def _extract_tool_display_text(raw_text: str) -> str:
+                text = _normalize_text(raw_text).strip()
+                if not text:
+                    return ""
+                normalized_quotes = (
+                    text.replace("“", '"')
+                    .replace("”", '"')
+                    .replace("‘", "'")
+                    .replace("’", "'")
+                )
+                for parser in (json.loads, ast.literal_eval):
+                    try:
+                        parsed = parser(normalized_quotes)
+                    except Exception:
+                        continue
+                    if isinstance(parsed, dict):
+                        result = parsed.get("result") or parsed.get("message")
+                        if result is not None:
+                            return _normalize_text(result).strip()
+                        # Common simulator return payload: format to readable summary.
+                        if any(
+                            k in parsed
+                            for k in (
+                                "final_position",
+                                "velocity",
+                                "final_velocity",
+                                "status",
+                            )
+                        ):
+                            parts = []
+                            if parsed.get("status") is not None:
+                                parts.append(f"status={parsed.get('status')}")
+                            if parsed.get("final_position") is not None:
+                                parts.append(f"final_position={parsed.get('final_position')}")
+                            if parsed.get("velocity") is not None:
+                                parts.append(f"velocity={parsed.get('velocity')}")
+                            if parsed.get("final_velocity") is not None:
+                                parts.append(f"final_velocity={parsed.get('final_velocity')}")
+                            if parts:
+                                return "仿真结果：" + ", ".join(parts)
+                m = re.search(
+                    r'"result"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"[a-zA-Z_]+"|}$)',
+                    normalized_quotes,
+                )
+                if m:
+                    return m.group(1).strip()
+                return text
 
             def _is_main_agent_message(meta) -> bool:
                 if not isinstance(meta, dict):
@@ -862,7 +935,8 @@ async def chat_send(
                                     thinking_truncated = True
 
                             if answer_delta:
-                                assistant_stream_text += answer_delta
+                                if source == "main":
+                                    main_stream_text += answer_delta
                                 yield json.dumps(
                                     {
                                         "type": "delta",
@@ -1014,6 +1088,7 @@ async def chat_send(
                                 tool_text,
                                 flags=re.IGNORECASE,
                             ).strip()
+                            tool_text = _extract_tool_display_text(tool_text)
 
                             output_signature = (
                                 f"{tool_source}:{name_msg}:"
@@ -1051,14 +1126,11 @@ async def chat_send(
                 # planning/timeline are handled above by scanning all tool messages.
 
                 if role == "assistant" and content is not None:
-                    assistant_latest_text = _normalize_text(content)
+                    main_latest_text = _normalize_text(content)
 
             # Fallback: if no/partial incremental output was emitted, flush final text.
-            if assistant_latest_text and assistant_latest_text != assistant_stream_text:
-                if assistant_latest_text.startswith(assistant_stream_text):
-                    final_delta = assistant_latest_text[len(assistant_stream_text) :]
-                else:
-                    final_delta = assistant_latest_text
+            if main_latest_text and main_latest_text != main_stream_text:
+                final_delta = _compute_missing_delta(main_stream_text, main_latest_text)
                 if final_delta:
                     answer_delta, think_tag_delta, in_think_tag, think_tag_carry = (
                         _split_think_and_answer_delta(
@@ -1082,7 +1154,7 @@ async def chat_send(
                         if len(think_tag_delta) > max(remain, 0):
                             thinking_truncated = True
                     if answer_delta:
-                        assistant_stream_text += answer_delta
+                        main_stream_text += answer_delta
                         yield json.dumps(
                             {"type": "delta", "text": answer_delta, "source": "main"},
                             ensure_ascii=False,
@@ -1094,7 +1166,7 @@ async def chat_send(
                     ensure_ascii=False,
                 ) + "\n"
 
-            final_text = assistant_latest_text or assistant_stream_text
+            final_text = main_latest_text or main_stream_text
             if final_text:
                 await _append_chat_message(user_id, session_id, "assistant", final_text)
             # 发送完成信号
