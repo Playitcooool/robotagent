@@ -27,9 +27,7 @@
         <div v-else class="bubble">
           <ThinkingTrace
             v-if="m.role === 'assistant' && m.thinking"
-            :content="m.thinking"
             :done="Boolean(m.thinkingDone)"
-            :truncated="Boolean(m.thinkingTruncated)"
           />
           <div
             class="markdown answer"

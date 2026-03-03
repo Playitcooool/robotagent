@@ -1,10 +1,10 @@
 llm:
-  chat: 'qwen3-4b-thinking-2507-claude-4.5-opus-high-reasoning-distill-heretic-qx86-hi-mlx'
-  analysis: 'qwen3-4b-thinking-2507-claude-4.5-opus-high-reasoning-distill-heretic-qx86-hi-mlx'
-  simulation: 'qwen3-4b-thinking-2507-claude-4.5-opus-high-reasoning-distill-heretic-qx86-hi-mlx'
+  chat: 'republicofkorokke-qwen3.5-4b-mlx-lm'
+  analysis: 'republicofkorokke-qwen3.5-4b-mlx-lm'
+  simulation: 'republicofkorokke-qwen3.5-4b-mlx-lm'
   summary: 'qwen3-1.7b-mlx'
   tool_selector: 'qwen3-0.6b-mlx'
-  judge: 'qwen3-4b-thinking-2507-claude-4.5-opus-high-reasoning-distill-heretic-qx86-hi-mlx'
+  judge: 'republicofkorokke-qwen3.5-4b-mlx-lm'
 
 model_url: "http://localhost:1234/v1"
 
