@@ -16,7 +16,7 @@
       </div>
     </header>
 
-    <div class="app-grid">
+    <div :class="['app-grid', showToolPanel ? 'has-right' : 'no-right']">
       <aside class="left">
         <Sidebar
           @selectSession="onSelectSession"
@@ -33,24 +33,27 @@
         <ChatView
           :conversation="conversation"
           :planning="planningState"
+          :landingMode="!showToolPanel"
           @sendMessage="onSendMessage"
         />
       </main>
 
-      <aside class="right">
-        <ToolResults
-          :result="toolResult"
-          :liveFrame="liveFrame"
-          :timeline="timelineState"
-          :tokenUsage="tokenUsageState"
-        />
-      </aside>
+      <Transition name="right-panel">
+        <aside v-if="showToolPanel" class="right">
+          <ToolResults
+            :result="toolResult"
+            :liveFrame="liveFrame"
+            :timeline="timelineState"
+            :tokenUsage="tokenUsageState"
+          />
+        </aside>
+      </Transition>
     </div>
   </div>
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import ChatView from './components/ChatView.vue'
 import ToolResults from './components/ToolResults.vue'
@@ -82,6 +85,18 @@ export default {
     const authToken = ref(localStorage.getItem(AUTH_TOKEN_KEY) || '')
     const authUser = ref(null)
     const authLoading = ref(true)
+    const showToolPanel = computed(() => {
+      const msgs = Array.isArray(conversation.value) ? conversation.value : []
+      if (msgs.length === 0) return false
+      const hasUser = msgs.some(m => String(m?.role || '') === 'user')
+      if (hasUser) return true
+      // Existing sessions may start with assistant history only; if so, show tool panel too.
+      return msgs.some((m) => {
+        if (String(m?.role || '') !== 'assistant') return false
+        const txt = String(m?.text || '').trim()
+        return txt && txt !== WELCOME_TEXT
+      })
+    })
 
     function handleAuthExpired () {
       authToken.value = ''
@@ -468,6 +483,7 @@ export default {
       timelineState,
       tokenUsageState,
       currentSessionId,
+      showToolPanel,
       sidebarReloadToken,
       onAuthed,
       onLogout,

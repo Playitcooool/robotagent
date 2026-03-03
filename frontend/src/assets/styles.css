@@ -76,6 +76,11 @@ body {
   grid-template-columns: 260px minmax(0, 1fr) 340px;
   gap: 14px;
   padding: 14px;
+  transition: grid-template-columns 0.3s ease;
+}
+
+.app-grid.no-right {
+  grid-template-columns: 260px minmax(0, 1fr);
 }
 
 .left,
@@ -372,6 +377,12 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
+  transition: padding 0.3s ease;
+}
+
+.chatview.landing-mode {
+  justify-content: center;
+  padding: 0 18px;
 }
 
 .messages {
@@ -502,6 +513,33 @@ body {
   background: var(--panel);
   border-bottom-left-radius: var(--radius-xl);
   border-bottom-right-radius: var(--radius-xl);
+  transition: width 0.32s ease, margin 0.32s ease, border-radius 0.32s ease, transform 0.32s ease, background 0.32s ease;
+}
+
+.composer-landing {
+  margin: 0 auto;
+  width: min(820px, 100%);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #141a27;
+  border-bottom-left-radius: 14px;
+  border-bottom-right-radius: 14px;
+  transform: translateY(0);
+}
+
+.landing-greet {
+  margin: 0 auto 12px;
+  width: min(820px, 100%);
+  text-align: center;
+}
+
+.landing-title {
+  margin: 0;
+  font-size: 26px;
+  line-height: 1.35;
+  font-weight: 600;
+  color: #e6edf3;
+  animation: landing-pop 0.35s ease;
 }
 
 .composer textarea {
@@ -689,6 +727,39 @@ body {
   100% { background-position: -80% 0; }
 }
 
+@keyframes landing-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.landing-fade-enter-active,
+.landing-fade-leave-active {
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.landing-fade-enter-from,
+.landing-fade-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.right-panel-enter-active,
+.right-panel-leave-active {
+  transition: opacity 0.28s ease, transform 0.28s ease;
+}
+
+.right-panel-enter-from,
+.right-panel-leave-to {
+  opacity: 0;
+  transform: translateX(12px);
+}
+
 @media (max-width: 1220px) {
   .app-grid {
     grid-template-columns: 240px minmax(0, 1fr);
@@ -717,6 +788,9 @@ body {
   .left { max-height: 260px; }
   .center { min-height: 72vh; }
   .bubble { max-width: 100%; }
+  .landing-title {
+    font-size: 20px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
