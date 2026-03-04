@@ -173,8 +173,19 @@ def cleanup_ros():
 @mcp_server.tool()
 def initialize_ros_connection():
     """
-    Initialize ROS2 node and connect to the running Gazebo instance.
-    Must be called before using any other Gazebo tools.
+    Initialize (or reuse) ROS2 node connections required for Gazebo services/topics.
+
+    Call this before the first Gazebo tool invocation to ensure all service clients
+    and subscribers are available.
+
+    Returns:
+    - task/status
+    - node_name
+    - message
+
+    When NOT to use:
+    - Do not call before every command in the same session; initialize once and reuse.
+    - Do not use this to reset simulation state (use reset_simulation/reset_world).
     """
     node = ensure_ros()
     return {
@@ -189,30 +200,53 @@ def initialize_ros_connection():
 # Tool 2: 生成模型
 # ======================
 class SpawnModelArgs(BaseModel):
-    model_name: str = Field(..., description="Unique name for the model in the scene.")
+    model_name: str = Field(
+        ...,
+        description="Unique entity name in Gazebo world; must not conflict with existing model names.",
+    )
     model_xml: str = Field(
         default="",
-        description="URDF or SDF XML string. Leave empty to load from model_path.",
+        description=(
+            "URDF/SDF XML content. Use when model text is provided inline. "
+            "If empty, model_path must be provided."
+        ),
     )
     model_path: str = Field(
-        default="", description="Absolute path to a URDF/SDF file."
+        default="",
+        description=(
+            "Absolute filesystem path to URDF/SDF file to load. "
+            "Used only when model_xml is empty."
+        ),
     )
     position: list[float] = Field(
-        default=[0.0, 0.0, 0.0], description="[x, y, z] spawn position in meters."
+        default=[0.0, 0.0, 0.0],
+        description="[x, y, z] spawn position in meters (world frame).",
     )
     orientation: list[float] = Field(
         default=[0.0, 0.0, 0.0, 1.0],
-        description="[x, y, z, w] quaternion orientation.",
+        description="[x, y, z, w] quaternion orientation (world frame).",
     )
     robot_namespace: str = Field(
-        default="", description="ROS2 namespace for the spawned robot."
+        default="",
+        description="ROS2 namespace for spawned model plugins/topics (optional).",
     )
 
 
 @mcp_server.tool()
 def spawn_model(args: SpawnModelArgs):
     """
-    Spawn a URDF or SDF model into the running Gazebo simulation.
+    Spawn a URDF/SDF model entity into Gazebo.
+
+    Requires either model_xml or model_path. If both provided, model_xml is used.
+
+    Returns:
+    - task/status
+    - model_name
+    - service status message
+
+    When NOT to use:
+    - Do not use for moving existing models (use set_model_state).
+    - Do not call with duplicate model_name unless replacement behavior is explicitly desired.
     """
     node = ensure_ros()
 
@@ -256,13 +290,25 @@ def spawn_model(args: SpawnModelArgs):
 # Tool 3: 删除模型
 # ======================
 class DeleteModelArgs(BaseModel):
-    model_name: str = Field(..., description="Name of the model to remove.")
+    model_name: str = Field(
+        ...,
+        description="Exact Gazebo model/entity name to delete.",
+    )
 
 
 @mcp_server.tool()
 def delete_model(args: DeleteModelArgs):
     """
-    Delete a model from the Gazebo simulation by name.
+    Delete one model/entity from Gazebo by name.
+
+    Returns:
+    - task/status
+    - model_name
+    - service status message
+
+    When NOT to use:
+    - Do not use for clearing entire world (use reset_world/reset_simulation).
+    - Do not call on unknown names without first checking list_models.
     """
     node = ensure_ros()
     req = DeleteEntity.Request()
@@ -280,16 +326,29 @@ def delete_model(args: DeleteModelArgs):
 # Tool 4: 获取模型状态
 # ======================
 class GetModelStateArgs(BaseModel):
-    model_name: str = Field(..., description="Name of the model.")
+    model_name: str = Field(
+        ...,
+        description="Gazebo model/entity name to query.",
+    )
     reference_frame: str = Field(
-        default="world", description="Reference frame for the pose."
+        default="world",
+        description="Reference frame for returned pose/twist (e.g., 'world').",
     )
 
 
 @mcp_server.tool()
 def get_model_state(args: GetModelStateArgs):
     """
-    Get the current pose and twist (velocity) of a model in Gazebo.
+    Query pose and twist (linear/angular velocity) of one Gazebo model.
+
+    Returns:
+    - position/orientation
+    - linear_velocity/angular_velocity
+    - task/status/model_name
+
+    When NOT to use:
+    - Do not use for continuous streaming state; this is a single snapshot call.
+    - Do not use for listing all models (use list_models).
     """
     node = ensure_ros()
     req = GetEntityState.Request()
@@ -317,27 +376,47 @@ def get_model_state(args: GetModelStateArgs):
 # Tool 5: 设置模型状态
 # ======================
 class SetModelStateArgs(BaseModel):
-    model_name: str = Field(..., description="Name of the model to move.")
-    position: list[float] = Field(..., description="[x, y, z] target position.")
+    model_name: str = Field(
+        ...,
+        description="Gazebo model/entity name to move.",
+    )
+    position: list[float] = Field(
+        ...,
+        description="[x, y, z] target position in meters.",
+    )
     orientation: list[float] = Field(
         default=[0.0, 0.0, 0.0, 1.0],
         description="[x, y, z, w] target orientation quaternion.",
     )
     linear_velocity: list[float] = Field(
-        default=[0.0, 0.0, 0.0], description="[vx, vy, vz] linear velocity."
+        default=[0.0, 0.0, 0.0],
+        description="[vx, vy, vz] linear velocity in m/s.",
     )
     angular_velocity: list[float] = Field(
-        default=[0.0, 0.0, 0.0], description="[wx, wy, wz] angular velocity."
+        default=[0.0, 0.0, 0.0],
+        description="[wx, wy, wz] angular velocity in rad/s.",
     )
     reference_frame: str = Field(
-        default="world", description="Reference frame for the state."
+        default="world",
+        description="Reference frame for the state command.",
     )
 
 
 @mcp_server.tool()
 def set_model_state(args: SetModelStateArgs):
     """
-    Teleport a model to a given pose and optionally set its velocity.
+    Set model pose/twist immediately (teleport-style state update).
+
+    Useful for scripted repositioning, resets, and deterministic test setup.
+
+    Returns:
+    - task/status
+    - model_name
+    - service status message
+
+    When NOT to use:
+    - Do not use as a physically realistic motion controller (this is instantaneous state set).
+    - Do not use for spawning new models (use spawn_model).
     """
     node = ensure_ros()
     req = SetEntityState.Request()
@@ -383,7 +462,15 @@ def set_model_state(args: SetModelStateArgs):
 @mcp_server.tool()
 def list_models():
     """
-    List all models currently present in the Gazebo simulation.
+    List all models currently reported in /model_states.
+
+    Returns:
+    - model_count
+    - array of model name + coarse position
+
+    When NOT to use:
+    - Do not use when you need full twist/orientation per model (use get_model_state).
+    - If /model_states is not publishing yet, result may be empty/warning.
     """
     node = ensure_ros()
     states = node.get_model_states()
@@ -420,7 +507,12 @@ def list_models():
 @mcp_server.tool()
 def pause_simulation():
     """
-    Pause the Gazebo physics engine.
+    Pause Gazebo physics stepping.
+
+    Use before deterministic state edits or for freezing the scene.
+
+    When NOT to use:
+    - Do not call if simulation is already paused unless idempotent behavior is acceptable.
     """
     node = ensure_ros()
     node.call_service_sync(node.pause_client, Empty.Request())
@@ -433,7 +525,10 @@ def pause_simulation():
 @mcp_server.tool()
 def unpause_simulation():
     """
-    Resume the Gazebo physics engine after a pause.
+    Resume Gazebo physics stepping after pause.
+
+    When NOT to use:
+    - Do not call if simulation is already running unless idempotent behavior is acceptable.
     """
     node = ensure_ros()
     node.call_service_sync(node.unpause_client, Empty.Request())
@@ -446,7 +541,12 @@ def unpause_simulation():
 @mcp_server.tool()
 def reset_simulation():
     """
-    Reset the Gazebo simulation: resets both simulation time and all model states.
+    Full simulation reset: reset simulation clock and model states.
+
+    Use for hard episode restart.
+
+    When NOT to use:
+    - Do not use when you need to preserve simulation time (use reset_world).
     """
     node = ensure_ros()
     node.call_service_sync(node.reset_sim_client, Empty.Request())
@@ -459,7 +559,12 @@ def reset_simulation():
 @mcp_server.tool()
 def reset_world():
     """
-    Reset the Gazebo world: resets model states only, keeps simulation time.
+    World reset: reset model states while keeping simulation clock.
+
+    Use for soft episode reset where time continuity matters.
+
+    When NOT to use:
+    - Do not use when you need full time reset (use reset_simulation).
     """
     node = ensure_ros()
     node.call_service_sync(node.reset_world_client, Empty.Request())
@@ -472,18 +577,29 @@ def reset_world():
 class CaptureCameraArgs(BaseModel):
     topic: str = Field(
         default="/camera/image_raw",
-        description="ROS2 image topic to capture from (must publish sensor_msgs/Image).",
+        description=(
+            "ROS2 image topic to capture (must publish sensor_msgs/Image, rgb8/bgr8 preferred)."
+        ),
     )
     timeout: float = Field(
-        default=5.0, description="Max seconds to wait for a frame."
+        default=5.0,
+        description="Max seconds to wait for one frame before returning timeout.",
     )
 
 
 @mcp_server.tool()
 def capture_camera(args: CaptureCameraArgs):
     """
-    Capture a single image frame from a Gazebo camera sensor via ROS2 topic.
-    Returns the image as a base64-encoded PNG string.
+    Capture one camera frame from a ROS2 image topic and return PNG base64.
+
+    Returns:
+    - status success/timeout
+    - topic
+    - image_base64 + format=png (on success)
+
+    When NOT to use:
+    - Do not use for high-rate continuous video streaming (this is single-frame polling).
+    - Do not use on non-image topics.
     """
     node = ensure_ros()
     node.subscribe_camera(args.topic)
@@ -515,7 +631,13 @@ def capture_camera(args: CaptureCameraArgs):
 @mcp_server.tool()
 def cleanup_ros_connection():
     """
-    Shut down the ROS2 node and clean up all resources.
+    Shutdown ROS2 node/executor and release all Gazebo MCP ROS resources.
+
+    Use when agent session is finished and no further Gazebo tools are needed.
+
+    When NOT to use:
+    - Do not call mid-task before pending Gazebo calls complete.
+    - Do not call if subsequent Gazebo tools are expected immediately (re-init required).
     """
     cleanup_ros()
     return {

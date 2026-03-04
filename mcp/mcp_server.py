@@ -192,13 +192,30 @@ def step(n: int = 240):
 # Tool 1: 初始化模拟环境
 # ======================
 class InitializeSimulationArgs(BaseModel):
-    gui: bool = Field(default=False, description="Whether to enable PyBullet GUI.")
+    gui: bool = Field(
+        default=False,
+        description=(
+            "Whether to open PyBullet GUI. False is recommended for server/agent usage "
+            "because DIRECT mode is faster and headless."
+        ),
+    )
 
 
 @mcp_server.tool()
 def initialize_simulation(args: InitializeSimulationArgs):
     """
-    Initialize PyBullet simulation environment and keep it running until the program ends.
+    Initialize or reuse the global PyBullet world.
+
+    Use this tool before any motion/control tool when the simulator may be uninitialized.
+    Safe to call repeatedly; if a simulation is already running, it reuses the existing world.
+
+    Returns:
+    - task/status/message
+    - also publishes a snapshot frame to the realtime stream directory.
+
+    When NOT to use:
+    - Do not call this before every single action in the same episode; initialize once and reuse.
+    - Do not use this as a cleanup/reset tool (use cleanup_simulation_tool when done).
     """
     setup_simulation(gui=args.gui)
     _publish_snapshot("initialize_simulation", done=False, extra={"status": "running"})
@@ -215,18 +232,44 @@ def initialize_simulation(args: InitializeSimulationArgs):
 # ======================
 class PushCubeStepArgs(BaseModel):
     start_position: list[float] = Field(
-        default=[0.0, 0.0, 0.02], description="Initial position of the cube."
+        default=[0.0, 0.0, 0.02],
+        description=(
+            "Cube start position [x, y, z] in meters. "
+            "Recommended z around 0.02 to place cube on plane."
+        ),
     )
     push_vector: list[float] = Field(
-        default=[0.2, 0.0, 0.0], description="Vector along which to push the cube."
+        default=[0.2, 0.0, 0.0],
+        description=(
+            "Translation vector [dx, dy, dz] applied over the full episode. "
+            "Positive x moves right in default camera view."
+        ),
     )
-    steps: int = Field(default=120, description="Number of simulation steps.")
+    steps: int = Field(
+        default=120,
+        description=(
+            "Number of incremental steps. Must be > 0. "
+            "Higher values create smoother motion and denser frame stream."
+        ),
+    )
 
 
 @mcp_server.tool()
 def push_cube_step(args: PushCubeStepArgs):
     """
-    Push a cube step-by-step in the simulation environment.
+    Run a deterministic cube pushing sequence with realtime frame streaming.
+
+    Best for simple motion-control demos and verifying scene updates.
+    Creates a cube, moves it incrementally, and publishes frame metadata on each step.
+
+    Returns:
+    - final_position
+    - stream_id / stream_meta_path for frame tracking
+    - human-readable message
+
+    When NOT to use:
+    - Do not use for articulated robot manipulation; this is a cube baseline.
+    - Do not use with non-positive steps.
     """
     ensure_simulation()
     if args.steps <= 0:
@@ -283,18 +326,35 @@ def push_cube_step(args: PushCubeStepArgs):
 # ======================
 class GrabAndPlaceStepArgs(BaseModel):
     start_position: list[float] = Field(
-        default=[0.2, 0.0, 0.02], description="Initial position of the object."
+        default=[0.2, 0.0, 0.02],
+        description="Object start position [x, y, z] in meters.",
     )
     target_position: list[float] = Field(
-        default=[0.4, 0.4, 0.02], description="Target position to place the object."
+        default=[0.4, 0.4, 0.02],
+        description="Object target position [x, y, z] in meters.",
     )
-    steps: int = Field(default=120, description="Number of steps to simulate.")
+    steps: int = Field(
+        default=120,
+        description=(
+            "Placement phase step count (after a fixed lift phase). Must be > 0."
+        ),
+    )
 
 
 @mcp_server.tool()
 def grab_and_place_step(args: GrabAndPlaceStepArgs):
     """
-    Grab and place object step-by-step in the simulation environment.
+    Simulate a simplified pick-and-place episode with realtime frame streaming.
+
+    Workflow:
+    1) Lift object to a transport pose.
+    2) Move/place object to target.
+
+    Returns final position and stream metadata for visualization.
+
+    When NOT to use:
+    - Do not use for precise grasp/contact planning; this is a simplified teleport-style routine.
+    - Do not use with non-positive steps.
     """
     ensure_simulation()
     if args.steps <= 0:
@@ -344,18 +404,34 @@ def grab_and_place_step(args: GrabAndPlaceStepArgs):
 # 路径规划工具
 class PathPlanningArgs(BaseModel):
     start_position: list[float] = Field(
-        default=[0.2, 0.0, 0.02], description="Start position of the arm."
+        default=[0.2, 0.0, 0.02],
+        description="Robot base start position [x, y, z] in meters.",
     )
     target_position: list[float] = Field(
-        default=[0.4, 0.4, 0.02], description="Target position."
+        default=[0.4, 0.4, 0.02],
+        description="Robot base target position [x, y, z] in meters.",
     )
-    steps: int = Field(default=240, description="Steps for planning and moving.")
+    steps: int = Field(
+        default=240,
+        description=(
+            "Linear interpolation steps from start to target. Must be > 0."
+        ),
+    )
 
 
 @mcp_server.tool()
 def path_planning(args: PathPlanningArgs):
     """
-    Plan and move robot arm from start to target position.
+    Execute a simple path-planning baseline (linear path) for KUKA base motion.
+
+    Intended as a lightweight planning/control placeholder, not full IK or obstacle-aware planning.
+    Publishes frames at every step for downstream UI streaming.
+
+    Returns final robot position and stream metadata.
+
+    When NOT to use:
+    - Do not use when obstacle avoidance or IK-level realism is required.
+    - Do not use with non-positive steps.
     """
     ensure_simulation()
     if args.steps <= 0:
@@ -410,14 +486,31 @@ def path_planning(args: PathPlanningArgs):
 
 # 增加摩擦力和弹性
 class FrictionAndElasticityArgs(BaseModel):
-    friction: float = Field(default=0.5, description="Friction coefficient.")
-    restitution: float = Field(default=0.9, description="Elasticity (bounciness).")
+    friction: float = Field(
+        default=0.5,
+        description=(
+            "Lateral friction coefficient for test cube dynamics. Typical range: 0.0~2.0."
+        ),
+    )
+    restitution: float = Field(
+        default=0.9,
+        description=(
+            "Restitution (bounciness) for test cube. Typical range: 0.0~1.0."
+        ),
+    )
 
 
 @mcp_server.tool()
 def adjust_physics(args: FrictionAndElasticityArgs):
     """
-    Adjust friction and elasticity of the environment objects.
+    Create a cube and set its friction/restitution to test contact behavior.
+
+    Use before control experiments that depend on surface interaction.
+    Publishes a snapshot frame after applying dynamics.
+
+    When NOT to use:
+    - Do not use as a motion-control action; it only changes dynamics parameters.
+    - Do not expect global scene-wide physics update; this currently applies to the created test cube.
     """
     ensure_simulation()
     cube = p.loadURDF("cube_small.urdf", [0, 0, 0.02])
@@ -444,17 +537,25 @@ def adjust_physics(args: FrictionAndElasticityArgs):
 class MultiObjectGrabArgs(BaseModel):
     object_positions: list[list[float]] = Field(
         default=[[0.2, 0.0, 0.02], [0.4, 0.4, 0.02]],
-        description="List of initial object positions.",
+        description="List of object start positions, each as [x, y, z].",
     )
     target_position: list[float] = Field(
-        default=[0.6, 0.6, 0.02], description="Target position to place objects."
+        default=[0.6, 0.6, 0.02],
+        description="Shared target position [x, y, z] for all objects.",
     )
 
 
 @mcp_server.tool()
 def multi_object_grab_and_place(args: MultiObjectGrabArgs):
     """
-    Grab and place multiple objects at the same time.
+    Move multiple cubes to one target location in a single batch operation.
+
+    Useful for multi-object scene setup and quick state generation.
+    Publishes one snapshot frame after movement.
+
+    When NOT to use:
+    - Do not use for sequential pick-place with collision-aware planning.
+    - Do not use when object-specific trajectories are required.
     """
     ensure_simulation()
     cubes = []
@@ -480,21 +581,38 @@ def multi_object_grab_and_place(args: MultiObjectGrabArgs):
 
 # 模拟视觉传感器
 class VisionSensorArgs(BaseModel):
-    width: int = Field(default=640, description="Image width of the camera.")
-    height: int = Field(default=480, description="Image height of the camera.")
+    width: int = Field(
+        default=640,
+        description="Camera image width in pixels.",
+    )
+    height: int = Field(
+        default=480,
+        description="Camera image height in pixels.",
+    )
     view_matrix: list[float] = Field(
-        default=[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0], description="Camera view matrix."
+        default=[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0],
+        description=(
+            "Flattened 4x4 view matrix used by PyBullet getCameraImage."
+        ),
     )
     projection_matrix: list[float] = Field(
         default=[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0],
-        description="Camera projection matrix.",
+        description="Flattened 4x4 projection matrix for camera rendering.",
     )
 
 
 @mcp_server.tool()
 def simulate_vision_sensor(args: VisionSensorArgs):
     """
-    Simulate a vision sensor to capture an image from the scene.
+    Capture one camera image from the current scene.
+
+    Note:
+    - Returns raw image array from PyBullet (not PNG URL by default).
+    - Also publishes a snapshot frame to the shared realtime stream for UI preview.
+
+    When NOT to use:
+    - Do not use if you only need object state/poses (use check_simulation_state instead).
+    - Do not assume returned image is compressed/serialized for direct JSON transport.
     """
     ensure_simulation()
     width, height = args.width, args.height
@@ -519,7 +637,13 @@ def simulate_vision_sensor(args: VisionSensorArgs):
 @mcp_server.tool()
 def cleanup_simulation_tool():
     """
-    Cleanup the PyBullet simulation environment once all tasks are finished.
+    Tear down the active simulation connection and clear local simulation state.
+
+    Use when a task is fully finished and resources should be released.
+
+    When NOT to use:
+    - Do not call mid-episode unless you intentionally want to end the current world.
+    - Do not call before state-inspection tools that rely on an active simulation.
     """
     cleanup_simulation()
     return {
@@ -532,7 +656,14 @@ def cleanup_simulation_tool():
 @mcp_server.tool()
 def check_simulation_state():
     """
-    Check the current state of the simulation and return object data.
+    Inspect current simulation objects and return per-body base positions.
+
+    Good for debugging scene state after control actions.
+    Also publishes a snapshot frame so UI can refresh even for read-only checks.
+
+    When NOT to use:
+    - Do not use as a motion action; this is read-only inspection.
+    - Do not expect detailed joint-level kinematics; it returns base positions only.
     """
     ensure_simulation()
     num_objects = p.getNumBodies()  # 获取场景中的物体数量
