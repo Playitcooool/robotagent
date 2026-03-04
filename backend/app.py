@@ -700,7 +700,10 @@ async def chat_send(
         MAX_THINKING_CHARS = 1600
         last_planning_signature = ""
         usage_by_message: dict[str, dict[str, int]] = {}
+        usage_by_agent_message: dict[str, dict[str, dict[str, int]]] = {}
+        message_source_by_id: dict[str, str] = {}
         last_usage_signature = ""
+        last_usage_by_agent_signature = ""
         last_status_signature = ""
         last_tool_output_signature = ""
         debug_msg_count = 0
@@ -850,6 +853,10 @@ async def chat_send(
                             )
                     role_name = _normalize_message_role(msg)
                     source = _resolve_agent_source(_meta)
+                    if role_name in {"assistant", "ai"}:
+                        msg_id = _extract_message_id(msg)
+                        if msg_id:
+                            message_source_by_id[msg_id] = source
                     if role_name in {"assistant", "ai"} and not _is_main_agent_message(_meta):
                         node = ""
                         path_text = ""
@@ -985,6 +992,30 @@ async def chat_send(
                             )
                         usage_by_message[msg_id] = merged
 
+                    # Build per-agent usage attribution map from message-id/source cache.
+                    for msg_id, merged_usage in usage_by_message.items():
+                        source = message_source_by_id.get(msg_id, "main")
+                        per_agent_map = usage_by_agent_message.setdefault(source, {})
+                        prev_usage = per_agent_map.get(msg_id) or {
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "total_tokens": 0,
+                        }
+                        per_agent_map[msg_id] = {
+                            "prompt_tokens": max(
+                                _safe_int(prev_usage.get("prompt_tokens")),
+                                _safe_int(merged_usage.get("prompt_tokens")),
+                            ),
+                            "completion_tokens": max(
+                                _safe_int(prev_usage.get("completion_tokens")),
+                                _safe_int(merged_usage.get("completion_tokens")),
+                            ),
+                            "total_tokens": max(
+                                _safe_int(prev_usage.get("total_tokens")),
+                                _safe_int(merged_usage.get("total_tokens")),
+                            ),
+                        }
+
                     usage_summary = _sum_usage_map(usage_by_message)
                     usage_signature = json.dumps(
                         usage_summary, ensure_ascii=False, sort_keys=True
@@ -1002,6 +1033,26 @@ async def chat_send(
                             },
                             ensure_ascii=False,
                         ) + "\n"
+
+                    usage_by_agent_summary = {}
+                    for agent_name, usage_map in usage_by_agent_message.items():
+                        summary = _sum_usage_map(usage_map)
+                        if summary.get("total_tokens", 0) > 0:
+                            usage_by_agent_summary[agent_name] = summary
+                    usage_by_agent_signature = json.dumps(
+                        usage_by_agent_summary, ensure_ascii=False, sort_keys=True
+                    )
+                    if (
+                        usage_by_agent_signature != last_usage_by_agent_signature
+                        and usage_by_agent_summary
+                    ):
+                        last_usage_by_agent_signature = usage_by_agent_signature
+                        logger.info(
+                            "[token-usage][stream] user=%s session=%s usage_by_agent=%s",
+                            user_id,
+                            session_id,
+                            usage_by_agent_summary,
+                        )
 
                     # process all tool messages in current state so planning
                     # can update multiple times instead of only tracking the last one.
@@ -1169,6 +1220,18 @@ async def chat_send(
             final_text = main_latest_text or main_stream_text
             if final_text:
                 await _append_chat_message(user_id, session_id, "assistant", final_text)
+            final_usage_by_agent = {}
+            for agent_name, usage_map in usage_by_agent_message.items():
+                summary = _sum_usage_map(usage_map)
+                if summary.get("total_tokens", 0) > 0:
+                    final_usage_by_agent[agent_name] = summary
+            if final_usage_by_agent:
+                logger.info(
+                    "[token-usage][final] user=%s session=%s usage_by_agent=%s",
+                    user_id,
+                    session_id,
+                    final_usage_by_agent,
+                )
             # 发送完成信号
             yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
         except Exception as e:
