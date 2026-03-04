@@ -181,6 +181,18 @@ export default {
       if (liveFrameSource || !authToken.value) return
       simStreamActive.value = true
       liveFramePollStart = Date.now() / 1000
+
+      // Bootstrap with latest known frame so UI shows image immediately
+      // even before SSE pushes a new update.
+      apiFetch('/api/sim/latest-frame')
+        .then((res) => (res.ok ? res.json() : null))
+        .then((payload) => {
+          if (payload && payload.has_frame) {
+            liveFrame.value = payload
+          }
+        })
+        .catch(() => {})
+
       const url = `/api/sim/stream?since=${encodeURIComponent(liveFramePollStart)}`
       liveFrameSource = new EventSource(url)
 
