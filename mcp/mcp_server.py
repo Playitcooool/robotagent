@@ -33,10 +33,23 @@ STREAM_DIR = Path(
 ).resolve()
 LATEST_META_FILE = STREAM_DIR / "latest.json"
 LATEST_FRAME_FILE = STREAM_DIR / "latest.png"
+REQUIRED_PYBULLET_ASSETS = [
+    "plane.urdf",
+    "cube_small.urdf",
+    "kuka_iiwa/model.urdf",
+]
 
 
 def _ensure_stream_dir():
     STREAM_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _pybullet_asset_status() -> dict[str, bool]:
+    data_path = Path(pybullet_data.getDataPath())
+    return {
+        rel: (data_path / rel).exists()
+        for rel in REQUIRED_PYBULLET_ASSETS
+    }
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]):
@@ -219,11 +232,35 @@ def initialize_simulation(args: InitializeSimulationArgs):
     """
     setup_simulation(gui=args.gui)
     _publish_snapshot("initialize_simulation", done=False, extra={"status": "running"})
+    asset_status = _pybullet_asset_status()
 
     return {
         "task": "initialize_simulation",
         "status": "success",
         "message": "Simulation environment initialized and running.",
+        "asset_status": asset_status,
+    }
+
+
+@mcp_server.tool()
+def check_static_assets():
+    """
+    Check required PyBullet static assets bundled by pybullet_data.
+
+    Returns:
+    - data_path
+    - asset_status map
+    - missing_assets list
+    """
+    data_path = Path(pybullet_data.getDataPath())
+    status = _pybullet_asset_status()
+    missing = [k for k, v in status.items() if not v]
+    return {
+        "task": "check_static_assets",
+        "status": "success" if not missing else "warning",
+        "data_path": str(data_path),
+        "asset_status": status,
+        "missing_assets": missing,
     }
 
 

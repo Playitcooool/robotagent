@@ -1,7 +1,9 @@
 import asyncio
 import base64
+import os
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import rclpy
@@ -20,6 +22,29 @@ from std_srvs.srv import Empty
 # 初始化 MCP 服务器
 # ======================
 mcp_server = FastMCP("gazebo_simulator")
+
+
+DEFAULT_BUILTIN_MODEL_ROOT = Path(__file__).resolve().parent / "assets" / "gazebo_models"
+BUILTIN_MODEL_ROOT = Path(
+    os.environ.get("GAZEBO_BUILTIN_MODEL_ROOT", str(DEFAULT_BUILTIN_MODEL_ROOT))
+).resolve()
+
+
+def _available_builtin_models() -> list[str]:
+    if not BUILTIN_MODEL_ROOT.exists():
+        return []
+    names: list[str] = []
+    for p in sorted(BUILTIN_MODEL_ROOT.iterdir()):
+        if p.is_dir() and (p / "model.sdf").exists():
+            names.append(p.name)
+    return names
+
+
+def _resolve_builtin_model_path(name: str) -> Path | None:
+    candidate = BUILTIN_MODEL_ROOT / name / "model.sdf"
+    if candidate.exists():
+        return candidate
+    return None
 
 
 # ======================
@@ -146,6 +171,14 @@ def ensure_ros() -> GazeboMCPNode:
     if not rclpy.ok():
         rclpy.init()
 
+    # Ensure Gazebo can resolve model:// references from built-in local assets.
+    if BUILTIN_MODEL_ROOT.exists():
+        existing = os.environ.get("GAZEBO_MODEL_PATH", "")
+        model_path_parts = [p for p in existing.split(":") if p]
+        if str(BUILTIN_MODEL_ROOT) not in model_path_parts:
+            model_path_parts.insert(0, str(BUILTIN_MODEL_ROOT))
+            os.environ["GAZEBO_MODEL_PATH"] = ":".join(model_path_parts)
+
     _ros_node = GazeboMCPNode()
     _ros_executor = MultiThreadedExecutor()
     _ros_executor.add_node(_ros_node)
@@ -237,7 +270,8 @@ def spawn_model(args: SpawnModelArgs):
     """
     Spawn a URDF/SDF model entity into Gazebo.
 
-    Requires either model_xml or model_path. If both provided, model_xml is used.
+    Requires either model_xml or model_path. If both are empty, it will try
+    built-in assets at `<mcp>/assets/gazebo_models/<model_name>/model.sdf`.
 
     Returns:
     - task/status
@@ -252,13 +286,20 @@ def spawn_model(args: SpawnModelArgs):
 
     xml = args.model_xml
     if not xml:
-        if not args.model_path:
-            raise ValueError("Provide either model_xml or model_path.")
-        from pathlib import Path
-
-        path = Path(args.model_path)
+        path: Path | None = None
+        if args.model_path:
+            path = Path(args.model_path)
+        else:
+            path = _resolve_builtin_model_path(args.model_name)
+        if path is None:
+            builtins = _available_builtin_models()
+            builtins_hint = f" Available built-ins: {builtins}." if builtins else ""
+            raise ValueError(
+                "Provide either model_xml or model_path."
+                f"{builtins_hint} You can also set GAZEBO_BUILTIN_MODEL_ROOT."
+            )
         if not path.exists():
-            raise FileNotFoundError(f"Model file not found: {args.model_path}")
+            raise FileNotFoundError(f"Model file not found: {path}")
         xml = path.read_text(encoding="utf-8")
 
     req = SpawnEntity.Request()
@@ -283,6 +324,23 @@ def spawn_model(args: SpawnModelArgs):
         "status": "success" if result.success else "failure",
         "model_name": args.model_name,
         "message": result.status_message,
+    }
+
+
+@mcp_server.tool()
+def list_builtin_models():
+    """
+    List built-in Gazebo static models shipped with this MCP server.
+
+    Returns:
+    - root: model root directory
+    - models: available built-in model names
+    """
+    return {
+        "task": "list_builtin_models",
+        "status": "success",
+        "root": str(BUILTIN_MODEL_ROOT),
+        "models": _available_builtin_models(),
     }
 
 

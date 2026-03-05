@@ -12,6 +12,8 @@ services:
     environment:
       - TZ=UTC
       - ROS_DOMAIN_ID=0
+      - GAZEBO_BUILTIN_MODEL_ROOT=/app/mcp/assets/gazebo_models
+      - GAZEBO_MODEL_PATH=/app/mcp/assets/gazebo_models:/opt/gazebo_models/osrf:/usr/share/gazebo-11/models
     ports:
       - "8002:8002"
     tty: true
