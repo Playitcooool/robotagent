@@ -718,6 +718,93 @@ def http_get(url: str, max_chars: int = 3000, timeout: float = 8.0) -> str:
 
 
 @tool(response_format="content")
+def web_search(query: str, max_results: int = 5, timeout: float = 8.0) -> str:
+    """
+    Search the web for recent/general information and return concise structured results.
+    Returns title/url/snippet to support citation in final answers.
+    """
+    q = " ".join((query or "").split())
+    if not q:
+        return "Error: query is required."
+    limit = max(1, min(max_results, 10))
+    endpoint = "https://api.duckduckgo.com/"
+    params = {
+        "q": q,
+        "format": "json",
+        "no_html": "1",
+        "skip_disambig": "1",
+    }
+    try:
+        resp = requests.get(endpoint, params=params, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        return json.dumps(
+            {"query": q, "results": [], "error": f"web search failed: {e}"},
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    results = []
+    abstract = (data.get("AbstractText") or "").strip()
+    abstract_url = (data.get("AbstractURL") or "").strip()
+    heading = (data.get("Heading") or "").strip()
+    if abstract and abstract_url:
+        results.append(
+            {
+                "title": heading or "DuckDuckGo Abstract",
+                "url": abstract_url,
+                "snippet": abstract,
+                "source": "duckduckgo_abstract",
+            }
+        )
+
+    def _collect_topics(items):
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            if "Topics" in item and isinstance(item["Topics"], list):
+                _collect_topics(item["Topics"])
+                continue
+            text = str(item.get("Text") or "").strip()
+            url = str(item.get("FirstURL") or "").strip()
+            if not text or not url:
+                continue
+            title = text.split(" - ")[0].strip() or "Search Result"
+            results.append(
+                {
+                    "title": _clean_label(title, max_len=120),
+                    "url": url,
+                    "snippet": text,
+                    "source": "duckduckgo_related",
+                }
+            )
+
+    _collect_topics(data.get("RelatedTopics") or [])
+
+    dedup = []
+    seen = set()
+    for r in results:
+        url = r.get("url", "")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        dedup.append(r)
+        if len(dedup) >= limit:
+            break
+
+    payload = {
+        "query": q,
+        "engine": "duckduckgo_instant_answer",
+        "returned": len(dedup),
+        "results": dedup,
+    }
+    if not dedup:
+        payload["warning"] = "no results from instant answer index"
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+@tool(response_format="content")
 def format_json(json_str: str, sort_keys: bool = False) -> str:
     """Validate and pretty-format JSON input."""
     try:
@@ -911,4 +998,5 @@ __all__ = [
     "qdrant_retrieve_context",
     "read_workspace_file",
     "search_workspace_text",
+    "web_search",
 ]

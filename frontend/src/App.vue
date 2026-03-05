@@ -250,8 +250,11 @@ export default {
       sidebarReloadToken.value += 1
     }
 
-    async function onSendMessage (text) {
+    async function onSendMessage (payload) {
       if (!authUser.value) return
+      const text = typeof payload === 'string' ? payload : String(payload?.text || '')
+      const enabledTools = Array.isArray(payload?.enabledTools) ? payload.enabledTools : []
+      if (!text.trim()) return
 
       liveFrame.value = null
       planningState.value = { steps: [], updatedAt: 0 }
@@ -299,7 +302,11 @@ export default {
       try {
         const res = await apiFetch('/api/chat/send', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text, session_id: currentSessionId.value })
+          body: JSON.stringify({
+            message: text,
+            session_id: currentSessionId.value,
+            enabled_tools: enabledTools
+          })
         })
 
         if (!res.ok) {

@@ -669,6 +669,12 @@ async def chat_send(
 ):
     user_message = payload.message or ""
     session_id = payload.session_id or "default_session"  # 使用会话ID或默认值
+    enabled_tools = {
+        str(t).strip()
+        for t in (payload.enabled_tools or [])
+        if str(t).strip()
+    }
+    web_search_enabled = "web_search" in enabled_tools
     user_id = current_user.get("uid", "unknown")
     await _append_chat_message(user_id, session_id, "user", user_message)
 
@@ -829,9 +835,18 @@ async def chat_send(
                     return False
                 return True
 
+            runtime_tool_note = (
+                "本轮可用工具：web_search。若问题需要最新外部信息，请自主判断并调用 web_search。"
+                if web_search_enabled
+                else "本轮禁用工具：web_search。请勿调用 web_search。"
+            )
+            input_messages = [
+                {"role": "system", "content": runtime_tool_note},
+                {"role": "user", "content": user_message},
+            ]
             # 同时订阅 messages(增量token) 与 values(状态事件)，保证前端实时流式显示。
             async for mode, event in active_agent.astream(
-                {"messages": [{"role": "user", "content": user_message}]},
+                {"messages": input_messages},
                 stream_mode=["messages", "values"],
                 config={"configurable": {"thread_id": f"{user_id}:{session_id}"}},
             ):

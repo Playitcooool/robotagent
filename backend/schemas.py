@@ -4,6 +4,7 @@ from pydantic import BaseModel
 class ChatIn(BaseModel):
     message: str
     session_id: str = None
+    enabled_tools: list[str] | None = None
 
 
 class AuthRegisterIn(BaseModel):

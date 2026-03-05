@@ -586,6 +586,102 @@ body {
   transition: width 0.32s ease, margin 0.32s ease, border-radius 0.32s ease, transform 0.32s ease, background 0.32s ease;
 }
 
+.tool-picker {
+  position: relative;
+}
+
+.tool-plus-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #111827;
+  color: #dce6f2;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.tool-plus-btn:hover {
+  border-color: rgba(67, 143, 255, 0.65);
+  background: #182235;
+  transform: translateY(-1px);
+}
+
+.tool-plus-symbol {
+  transform: translateY(-1px);
+}
+
+.tool-menu {
+  position: absolute;
+  left: 0;
+  bottom: 46px;
+  min-width: 260px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #0f1624;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.38);
+  padding: 8px;
+  z-index: 30;
+}
+
+.tool-item {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: #121b2c;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  color: #d8e2ef;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.tool-item:hover {
+  background: #17243a;
+  border-color: rgba(74, 149, 255, 0.45);
+}
+
+.tool-item.active {
+  background: #1a2c47;
+  border-color: rgba(83, 160, 255, 0.72);
+}
+
+.tool-item-icon {
+  width: 24px;
+  text-align: center;
+  font-size: 15px;
+}
+
+.tool-item-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tool-item-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tool-item-sub {
+  font-size: 11px;
+  color: #9fb1c8;
+}
+
+.tool-item-check {
+  margin-left: auto;
+  font-size: 11px;
+  color: #a7b8cd;
+}
+
 .composer-landing {
   margin: 0 auto;
   width: min(820px, 100%);
@@ -633,7 +729,7 @@ body {
   box-shadow: 0 0 0 2px rgba(47, 125, 255, 0.12);
 }
 
-.composer button {
+.composer .send-btn {
   padding: 10px 16px;
   border: none;
   border-radius: 999px;
@@ -643,7 +739,7 @@ body {
   cursor: pointer;
 }
 
-.composer button:disabled {
+.composer .send-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }

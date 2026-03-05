@@ -49,6 +49,32 @@
     <PlanningPanel v-if="!landingMode" :planning="planning" />
 
     <form :class="['composer', landingMode ? 'composer-landing' : '']" @submit.prevent="send">
+      <div class="tool-picker" ref="toolPickerRef">
+        <button
+          type="button"
+          class="tool-plus-btn"
+          @click="toggleToolMenu"
+          :aria-expanded="toolMenuOpen ? 'true' : 'false'"
+          aria-label="选择工具"
+        >
+          <span class="tool-plus-symbol">+</span>
+        </button>
+        <div v-if="toolMenuOpen" class="tool-menu">
+          <button
+            type="button"
+            :class="['tool-item', webSearchEnabled ? 'active' : '']"
+            @click="toggleWebSearch"
+            aria-label="联网搜索"
+          >
+            <span class="tool-item-icon" aria-hidden="true">🌐</span>
+            <span class="tool-item-main">
+              <span class="tool-item-title">联网搜索</span>
+              <span class="tool-item-sub">获取外部网页信息</span>
+            </span>
+            <span class="tool-item-check">{{ webSearchEnabled ? '已启用' : '未启用' }}</span>
+          </button>
+        </div>
+      </div>
       <textarea
         ref="textareaRef"
         v-model="text"
@@ -59,13 +85,13 @@
         @input="onInput"
         rows="2"
       ></textarea>
-      <button type="submit" :disabled="!canSend">发送</button>
+      <button type="submit" class="send-btn" :disabled="!canSend">发送</button>
     </form>
   </div>
 </template>
 
 <script>
-import { ref, watch, nextTick, onMounted } from 'vue'
+import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import MarkdownIt from 'markdown-it'
 import markdownItGfm from 'markdown-it-multimd-table'
 import markdownItKatex from 'markdown-it-katex'
@@ -123,14 +149,21 @@ export default {
     const text = ref('')
     const messagesRef = ref(null)
     const textareaRef = ref(null)
+    const toolPickerRef = ref(null)
     const canSend = ref(false)
     const composing = ref(false)
     const landingGreeting = ref('你好，我是 RobotAgent。有什么可以帮你？')
+    const toolMenuOpen = ref(false)
+    const enabledTools = ref([])
+    const webSearchEnabled = ref(false)
 
     function send () {
       const payload = text.value.trim()
       if (!payload) return
-      emit('sendMessage', payload)
+      emit('sendMessage', {
+        text: payload,
+        enabledTools: [...enabledTools.value]
+      })
       text.value = ''
       canSend.value = false
       nextTick(autoResizeTextarea)
@@ -179,6 +212,37 @@ export default {
     function onInput () {
       canSend.value = text.value.trim().length > 0
       autoResizeTextarea()
+    }
+
+    function toggleToolMenu () {
+      toolMenuOpen.value = !toolMenuOpen.value
+    }
+
+    function toggleWebSearch () {
+      webSearchEnabled.value = !webSearchEnabled.value
+      if (webSearchEnabled.value) {
+        if (!enabledTools.value.includes('web_search')) {
+          enabledTools.value.push('web_search')
+        }
+      } else {
+        enabledTools.value = enabledTools.value.filter((t) => t !== 'web_search')
+      }
+    }
+
+    function handleGlobalClick (evt) {
+      if (!toolMenuOpen.value) return
+      const root = toolPickerRef.value
+      if (!root) return
+      const target = evt.target
+      if (target && !root.contains(target)) {
+        toolMenuOpen.value = false
+      }
+    }
+
+    function handleGlobalKeydown (evt) {
+      if (evt.key === 'Escape') {
+        toolMenuOpen.value = false
+      }
     }
 
     function agentKey (agent) {
@@ -233,6 +297,13 @@ export default {
     onMounted(() => {
       autoResizeTextarea()
       scrollToBottom()
+      document.addEventListener('click', handleGlobalClick)
+      document.addEventListener('keydown', handleGlobalKeydown)
+    })
+
+    onBeforeUnmount(() => {
+      document.removeEventListener('click', handleGlobalClick)
+      document.removeEventListener('keydown', handleGlobalKeydown)
     })
 
     watch(
@@ -250,6 +321,8 @@ export default {
     return {
       text,
       canSend,
+      toolMenuOpen,
+      webSearchEnabled,
       landingGreeting,
       send,
       renderMarkdown,
@@ -257,11 +330,14 @@ export default {
       onCompositionStart,
       onCompositionEnd,
       onInput,
+      toggleToolMenu,
+      toggleWebSearch,
       agentKey,
       agentName,
       agentIcon,
       messagesRef,
-      textareaRef
+      textareaRef,
+      toolPickerRef
     }
   }
 }
