@@ -419,6 +419,43 @@ def _doc_source(hit: Dict[str, Any]) -> str:
     return str(source)
 
 
+def _clean_label(text: str, max_len: int = 96) -> str:
+    t = " ".join((text or "").strip().split())
+    if not t:
+        return "Reference"
+    if len(t) > max_len:
+        return t[: max_len - 3] + "..."
+    return t
+
+
+def _normalize_url(url: str) -> str:
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if u.startswith(("http://", "https://")):
+        return u
+    return ""
+
+
+def _build_reference_from_item(item: Dict[str, Any]) -> Dict[str, str]:
+    md = item.get("metadata") or {}
+    title = _clean_label(str(md.get("title") or ""))
+    paper_id = str(md.get("paper_id") or "")
+    source_name = _clean_label(str(md.get("source") or ""))
+    label = title if title and title != "Reference" else (paper_id or source_name or "Reference")
+
+    arxiv_url = _normalize_url(str(md.get("arxiv_url") or ""))
+    pdf_url = _normalize_url(str(md.get("pdf_url") or ""))
+    if not arxiv_url:
+        source_raw = str(md.get("source") or "")
+        source_match = re.search(r"(\d{4}\.\d{4,5})(v\d+)?", source_raw)
+        if source_match:
+            arxiv_url = f"https://arxiv.org/abs/{source_match.group(1)}"
+    url = arxiv_url or pdf_url
+    markdown = f"[{label}]({url})" if url else label
+    return {"label": label, "url": url, "markdown": markdown}
+
+
 def _weighted_rrf_merge(
     retrieval_groups: List[Dict[str, Any]],
     top_k: int,
@@ -795,6 +832,7 @@ def qdrant_retrieve_context(
 
     results = []
     for item in merged:
+        citation = _build_reference_from_item(item)
         payload = {
             "id": item.get("id"),
             "rrf_score": round(float(item.get("rrf_score", 0.0)), 6),
@@ -802,10 +840,25 @@ def qdrant_retrieve_context(
             "query_variants": item.get("query_variants", []),
             "doc_source": item.get("doc_source"),
             "metadata": item.get("metadata", {}),
+            "citation_label": citation["label"],
+            "citation_url": citation["url"],
+            "citation_markdown": citation["markdown"],
         }
         if include_content:
             payload["content"] = item.get("text", "")
         results.append(payload)
+
+    references = []
+    seen_ref = set()
+    for item in merged:
+        ref = _build_reference_from_item(item)
+        key = ref["url"] or ref["label"]
+        if not key or key in seen_ref:
+            continue
+        seen_ref.add(key)
+        references.append(ref)
+        if len(references) >= min(8, safe_top_k):
+            break
 
     response = {
         "query": query,
@@ -823,6 +876,8 @@ def qdrant_retrieve_context(
         "route_hits": route_hit_counter,
         "returned": len(results),
         "planning_hints": _simulation_hints(query, merged),
+        "references": references,
+        "references_markdown": [r["markdown"] for r in references],
         "results": results,
         "warnings": (
             []

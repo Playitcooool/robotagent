@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -167,6 +168,7 @@ def cut_chunks(
 
 def write_to_qdrant(
     chunk_dir: Path,
+    pdf_dir: Path,
     collection: str,
     host: str,
     port: int,
@@ -177,12 +179,58 @@ def write_to_qdrant(
     from qdrant_client.models import Distance, PointStruct, VectorParams
     from langchain_huggingface import HuggingFaceEmbeddings
 
+    def _normalize_arxiv_id(raw: str) -> str:
+        return re.sub(r"v\d+$", "", (raw or "").strip())
+
+    def _infer_paper_id_from_chunk_name(chunk_name: str) -> str:
+        base = re.sub(r"_chunk_\d+\.md$", "", chunk_name)
+        return _normalize_arxiv_id(base)
+
+    def _load_metadata_index(root: Path) -> dict:
+        index = {}
+        for meta_file in sorted(root.glob("metadata_*.jsonl")):
+            try:
+                with meta_file.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        record = json.loads(line)
+                        pid = _normalize_arxiv_id(
+                            record.get("base_id") or record.get("id") or ""
+                        )
+                        if pid:
+                            index[pid] = record
+            except Exception:
+                continue
+        return index
+
+    meta_index = _load_metadata_index(pdf_dir)
+    print(f"[Qdrant] metadata_index={len(meta_index)} from {pdf_dir}")
+
     texts = []
     payloads = []
     for p in sorted(chunk_dir.glob("*.md")):
         content = p.read_text(encoding="utf-8")
+        pid = _infer_paper_id_from_chunk_name(p.name)
+        meta = meta_index.get(pid, {})
+        title = str(meta.get("title") or pid or p.stem)
+        arxiv_url = meta.get("arxiv_url") or (f"https://arxiv.org/abs/{pid}" if pid else "")
+        published = str(meta.get("published") or "")
+        payloads.append(
+            {
+                "source": p.name,
+                "n_tokens": len(content.split()),
+                "text": content,
+                "paper_id": pid,
+                "title": title,
+                "arxiv_url": arxiv_url,
+                "pdf_url": str(meta.get("pdf_url") or ""),
+                "published": published,
+                "year": published[:4] if published else "",
+            }
+        )
         texts.append(content)
-        payloads.append({"source": p.name, "n_tokens": len(content.split()), "text": content})
 
     if not texts:
         print("[Qdrant] no chunks found, skip")
@@ -290,6 +338,7 @@ def main():
         print("[Pipeline] step6 qdrant")
         write_to_qdrant(
             chunk_dir=chunk_dir,
+            pdf_dir=pdf_dir,
             collection=args.qdrant_collection,
             host=args.qdrant_host,
             port=args.qdrant_port,

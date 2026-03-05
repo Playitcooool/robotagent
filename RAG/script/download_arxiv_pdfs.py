@@ -129,14 +129,18 @@ def _year_date_range(year: int):
 
 
 def _paper_meta(paper, pdf_path):
+    paper_id = paper.get_short_id()
+    base_id = re.sub(r"v\d+$", "", paper_id)
     return {
-        "id": paper.get_short_id(),
+        "id": paper_id,
+        "base_id": base_id,
         "title": paper.title,
         "authors": [a.name for a in (paper.authors or [])],
         "published": str(paper.published) if getattr(paper, "published", None) else "",
         "updated": str(paper.updated) if getattr(paper, "updated", None) else "",
         "categories": list(paper.categories or []),
         "pdf_url": paper.pdf_url,
+        "arxiv_url": f"https://arxiv.org/abs/{base_id}",
         "pdf_path": pdf_path,
     }
 
