@@ -1,8 +1,7 @@
 import json
 import os
 import re
-from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 
 import arxiv
@@ -30,12 +29,6 @@ DEFAULT_EXCLUDE_PHRASES = [
     "LLM jailbreak",
     "cryptography",
 ]
-DEFAULT_TOPIC_BUCKETS = {
-    "SLAM_Perception": ["slam", "visual odometry", "localization", "mapping", "3d perception"],
-    "Manipulation_Grasping": ["manipulation", "grasp", "dexterous", "pick and place"],
-    "Motion_Planning_Control": ["motion planning", "trajectory optimization", "mpc", "control", "locomotion"],
-    "Simulation_Sim2Real": ["simulation", "sim2real", "domain randomization", "pybullet", "gazebo"],
-}
 
 
 def _safe_paper_id(paper) -> str:
@@ -61,119 +54,176 @@ def _paper_matches_filters(paper, include_phrases, exclude_phrases) -> bool:
     return True
 
 
-def _build_query(categories, include_phrases):
+def _build_query(categories, include_phrases, date_range=None):
     cat_clause = " OR ".join([f"cat:{c}" for c in categories])
-    kw_clause = " OR ".join(
-        [f'ti:"{k}" OR abs:"{k}"' for k in include_phrases]
-    )
-    return f"({cat_clause}) AND ({kw_clause})"
+    kw_clause = " OR ".join([f'ti:"{k}" OR abs:"{k}"' for k in include_phrases])
+    query = f"({cat_clause}) AND ({kw_clause})"
+    if date_range:
+        query += f" AND submittedDate:[{date_range[0]} TO {date_range[1]}]"
+    return query
 
 
-def _infer_topics(text: str, topic_buckets: dict[str, list[str]]):
-    bag = (text or "").lower()
-    hits = []
-    for name, kws in topic_buckets.items():
-        if any((kw or "").lower() in bag for kw in kws):
-            hits.append(name)
-    return hits
+def _year_date_range(year: int):
+    # arXiv query time format: YYYYMMDDHHMM
+    return (f"{year}01010000", f"{year}12312359")
 
 
-def _paper_meta(paper, pdf_path, topic_buckets):
-    abstract = paper.summary or ""
-    topic_hits = _infer_topics(f"{paper.title}\n{abstract}", topic_buckets)
-    year = ""
-    if getattr(paper, "published", None):
-        try:
-            year = str(paper.published.year)
-        except Exception:
-            year = str(paper.published)[:4]
-    categories = list(paper.categories or [])
+def _paper_meta(paper, pdf_path):
     return {
         "id": paper.get_short_id(),
         "title": paper.title,
         "authors": [a.name for a in (paper.authors or [])],
         "published": str(paper.published) if getattr(paper, "published", None) else "",
         "updated": str(paper.updated) if getattr(paper, "updated", None) else "",
-        "year": year,
-        "categories": categories,
-        "primary_category": categories[0] if categories else "",
-        "topics": topic_hits,
+        "categories": list(paper.categories or []),
         "pdf_url": paper.pdf_url,
         "pdf_path": pdf_path,
     }
 
 
-def download_paper_pdf(paper, save_dir, topic_buckets):
+def download_paper_pdf(paper, save_dir):
     paper_id = _safe_paper_id(paper)
     pdf_path = os.path.join(save_dir, f"{paper_id}.pdf")
 
     # Skip if exists and reasonably large.
     if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 100 * 1024:
-        return True, f"[Skip] {pdf_path}", _paper_meta(paper, pdf_path, topic_buckets)
+        return True, f"[Skip] {pdf_path}", _paper_meta(paper, pdf_path)
 
     try:
         paper.download_pdf(filename=pdf_path)
-        return True, f"[OK] {pdf_path}", _paper_meta(paper, pdf_path, topic_buckets)
+        return True, f"[OK] {pdf_path}", _paper_meta(paper, pdf_path)
     except Exception as e:
         return False, f"[Failed] {pdf_path}: {e}", None
 
 
 def download_arxiv_pdfs(
     max_results=1000,
-    save_dir="arxiv_pdfs",
+    save_dir="arxiv_pdfs_filtered",
     workers=4,
     categories=None,
     include_phrases=None,
     exclude_phrases=None,
-    topic_buckets=None,
+    years_back=5,
+    per_year_overfetch=3,
 ):
     os.makedirs(save_dir, exist_ok=True)
     categories = categories or DEFAULT_CATEGORIES
     include_phrases = include_phrases or DEFAULT_INCLUDE_PHRASES
     exclude_phrases = exclude_phrases or DEFAULT_EXCLUDE_PHRASES
-    topic_buckets = topic_buckets or DEFAULT_TOPIC_BUCKETS
-
-    query = _build_query(categories, include_phrases)
-    print(f"[Query] {query}")
 
     # Use client-level throttling to be friendlier to arXiv.
     client = arxiv.Client(page_size=100, delay_seconds=3.0, num_retries=3)
-    search = arxiv.Search(
-        query=query,
-        max_results=max_results,
-        sort_by=arxiv.SortCriterion.SubmittedDate,
+    current_year = datetime.now().year
+    target_years = [current_year - i for i in range(max(1, years_back))]
+    per_year_target = max(1, max_results // len(target_years))
+    # Make sure total target is at least max_results.
+    remainder = max_results - per_year_target * len(target_years)
+    year_targets = {y: per_year_target for y in target_years}
+    for y in target_years[: max(0, remainder)]:
+        year_targets[y] += 1
+
+    print(
+        f"[Plan] years={target_years}, targets={year_targets}, total_target={sum(year_targets.values())}"
     )
 
-    selected = []
     seen_base_id = set()
-    for paper in client.results(search):
-        # Keep only latest version per base id.
-        base_id = re.sub(r"v\d+$", "", paper.get_short_id())
-        if base_id in seen_base_id:
-            continue
-        seen_base_id.add(base_id)
-        if _paper_matches_filters(paper, include_phrases, exclude_phrases):
-            selected.append(paper)
-
-    print(f"[Selected] {len(selected)} / {len(seen_base_id)} (after filtering)")
-
+    scanned = 0
+    selected = 0
     ok = 0
     failed = 0
     metas = []
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [
-            executor.submit(download_paper_pdf, p, save_dir, topic_buckets)
-            for p in selected
-        ]
-        for f in as_completed(futures):
-            success, msg, meta = f.result()
+    year_stats = {
+        y: {"target": year_targets[y], "scanned": 0, "selected": 0, "ok": 0, "failed": 0}
+        for y in target_years
+    }
+    max_inflight = max(1, workers * 4)
+
+    def _download_task(paper, year):
+        success, msg, meta = download_paper_pdf(paper, save_dir)
+        return year, success, msg, meta
+
+    def _drain_completed(future_set, block=False):
+        nonlocal ok, failed
+        if not future_set:
+            return future_set
+        if block:
+            done, pending = wait(future_set, return_when=FIRST_COMPLETED)
+        else:
+            done = {f for f in future_set if f.done()}
+            pending = future_set - done
+        for f in done:
+            year, success, msg, meta = f.result()
             print(msg)
             if success:
                 ok += 1
+                year_stats[year]["ok"] += 1
                 if meta:
                     metas.append(meta)
             else:
                 failed += 1
+                year_stats[year]["failed"] += 1
+        return pending
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = set()
+        for year in target_years:
+            target = year_targets[year]
+            selected_this_year = 0
+            date_range = _year_date_range(year)
+            query = _build_query(categories, include_phrases, date_range=date_range)
+            search = arxiv.Search(
+                query=query,
+                max_results=target * max(1, per_year_overfetch),
+                sort_by=arxiv.SortCriterion.SubmittedDate,
+            )
+            print(f"[Year {year}] target={target}, query={query}")
+
+            for paper in client.results(search):
+                scanned += 1
+                year_stats[year]["scanned"] += 1
+
+                # Keep only latest version per base id.
+                base_id = re.sub(r"v\d+$", "", paper.get_short_id())
+                if base_id in seen_base_id:
+                    continue
+                seen_base_id.add(base_id)
+
+                if not _paper_matches_filters(paper, include_phrases, exclude_phrases):
+                    if scanned % 100 == 0:
+                        print(
+                            f"[Progress] scanned={scanned}, selected={selected}, inflight={len(futures)}, ok={ok}, failed={failed}"
+                        )
+                    continue
+
+                selected += 1
+                selected_this_year += 1
+                year_stats[year]["selected"] += 1
+                futures.add(executor.submit(_download_task, paper, year))
+                if len(futures) >= max_inflight:
+                    futures = _drain_completed(futures, block=True)
+
+                if scanned % 100 == 0:
+                    print(
+                        f"[Progress] scanned={scanned}, selected={selected}, inflight={len(futures)}, ok={ok}, failed={failed}"
+                    )
+
+                if selected_this_year >= target:
+                    break
+
+            print(
+                f"[Year {year}] selected={selected_this_year}/{target}, global_selected={selected}"
+            )
+
+        while futures:
+            futures = _drain_completed(futures, block=True)
+
+    print(f"[Selected] {selected} / {len(seen_base_id)} (after filtering)")
+    print("[Yearly Stats]")
+    for y in target_years:
+        s = year_stats[y]
+        print(
+            f"  - {y}: target={s['target']}, scanned={s['scanned']}, selected={s['selected']}, ok={s['ok']}, failed={s['failed']}"
+        )
 
     meta_path = os.path.join(
         save_dir, f"metadata_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
@@ -182,41 +232,7 @@ def download_arxiv_pdfs(
         for m in metas:
             fw.write(json.dumps(m, ensure_ascii=False) + "\n")
 
-    # Dataset statistics for reporting in paper/appendix.
-    all_category_counter = Counter()
-    primary_category_counter = Counter()
-    topic_counter = Counter()
-    year_counter = Counter()
-    for m in metas:
-        for c in m.get("categories", []):
-            all_category_counter[c] += 1
-        if m.get("primary_category"):
-            primary_category_counter[m["primary_category"]] += 1
-        for t in m.get("topics", []):
-            topic_counter[t] += 1
-        if m.get("year"):
-            year_counter[m["year"]] += 1
-
-    stats = {
-        "query": query,
-        "max_results": max_results,
-        "selected_after_filtering": len(selected),
-        "download_success": ok,
-        "download_failed": failed,
-        "all_category_counts": dict(sorted(all_category_counter.items())),
-        "primary_category_counts": dict(sorted(primary_category_counter.items())),
-        "topic_bucket_counts": dict(sorted(topic_counter.items())),
-        "year_counts": dict(sorted(year_counter.items())),
-    }
-    stats_path = os.path.join(
-        save_dir, f"stats_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    )
-    with open(stats_path, "w", encoding="utf-8") as fw:
-        json.dump(stats, fw, ensure_ascii=False, indent=2)
-
-    print(f"[Done] ok={ok}, failed={failed}, metadata={meta_path}, stats={stats_path}")
-    print(f"[Stats] primary categories: {stats['primary_category_counts']}")
-    print(f"[Stats] topic buckets: {stats['topic_bucket_counts']}")
+    print(f"[Done] ok={ok}, failed={failed}, metadata={meta_path}")
 
 
 if __name__ == "__main__":
