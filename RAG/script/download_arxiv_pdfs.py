@@ -29,6 +29,23 @@ DEFAULT_EXCLUDE_PHRASES = [
     "LLM jailbreak",
     "cryptography",
 ]
+DEFAULT_QUALITY_BOOST_PHRASES = [
+    "benchmark",
+    "dataset",
+    "real-world",
+    "real robot",
+    "sim2real",
+    "open-source",
+    "github",
+    "ablation",
+    "evaluation",
+    "state of the art",
+]
+DEFAULT_QUALITY_PENALTY_PHRASES = [
+    "position paper",
+    "extended abstract",
+    "workshop summary",
+]
 
 
 def _safe_paper_id(paper) -> str:
@@ -52,6 +69,49 @@ def _paper_matches_filters(paper, include_phrases, exclude_phrases) -> bool:
     if exclude_phrases and _contains_any(bag, exclude_phrases):
         return False
     return True
+
+
+def _quality_score(
+    paper,
+    categories,
+    include_phrases,
+    boost_phrases,
+    penalty_phrases,
+):
+    title = paper.title or ""
+    abstract = paper.summary or ""
+    text = f"{title}\n{abstract}".lower()
+    score = 0.0
+
+    include_hit = sum(1 for p in include_phrases if p.lower() in text)
+    boost_hit = sum(1 for p in boost_phrases if p.lower() in text)
+    penalty_hit = sum(1 for p in penalty_phrases if p.lower() in text)
+    score += include_hit * 2.0
+    score += boost_hit * 1.2
+    score -= penalty_hit * 2.0
+
+    # Prefer papers whose primary category is in target robotics-related buckets.
+    cats = list(getattr(paper, "categories", []) or [])
+    if cats:
+        if cats[0] in categories:
+            score += 2.5
+        score += min(2.0, 0.5 * sum(1 for c in cats if c in categories))
+
+    # Penalize very short abstracts; reward sufficiently detailed abstracts.
+    abs_len = len(abstract)
+    if abs_len < 300:
+        score -= 2.0
+    elif abs_len >= 1200:
+        score += 1.5
+    elif abs_len >= 700:
+        score += 1.0
+
+    # Slight preference for concise, informative titles.
+    title_words = len(title.split())
+    if 5 <= title_words <= 22:
+        score += 0.6
+
+    return round(score, 3)
 
 
 def _build_query(categories, include_phrases, date_range=None):
@@ -105,11 +165,16 @@ def download_arxiv_pdfs(
     exclude_phrases=None,
     years_back=5,
     per_year_overfetch=3,
+    min_quality_score=2.0,
+    boost_phrases=None,
+    penalty_phrases=None,
 ):
     os.makedirs(save_dir, exist_ok=True)
     categories = categories or DEFAULT_CATEGORIES
     include_phrases = include_phrases or DEFAULT_INCLUDE_PHRASES
     exclude_phrases = exclude_phrases or DEFAULT_EXCLUDE_PHRASES
+    boost_phrases = boost_phrases or DEFAULT_QUALITY_BOOST_PHRASES
+    penalty_phrases = penalty_phrases or DEFAULT_QUALITY_PENALTY_PHRASES
 
     # Use client-level throttling to be friendlier to arXiv.
     client = arxiv.Client(page_size=100, delay_seconds=3.0, num_retries=3)
@@ -133,7 +198,14 @@ def download_arxiv_pdfs(
     failed = 0
     metas = []
     year_stats = {
-        y: {"target": year_targets[y], "scanned": 0, "selected": 0, "ok": 0, "failed": 0}
+        y: {
+            "target": year_targets[y],
+            "scanned": 0,
+            "selected": 0,
+            "ok": 0,
+            "failed": 0,
+            "qualified": 0,
+        }
         for y in target_years
     }
     max_inflight = max(1, workers * 4)
@@ -177,6 +249,7 @@ def download_arxiv_pdfs(
                 sort_by=arxiv.SortCriterion.SubmittedDate,
             )
             print(f"[Year {year}] target={target}, query={query}")
+            candidates = []
 
             for paper in client.results(search):
                 scanned += 1
@@ -195,20 +268,47 @@ def download_arxiv_pdfs(
                         )
                     continue
 
-                selected += 1
-                selected_this_year += 1
-                year_stats[year]["selected"] += 1
-                futures.add(executor.submit(_download_task, paper, year))
-                if len(futures) >= max_inflight:
-                    futures = _drain_completed(futures, block=True)
+                q = _quality_score(
+                    paper,
+                    categories=categories,
+                    include_phrases=include_phrases,
+                    boost_phrases=boost_phrases,
+                    penalty_phrases=penalty_phrases,
+                )
+                if q >= min_quality_score:
+                    candidates.append((q, paper))
+                    year_stats[year]["qualified"] += 1
 
                 if scanned % 100 == 0:
                     print(
                         f"[Progress] scanned={scanned}, selected={selected}, inflight={len(futures)}, ok={ok}, failed={failed}"
                     )
 
-                if selected_this_year >= target:
-                    break
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            shortlisted = candidates[:target]
+            if candidates:
+                best = candidates[0][0]
+                worst = candidates[-1][0]
+                print(
+                    f"[Year {year}] qualified={len(candidates)}, score_range=[{best}, {worst}], min_quality_score={min_quality_score}"
+                )
+            else:
+                print(
+                    f"[Year {year}] qualified=0, min_quality_score={min_quality_score}"
+                )
+            if len(shortlisted) < target:
+                print(
+                    f"[Year {year}] warning: selected only {len(shortlisted)} / target {target}. Consider lowering min_quality_score or increasing per_year_overfetch."
+                )
+
+            for q, paper in shortlisted:
+                _ = q
+                selected += 1
+                selected_this_year += 1
+                year_stats[year]["selected"] += 1
+                futures.add(executor.submit(_download_task, paper, year))
+                if len(futures) >= max_inflight:
+                    futures = _drain_completed(futures, block=True)
 
             print(
                 f"[Year {year}] selected={selected_this_year}/{target}, global_selected={selected}"
@@ -222,7 +322,7 @@ def download_arxiv_pdfs(
     for y in target_years:
         s = year_stats[y]
         print(
-            f"  - {y}: target={s['target']}, scanned={s['scanned']}, selected={s['selected']}, ok={s['ok']}, failed={s['failed']}"
+            f"  - {y}: target={s['target']}, scanned={s['scanned']}, qualified={s['qualified']}, selected={s['selected']}, ok={s['ok']}, failed={s['failed']}"
         )
 
     meta_path = os.path.join(
@@ -237,6 +337,6 @@ def download_arxiv_pdfs(
 
 if __name__ == "__main__":
     download_arxiv_pdfs(
-        max_results=2500,
+        max_results=5000,
         workers=4,
     )

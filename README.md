@@ -175,6 +175,45 @@ DEBUG_STREAM_FIELDS=1 BACKEND_PYTHON=/opt/miniconda3/envs/langchain/bin/python .
 
 用于查看前几个流式 chunk 的字段情况，便于确认是否有 reasoning/thinking 字段透传。
 
+## RAG 论文抓取方法（按年份均衡 + 质量过滤）
+
+`RAG/script/download_arxiv_pdfs.py` 当前采用的是“边筛边下”的抓取方式，并针对机器人领域做了质量优化：
+
+- 近 N 年均衡采样（默认近 5 年），按年分配目标数量，避免只抓到最新论文
+- 每年先过筛再打分，按质量分 Top-K 下载
+- 已下载 PDF 自动跳过（文件存在且大于 100KB）
+- 实时输出进度与按年份统计，便于实验复现与论文写作
+
+质量分主要参考：
+
+- 关键词命中（robot/manipulation/motion planning/sim2real 等）
+- 正向信号词（benchmark/dataset/ablation/evaluation/open-source 等）
+- 负向信号词（position paper/extended abstract 等）
+- 分类匹配度（如 `cs.RO`）
+- 摘要长度与信息密度
+
+### 推荐命令
+
+```bash
+python RAG/script/download_arxiv_pdfs.py
+```
+
+如果你在脚本里调整参数，常用项如下：
+
+- `max_results`：总目标下载量
+- `years_back`：回溯年份范围（例如 5 或 8）
+- `per_year_overfetch`：每年候选过采样倍数（越大越容易筛到高质量）
+- `min_quality_score`：质量阈值（越高越严格）
+
+### 输出统计口径
+
+脚本会输出总量与分年份统计：
+
+- 总体：`Selected / ok / failed`
+- 按年份：`target / scanned / qualified / selected / ok / failed`
+
+其中 `qualified` 表示通过质量阈值的候选数量。
+
 ## 常见问题
 
 ### 1) 重新运行 `./dev.sh` 报端口占用
