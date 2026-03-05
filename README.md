@@ -184,6 +184,28 @@ DEBUG_STREAM_FIELDS=1 BACKEND_PYTHON=/opt/miniconda3/envs/langchain/bin/python .
 - 已下载 PDF 自动跳过（文件存在且大于 100KB）
 - 实时输出进度与按年份统计，便于实验复现与论文写作
 
+### 一键 Pipeline（推荐）
+
+统一入口脚本：`RAG/script/run_rag_pipeline.py`
+
+```bash
+python RAG/script/run_rag_pipeline.py
+```
+
+默认流程：
+
+- 下载 arXiv PDF（按年份均衡 + 质量过滤）
+- PDF 分批
+- MinerU 解析
+- 提取 Markdown
+- 切分 chunks
+
+可选写入 Qdrant：
+
+```bash
+python RAG/script/run_rag_pipeline.py --to-qdrant
+```
+
 质量分主要参考：
 
 - 关键词命中（robot/manipulation/motion planning/sim2real 等）
