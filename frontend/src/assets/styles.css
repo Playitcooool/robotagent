@@ -537,6 +537,17 @@ body {
   gap: 8px;
 }
 
+.search-spinner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(65, 141, 255, 0.14);
+  animation: pulse-search 1s ease-in-out infinite;
+}
+
 .typing-dots {
   display: inline-flex;
   align-items: center;
@@ -824,6 +835,43 @@ body {
   margin-bottom: 0;
 }
 
+.web-sources {
+  margin-top: 10px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.2);
+  padding-top: 8px;
+}
+
+.web-sources-title {
+  font-size: 12px;
+  color: #a9b9cc;
+  margin-bottom: 6px;
+}
+
+.web-sources ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.web-sources li {
+  margin: 5px 0;
+}
+
+.web-sources a {
+  color: #77a9ff;
+  text-decoration: none;
+}
+
+.web-sources a:hover {
+  text-decoration: underline;
+}
+
+.web-sources .snippet {
+  display: block;
+  font-size: 12px;
+  color: #a5b1c0;
+  margin-top: 2px;
+}
+
 .markdown p { margin: 0.58em 0; }
 
 .markdown h1,
@@ -891,6 +939,12 @@ body {
 @keyframes shimmer {
   0% { background-position: 200% 0; }
   100% { background-position: -80% 0; }
+}
+
+@keyframes pulse-search {
+  0% { transform: scale(0.95); opacity: 0.6; }
+  50% { transform: scale(1.07); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.6; }
 }
 
 @keyframes landing-pop {

@@ -822,6 +822,39 @@ async def chat_send(
                     return m.group(1).strip()
                 return text
 
+            def _extract_web_search_refs(raw_text: str):
+                text = _normalize_text(raw_text).strip()
+                if not text:
+                    return []
+                for parser in (json.loads, ast.literal_eval):
+                    try:
+                        parsed = parser(text)
+                    except Exception:
+                        continue
+                    if not isinstance(parsed, dict):
+                        continue
+                    results = parsed.get("results")
+                    if not isinstance(results, list):
+                        continue
+                    refs = []
+                    for item in results[:8]:
+                        if not isinstance(item, dict):
+                            continue
+                        title = _normalize_text(item.get("title") or "Search Result")
+                        url = _normalize_text(item.get("url") or "")
+                        snippet = _normalize_text(item.get("snippet") or "")
+                        if not url:
+                            continue
+                        refs.append(
+                            {
+                                "title": _truncate_text(title, max_len=120),
+                                "url": url,
+                                "snippet": _truncate_text(snippet, max_len=220),
+                            }
+                        )
+                    return refs
+                return []
+
             def _is_main_agent_message(meta) -> bool:
                 if not isinstance(meta, dict):
                     return True
@@ -1115,7 +1148,12 @@ async def chat_send(
 
                         # Timeline output disabled by product requirement.
                         tool_source = _resolve_tool_source(name_msg)
-                        tool_status_text = f"正在执行工具：{name_msg or 'tool'}"
+                        is_web_search_tool = name_msg == "web_search"
+                        tool_status_text = (
+                            "联网搜索中..."
+                            if is_web_search_tool
+                            else f"正在执行工具：{name_msg or 'tool'}"
+                        )
                         signature = f"tool:{name_msg}:{_truncate_text(_normalize_text(content_msg), max_len=60)}"
                         if signature != last_status_signature:
                             last_status_signature = signature
@@ -1124,10 +1162,22 @@ async def chat_send(
                                     "type": "status",
                                     "text": tool_status_text,
                                     "source": tool_source,
+                                    "status_kind": "search" if is_web_search_tool else "tool",
                                 },
                                 ensure_ascii=False,
                             ) + "\n"
                         tool_text = _normalize_text(content_msg)
+                        if is_web_search_tool and tool_text:
+                            refs = _extract_web_search_refs(tool_text)
+                            if refs:
+                                yield json.dumps(
+                                    {
+                                        "type": "web_search_results",
+                                        "source": "main",
+                                        "results": refs,
+                                    },
+                                    ensure_ascii=False,
+                                ) + "\n"
                         if tool_text and tool_source in {"simulator", "analysis"}:
                             # Parse <think>...</think> in subagent/tool output to avoid leaking
                             # reasoning tags into final visible answer text.

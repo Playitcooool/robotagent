@@ -10,8 +10,11 @@
           <!-- typing indicator -->
           <div v-if="m.loading" class="bubble typing-card">
             <div class="typing-head">
-              <span class="typing-label">正在思考并调用工具</span>
-              <span class="typing-dots" aria-hidden="true">
+              <span class="typing-label">
+                {{ m.loadingKind === 'search' ? '搜索中' : '正在思考并调用工具' }}
+              </span>
+              <span v-if="m.loadingKind === 'search'" class="search-spinner" aria-hidden="true">🔍</span>
+              <span v-else class="typing-dots" aria-hidden="true">
                 <span class="dot"></span>
                 <span class="dot"></span>
                 <span class="dot"></span>
@@ -38,6 +41,15 @@
               class="markdown answer"
               v-html="renderMarkdown(m.text)"
             ></div>
+            <div v-if="m.role === 'assistant' && Array.isArray(m.webSearchResults) && m.webSearchResults.length" class="web-sources">
+              <div class="web-sources-title">搜索结果与出处</div>
+              <ul>
+                <li v-for="(r, idx) in m.webSearchResults" :key="`${m.id}-src-${idx}`">
+                  <a :href="r.url" target="_blank" rel="noopener noreferrer">{{ r.title || r.url }}</a>
+                  <span v-if="r.snippet" class="snippet">{{ r.snippet }}</span>
+                </li>
+              </ul>
+            </div>
           </div>
         </div>
       </div>

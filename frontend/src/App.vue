@@ -268,7 +268,9 @@ export default {
       assistantStreams[mainMessageId] = {
         text: '',
         thinking: '',
-        thinkingTruncated: false
+        thinkingTruncated: false,
+        loadingKind: 'thinking',
+        webSearchResults: []
       }
       assistantMessageIds[assistantId] = { main: mainMessageId }
 
@@ -285,7 +287,7 @@ export default {
         if (bucket[source]) return bucket[source]
         const msgId = `${assistantId}:${source}`
         bucket[source] = msgId
-        assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false }
+        assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [] }
         conversation.value.push({
           id: msgId,
           role: 'assistant',
@@ -294,7 +296,9 @@ export default {
           thinking: '',
           thinkingDone: false,
           thinkingTruncated: false,
-          loading: true
+          loading: true,
+          loadingKind: 'thinking',
+          webSearchResults: []
         })
         return msgId
       }
@@ -363,18 +367,19 @@ export default {
 
               let st = assistantStreams[msgId]
               if (!st) {
-                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false }
+                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [] }
               }
 
               if (idx !== -1) {
                 if (conversation.value[idx].loading) {
                   conversation.value[idx].loading = false
                 }
+                conversation.value[idx].loadingKind = st.loadingKind || 'thinking'
                 st.text += chunk
                 conversation.value[idx].text = st.text
               } else {
                 st.text += chunk
-                conversation.value.push({ id: msgId, role: 'assistant', agent: normalizeSource(obj.source), text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated) })
+                conversation.value.push({ id: msgId, role: 'assistant', agent: normalizeSource(obj.source), text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated), loadingKind: st.loadingKind || 'thinking', webSearchResults: st.webSearchResults || [] })
               }
             } else if (obj.type === 'thinking') {
               const msgId = ensureAgentMessage(obj.source)
@@ -383,13 +388,14 @@ export default {
               if (!chunk) continue
               let st = assistantStreams[msgId]
               if (!st) {
-                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false }
+                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [] }
               }
               st.thinking += chunk
               if (idx !== -1) {
                 if (conversation.value[idx].loading) {
                   conversation.value[idx].loading = false
                 }
+                conversation.value[idx].loadingKind = st.loadingKind || 'thinking'
                 conversation.value[idx].thinking = st.thinking
                 conversation.value[idx].thinkingDone = false
                 conversation.value[idx].thinkingTruncated = Boolean(st.thinkingTruncated)
@@ -402,7 +408,9 @@ export default {
                   thinking: st.thinking,
                   thinkingDone: false,
                   thinkingTruncated: Boolean(st.thinkingTruncated),
-                  loading: false
+                  loading: false,
+                  loadingKind: st.loadingKind || 'thinking',
+                  webSearchResults: st.webSearchResults || []
                 })
               }
             } else if (obj.type === 'thinking_done') {
@@ -434,12 +442,14 @@ export default {
               const idxStatus = conversation.value.findIndex(m => m.id === msgId)
               let st = assistantStreams[msgId]
               if (!st) {
-                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false }
+                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [] }
+              }
+              if (obj.status_kind === 'search') {
+                st.loadingKind = 'search'
               }
               if (idxStatus !== -1) {
-                if (conversation.value[idxStatus].loading) {
-                  conversation.value[idxStatus].loading = false
-                }
+                conversation.value[idxStatus].loading = true
+                conversation.value[idxStatus].loadingKind = st.loadingKind || 'thinking'
                 if (!String(st.text || '').trim()) {
                   conversation.value[idxStatus].text = statusText
                 }
@@ -452,8 +462,24 @@ export default {
                   thinking: st.thinking || '',
                   thinkingDone: false,
                   thinkingTruncated: Boolean(st.thinkingTruncated),
-                  loading: false
+                  loading: true,
+                  loadingKind: st.loadingKind || 'thinking',
+                  webSearchResults: st.webSearchResults || []
                 })
+              }
+            } else if (obj.type === 'web_search_results') {
+              const msgId = ensureAgentMessage(obj.source || 'main')
+              const idxSrc = conversation.value.findIndex(m => m.id === msgId)
+              let st = assistantStreams[msgId]
+              if (!st) {
+                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [] }
+              }
+              const refs = Array.isArray(obj.results) ? obj.results : []
+              st.webSearchResults = refs
+              st.loadingKind = 'thinking'
+              if (idxSrc !== -1) {
+                conversation.value[idxSrc].webSearchResults = refs
+                conversation.value[idxSrc].loadingKind = 'thinking'
               }
             } else if (obj.type === 'planning') {
               const incoming = Array.isArray(obj.plan)
@@ -495,6 +521,8 @@ export default {
                   conversation.value[idxDone].thinking = stDone.thinking || conversation.value[idxDone].thinking || ''
                   conversation.value[idxDone].thinkingDone = true
                   conversation.value[idxDone].thinkingTruncated = Boolean(stDone.thinkingTruncated || conversation.value[idxDone].thinkingTruncated)
+                  conversation.value[idxDone].loadingKind = stDone.loadingKind || 'thinking'
+                  conversation.value[idxDone].webSearchResults = stDone.webSearchResults || conversation.value[idxDone].webSearchResults || []
                   delete assistantStreams[msgId]
                 }
               }
