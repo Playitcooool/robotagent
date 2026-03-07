@@ -3,7 +3,7 @@ import os
 import shutil
 from pathlib import Path
 
-PDF_DIR = Path("arxiv_pdfs")
+PDF_DIR = Path("/Volumes/Samsung/Projects/robotagent/arxiv_pdfs_filtered")
 BATCH_DIR = Path("batches")
 BATCH_SIZE = 1  # ⭐⭐⭐ 推荐：3～5（pipeline）
 
@@ -15,7 +15,7 @@ print(f"Total PDFs: {len(pdfs)}")
 print(f"Batch size: {BATCH_SIZE}")
 
 for i in range(0, len(pdfs), BATCH_SIZE):
-    batch_pdfs = pdfs[i:i + BATCH_SIZE]
+    batch_pdfs = pdfs[i : i + BATCH_SIZE]
     batch_id = i // BATCH_SIZE
     batch_path = BATCH_DIR / f"batch_{batch_id:03d}"
     batch_path.mkdir(exist_ok=True)

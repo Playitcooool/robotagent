@@ -53,9 +53,11 @@ def iter_md_files(md_dir: Path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Split markdown files into RAG chunks.")
+    parser = argparse.ArgumentParser(
+        description="Split markdown files into RAG chunks."
+    )
     parser.add_argument("--md-dir", default="RAG/extracted_md")
-    parser.add_argument("--chunk-dir", default="RAG/chunks")
+    parser.add_argument("--chunk-dir", default="../chunks")
     parser.add_argument("--chunk-size", type=int, default=700)
     parser.add_argument("--chunk-overlap", type=int, default=120)
     parser.add_argument(

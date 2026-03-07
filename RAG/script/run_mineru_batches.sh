@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
-BATCH_ROOT="batches"
-OUTPUT_ROOT="output"
-LOG_ROOT="logs"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+BATCH_ROOT="$BASE_DIR/batches"
+OUTPUT_ROOT="$BASE_DIR/output"
+LOG_ROOT="$BASE_DIR/logs"
 
 mkdir -p "$OUTPUT_ROOT" "$LOG_ROOT"
 
@@ -22,21 +24,26 @@ for batch in $(find "$BATCH_ROOT" -maxdepth 1 -type d -name "batch_*" | sort); d
   done_flag="$LOG_ROOT/${batch_name}.done"
 
   if [ -f "$done_flag" ]; then
-    echo "[SKIP] $batch_name already processed"
-    continue
+    if grep -Eiq "traceback|error|exception|aborted|cannot import name" "$log_file" 2>/dev/null; then
+      echo "[WARN] $batch_name has stale done flag with error log, rerunning"
+      rm -f "$done_flag"
+    else
+      echo "[SKIP] $batch_name already processed"
+      continue
+    fi
   fi
 
   echo "===================================="
   echo "[RUN] Processing $batch_name"
   echo "===================================="
 
-  (
-    mineru -p "$batch" -o "$OUTPUT_ROOT" --backend pipeline > "$log_file" 2>&1
-  )
+  before_count=$(find "$OUTPUT_ROOT" -mindepth 1 | wc -l | tr -d ' ')
+  mineru -p "$batch" -o "$OUTPUT_ROOT" --backend pipeline > "$log_file" 2>&1
 
   status=$?
+  after_count=$(find "$OUTPUT_ROOT" -mindepth 1 | wc -l | tr -d ' ')
 
-  if [ $status -eq 0 ]; then
+  if [ $status -eq 0 ] && [ "$after_count" -gt "$before_count" ] && ! grep -Eiq "traceback|error|exception|aborted|cannot import name" "$log_file"; then
     touch "$done_flag"
     echo "[OK] $batch_name finished"
   else
