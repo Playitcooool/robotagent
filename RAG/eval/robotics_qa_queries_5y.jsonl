@@ -1,0 +1,80 @@
+{"id":"rq_001","query":"请概述2021年以来机器人抓取领域的主流方法演进脉络。","category":"manipulation","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_002","query":"对比 diffusion policy 和 behavior cloning 在机器人操作中的优缺点。","category":"manipulation","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_003","query":"近五年双臂协作操作有哪些代表性工作？请给出任务设置和关键指标。","category":"manipulation","type":"fact+compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_004","query":"为什么很多操作策略在仿真里成功但实机失败？请结合近五年论文总结。","category":"sim2real","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_005","query":"请总结机器人 manipulation 中视觉表征学习的最新趋势。","category":"vision","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_006","query":"VLA（Vision-Language-Action）模型在机器人控制中近五年有什么进展？","category":"foundation_models","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_007","query":"OpenVLA 和 RT-2 类方法在任务泛化上的核心差异是什么？","category":"foundation_models","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_008","query":"请解释近五年机器人策略学习中 offline RL 的使用场景。","category":"learning","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_009","query":"在机器人抓取任务中，强化学习与模仿学习的融合方法有哪些？","category":"learning","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_010","query":"请给出近五年机器人领域最常用的操作任务benchmark及其评价指标。","category":"benchmark","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_011","query":"近五年移动机器人导航从 classic SLAM 到学习方法的变化有哪些？","category":"navigation","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_012","query":"神经场景表示（NeRF/3DGS）在机器人导航或操作中的应用进展如何？","category":"vision_3d","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_013","query":"请比较端到端导航策略与模块化导航栈在鲁棒性上的差异。","category":"navigation","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_014","query":"近五年 legged robot 控制策略有哪些代表性方向？","category":"locomotion","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_015","query":"MPC 与学习控制在四足机器人中的结合方式有哪些？","category":"locomotion","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_016","query":"请总结 humanoid 机器人全身控制近五年的关键突破。","category":"humanoid","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_017","query":"为什么接触丰富任务对机器人策略泛化更困难？请结合论文给出解释。","category":"manipulation","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_018","query":"请对比 dexterous hand 操作中 model-based 与 model-free 方法的表现。","category":"dexterous","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_019","query":"近五年机器人触觉感知与控制结合的代表方法有哪些？","category":"tactile","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_020","query":"请总结近五年 sim-to-real 里 domain randomization 的新改进。","category":"sim2real","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_021","query":"Residual policy 在机器人控制中的作用是什么？有哪些实证结果？","category":"control","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_022","query":"机器人领域近五年常见的失败恢复（failure recovery）策略有哪些？","category":"planning_execution","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_023","query":"请比较 task and motion planning 与 learning-based planning 的优缺点。","category":"planning","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_024","query":"近五年机器人路径规划在动态障碍环境中的方法进展如何？","category":"planning","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_025","query":"请列出近五年机器人操作中最常见的数据集构建方式。","category":"dataset","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_026","query":"机器人示教数据（teleoperation）对策略性能提升有多大？","category":"dataset","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_027","query":"请总结近五年机器人多任务学习（multi-task learning）的典型框架。","category":"learning","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_028","query":"在机器人策略模型中，transformer 相比 CNN/RNN 的主要优势是什么？","category":"model_architecture","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_029","query":"请比较 diffusion-based control 与 autoregressive action model 的差异。","category":"model_architecture","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_030","query":"机器人策略蒸馏（policy distillation）近五年有哪些应用？","category":"model_compression","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_031","query":"近五年机器人控制中安全约束（safety constraints）如何被建模？","category":"safety","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_032","query":"请比较 CBF、MPC 和 learned safety filter 在机器人中的适用场景。","category":"safety","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_033","query":"机器人领域近五年关于可解释性（interpretability）的研究有哪些？","category":"trustworthy_ai","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_034","query":"请总结近五年机器人领域的 active perception 代表工作。","category":"perception","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_035","query":"多模态融合（视觉+语言+触觉）在机器人操作中的收益体现在哪些任务？","category":"multimodal","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_036","query":"近五年机器人领域有哪些高影响力开源框架推动了研究进展？","category":"ecosystem","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_037","query":"请比较 Isaac Gym、PyBullet、MuJoCo 在机器人学习实验中的差异。","category":"simulator","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_038","query":"为什么很多论文会采用大规模并行仿真训练？它带来的偏差是什么？","category":"simulator","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_039","query":"近五年机器人抓取任务中，6D pose estimation 的作用如何变化？","category":"perception","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_040","query":"请总结近五年 bin-picking 场景中策略学习的关键难点。","category":"manipulation","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_041","query":"近五年机器人学里“foundation model for robotics”最核心的研究问题是什么？","category":"foundation_models","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_042","query":"请比较语言条件策略与纯视觉策略在任务泛化上的表现。","category":"foundation_models","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_043","query":"近五年 long-horizon manipulation 的代表方法有哪些？","category":"planning_execution","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_044","query":"请总结机器人任务分解（task decomposition）在近五年的常见做法。","category":"planning_execution","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_045","query":"在机器人领域，world model 近五年主要被用于哪些任务？","category":"world_model","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_046","query":"请比较 latent world model 与显式动力学模型在控制上的优劣。","category":"world_model","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_047","query":"近五年机器人领域关于少样本适应（few-shot adaptation）的研究进展如何？","category":"adaptation","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_048","query":"请总结 meta-learning 在机器人控制中的现实价值。","category":"adaptation","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_049","query":"近五年机器人领域关于多机器人协作（multi-robot）的学习方法有哪些？","category":"multi_robot","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_050","query":"请比较 centralized training vs decentralized execution 在多机器人中的效果。","category":"multi_robot","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_051","query":"近五年视觉伺服（visual servoing）是否有学习化趋势？请给出证据。","category":"control","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_052","query":"请总结近五年机器人操作中 force control 与 position control 的融合方法。","category":"control","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_053","query":"近五年机器人论文中，成功率之外还常报告哪些评价指标？","category":"benchmark","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_054","query":"请比较仿真成功率与实机成功率之间常见的差距规模。","category":"benchmark","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_055","query":"近五年针对稀疏奖励（sparse reward）的机器人学习方法有哪些？","category":"learning","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_056","query":"请总结 curriculum learning 在机器人训练中的具体收益。","category":"learning","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_057","query":"机器人领域近五年有哪些值得关注的 manipulation benchmark 新趋势？","category":"benchmark","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_058","query":"请比较真实采集数据与合成数据在机器人策略学习中的价值。","category":"dataset","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_059","query":"近五年机器人领域如何处理数据标注成本高的问题？","category":"dataset","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_060","query":"请总结近五年机器人学中 imitation learning 的代表算法族。","category":"learning","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_061","query":"请比较 BC、DAgger、Diffusion Policy 在机器人操作中的适用性。","category":"learning","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_062","query":"近五年机器人强化学习里常见的 sample efficiency 提升策略是什么？","category":"learning","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_063","query":"请总结近五年针对长尾场景（rare events）的机器人训练方法。","category":"robustness","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_064","query":"在机器人抓取里，为什么遮挡和接触不确定性仍然是核心难题？","category":"robustness","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_065","query":"近五年机器人领域有哪些关于泛化评测协议（generalization protocol）的讨论？","category":"evaluation","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_066","query":"请比较 in-distribution 与 out-of-distribution 评测在机器人论文中的差异。","category":"evaluation","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_067","query":"近五年机器人领域中“语言作为任务接口”最成功的案例有哪些？","category":"language_conditioned","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_068","query":"请总结语言歧义对机器人执行的影响及缓解方法。","category":"language_conditioned","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_069","query":"近五年机器人领域中可复现性（reproducibility）问题主要体现在哪些方面？","category":"research_practice","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_070","query":"请比较不同论文对“成功”定义不一致时，如何做公平横向对比。","category":"research_practice","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_071","query":"请给出2021年以来机器人抓取中最常被引用的3类方法，并附代表论文。","category":"manipulation","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_072","query":"请列出近五年机器人导航中鲁棒定位的关键改进方向。","category":"navigation","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_073","query":"请对比近五年视觉导航与激光导航在复杂环境中的表现。","category":"navigation","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_074","query":"近五年机器人领域有没有关于能耗优化控制的代表工作？","category":"control","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_075","query":"请总结近五年机器人安全学习中 risk-sensitive objective 的应用。","category":"safety","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_076","query":"在机器人实机部署中，近五年有哪些常见的工程化失败模式？","category":"deployment","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_077","query":"请总结近五年机器人论文中“训练成本”与“性能”之间的权衡趋势。","category":"efficiency","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_078","query":"对比近五年 lightweight policy 与大型基础模型在机器人上的性价比。","category":"efficiency","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_079","query":"请给出近五年机器人学中值得关注的负结果（negative results）主题。","category":"research_practice","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rq_080","query":"如果我要做“近五年机器人RAG问答”系统评测，你建议优先关注哪些能力维度？","category":"meta_eval","type":"synthesis","year_scope":"2021-2026","need_citation":true}
