@@ -1,4 +1,4 @@
-llm: 'republicofkorokke-qwen3.5-4b-mlx-lm'
+llm: 'mlx-community-qwen3.5-4b-mlx'
 
 model_url: "http://localhost:1234/v1"
 

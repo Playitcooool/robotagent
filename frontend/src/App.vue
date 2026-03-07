@@ -179,19 +179,7 @@ export default {
 
     function startLiveFrameStream () {
       if (liveFrameSource || !authToken.value) return
-      simStreamActive.value = true
       liveFramePollStart = Date.now() / 1000
-
-      // Bootstrap with latest known frame so UI shows image immediately
-      // even before SSE pushes a new update.
-      apiFetch('/api/sim/latest-frame')
-        .then((res) => (res.ok ? res.json() : null))
-        .then((payload) => {
-          if (payload && payload.has_frame) {
-            liveFrame.value = payload
-          }
-        })
-        .catch(() => {})
 
       const url = `/api/sim/stream?since=${encodeURIComponent(liveFramePollStart)}`
       liveFrameSource = new EventSource(url)
@@ -200,6 +188,10 @@ export default {
         try {
           const payload = JSON.parse(evt.data || '{}')
           if (!payload || !payload.has_frame) return
+          if (typeof payload.timestamp === 'number' && payload.timestamp < liveFramePollStart) {
+            return
+          }
+          simStreamActive.value = true
           liveFrame.value = payload
         } catch (_) {
           // ignore parse errors
@@ -212,9 +204,10 @@ export default {
     }
 
     function stopLiveFrameStream () {
-      if (!liveFrameSource) return
-      liveFrameSource.close()
-      liveFrameSource = null
+      if (liveFrameSource) {
+        liveFrameSource.close()
+        liveFrameSource = null
+      }
       simStreamActive.value = false
     }
 
@@ -256,9 +249,9 @@ export default {
       const enabledTools = Array.isArray(payload?.enabledTools) ? payload.enabledTools : []
       if (!text.trim()) return
 
+      stopLiveFrameStream()
       liveFrame.value = null
       planningState.value = { steps: [], updatedAt: 0 }
-      startLiveFrameStream()
       const userMsg = { id: Date.now(), role: 'user', text }
       conversation.value.push(userMsg)
 
@@ -279,6 +272,12 @@ export default {
         if (s === 'simulator') return 'simulator'
         if (s === 'analysis' || s === 'data-analyzer' || s === 'data_analyzer') return 'analysis'
         return 'main'
+      }
+
+      function maybeStartSimStream (sourceRaw) {
+        if (normalizeSource(sourceRaw) === 'simulator') {
+          startLiveFrameStream()
+        }
       }
 
       function ensureAgentMessage (sourceRaw) {
@@ -360,6 +359,7 @@ export default {
             }
 
             if (obj.type === 'delta') {
+              maybeStartSimStream(obj.source)
               const msgId = ensureAgentMessage(obj.source)
               const idx = conversation.value.findIndex(m => m.id === msgId)
               const chunk = String(obj.text || '')
@@ -382,6 +382,7 @@ export default {
                 conversation.value.push({ id: msgId, role: 'assistant', agent: normalizeSource(obj.source), text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated), loadingKind: st.loadingKind || 'thinking', webSearchResults: st.webSearchResults || [] })
               }
             } else if (obj.type === 'thinking') {
+              maybeStartSimStream(obj.source)
               const msgId = ensureAgentMessage(obj.source)
               const idx = conversation.value.findIndex(m => m.id === msgId)
               const chunk = String(obj.text || '')
@@ -414,6 +415,7 @@ export default {
                 })
               }
             } else if (obj.type === 'thinking_done') {
+              maybeStartSimStream(obj.source)
               const msgId = ensureAgentMessage(obj.source)
               const idxThinkDone = conversation.value.findIndex(m => m.id === msgId)
               const st = assistantStreams[msgId]
@@ -436,6 +438,7 @@ export default {
                 conversation.value.push({ id: Date.now() + 3, role: 'assistant', agent: 'main', text: errText })
               }
             } else if (obj.type === 'status') {
+              maybeStartSimStream(obj.source)
               const statusText = String(obj.text || '').trim()
               if (!statusText) continue
               const msgId = ensureAgentMessage(obj.source)
@@ -468,6 +471,7 @@ export default {
                 })
               }
             } else if (obj.type === 'web_search_results') {
+              maybeStartSimStream(obj.source)
               const msgId = ensureAgentMessage(obj.source || 'main')
               const idxSrc = conversation.value.findIndex(m => m.id === msgId)
               let st = assistantStreams[msgId]

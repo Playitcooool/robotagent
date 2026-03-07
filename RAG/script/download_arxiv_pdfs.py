@@ -342,5 +342,5 @@ def download_arxiv_pdfs(
 if __name__ == "__main__":
     download_arxiv_pdfs(
         max_results=5000,
-        workers=4,
+        workers=16,
     )
