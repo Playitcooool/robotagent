@@ -6,11 +6,44 @@ from pathlib import Path
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
-def build_splitter(chunk_size: int, chunk_overlap: int) -> RecursiveCharacterTextSplitter:
+def build_markdown_separators():
+    # Prefer keeping markdown section/code boundaries intact.
+    return [
+        "\n```",
+        "\n# ",
+        "\n## ",
+        "\n### ",
+        "\n#### ",
+        "\n\n",
+        "\n",
+        " ",
+        "",
+    ]
+
+
+def build_splitter(
+    chunk_size: int,
+    chunk_overlap: int,
+    mode: str = "token",
+    token_model: str = "cl100k_base",
+) -> RecursiveCharacterTextSplitter:
+    separators = build_markdown_separators()
+    if mode == "token":
+        # Token-aware splitter (requires tiktoken in environment).
+        try:
+            return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+                encoding_name=token_model,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                separators=separators,
+            )
+        except Exception:
+            # Fallback to char splitter when tiktoken is unavailable.
+            pass
     return RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
-        separators=["\n\n", "\n", " ", ""],
+        separators=separators,
     )
 
 
@@ -23,8 +56,19 @@ def main():
     parser = argparse.ArgumentParser(description="Split markdown files into RAG chunks.")
     parser.add_argument("--md-dir", default="RAG/extracted_md")
     parser.add_argument("--chunk-dir", default="RAG/chunks")
-    parser.add_argument("--chunk-size", type=int, default=1024)
-    parser.add_argument("--chunk-overlap", type=int, default=200)
+    parser.add_argument("--chunk-size", type=int, default=700)
+    parser.add_argument("--chunk-overlap", type=int, default=120)
+    parser.add_argument(
+        "--mode",
+        choices=["token", "char"],
+        default="token",
+        help="Split by token (preferred) or by char.",
+    )
+    parser.add_argument(
+        "--token-model",
+        default="cl100k_base",
+        help="tiktoken encoding name when --mode token.",
+    )
     parser.add_argument("--min-chars", type=int, default=30)
     parser.add_argument(
         "--manifest-name",
@@ -42,7 +86,12 @@ def main():
     if args.chunk_overlap >= args.chunk_size:
         raise ValueError("chunk-overlap must be smaller than chunk-size")
 
-    splitter = build_splitter(args.chunk_size, args.chunk_overlap)
+    splitter = build_splitter(
+        args.chunk_size,
+        args.chunk_overlap,
+        mode=args.mode,
+        token_model=args.token_model,
+    )
     manifest_path = chunk_dir / args.manifest_name
 
     files_count = 0
@@ -86,7 +135,7 @@ def main():
                 chunk_count += 1
 
     print(
-        f"[Done] files={files_count}, chunks={chunk_count}, skip_short={skip_short}, manifest={manifest_path}"
+        f"[Done] mode={args.mode}, files={files_count}, chunks={chunk_count}, skip_short={skip_short}, manifest={manifest_path}"
     )
 
 
