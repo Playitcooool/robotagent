@@ -21,7 +21,7 @@
 </template>
 
 <script>
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onBeforeUnmount } from 'vue'
 
 export default {
   name: 'PlanningPanel',
@@ -64,6 +64,10 @@ export default {
     function toggleExpanded () {
       expanded.value = !expanded.value
     }
+
+    onBeforeUnmount(() => {
+      if (collapseTimer) clearTimeout(collapseTimer)
+    })
 
     function statusLabel (status) {
       if (status === 'completed') return '已完成'

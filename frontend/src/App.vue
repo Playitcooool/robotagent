@@ -66,7 +66,7 @@
 </template>
 
 <script>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, onBeforeUnmount } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import ChatView from './components/ChatView.vue'
 import ToolResults from './components/ToolResults.vue'
@@ -91,8 +91,10 @@ export default {
     const assistantMessageIds = {}
     const liveFrame = ref(null)
     const planningState = ref({ steps: [], updatedAt: 0 })
-    let liveFrameSource = null
     let liveFramePollStart = 0
+    let liveFramePollTimer = null
+    let liveFramePollToken = 0
+    let sessionLoadController = null
 
     const authToken = ref(localStorage.getItem(AUTH_TOKEN_KEY) || '')
     const authUser = ref(null)
@@ -177,37 +179,55 @@ export default {
       stopLiveFrameStream()
     }
 
-    function startLiveFrameStream () {
-      if (liveFrameSource || !authToken.value) return
-      liveFramePollStart = Date.now() / 1000
-
-      const url = `/api/sim/stream?since=${encodeURIComponent(liveFramePollStart)}`
-      liveFrameSource = new EventSource(url)
-
-      liveFrameSource.addEventListener('frame', (evt) => {
-        try {
-          const payload = JSON.parse(evt.data || '{}')
-          if (!payload || !payload.has_frame) return
-          if (typeof payload.timestamp === 'number' && payload.timestamp < liveFramePollStart) {
-            return
-          }
+    async function pollLiveFrame (token) {
+      if (!authToken.value || token !== liveFramePollToken) return
+      try {
+        const res = await apiFetch('/api/sim/latest-frame')
+        if (!res.ok || token !== liveFramePollToken) {
+          scheduleNextLiveFramePoll(token, 1200)
+          return
+        }
+        const payload = await res.json().catch(() => null)
+        if (!payload || token !== liveFramePollToken) {
+          scheduleNextLiveFramePoll(token, 1200)
+          return
+        }
+        if (
+          payload.has_frame &&
+          typeof payload.timestamp === 'number' &&
+          payload.timestamp >= liveFramePollStart
+        ) {
           simStreamActive.value = true
           liveFrame.value = payload
-        } catch (_) {
-          // ignore parse errors
+          scheduleNextLiveFramePoll(token, payload.done ? 1200 : 250)
+          return
         }
-      })
+        scheduleNextLiveFramePoll(token, 1200)
+      } catch (_) {
+        scheduleNextLiveFramePoll(token, 1500)
+      }
+    }
 
-      liveFrameSource.addEventListener('error', () => {
-        stopLiveFrameStream()
-      })
+    function scheduleNextLiveFramePoll (token, delayMs) {
+      if (token !== liveFramePollToken) return
+      if (liveFramePollTimer) clearTimeout(liveFramePollTimer)
+      liveFramePollTimer = setTimeout(() => {
+        pollLiveFrame(token)
+      }, delayMs)
+    }
+
+    function startLiveFrameStream () {
+      if (!authToken.value) return
+      if (liveFramePollTimer) clearTimeout(liveFramePollTimer)
+      liveFramePollToken += 1
+      liveFramePollStart = Date.now() / 1000
+      pollLiveFrame(liveFramePollToken)
     }
 
     function stopLiveFrameStream () {
-      if (liveFrameSource) {
-        liveFrameSource.close()
-        liveFrameSource = null
-      }
+      liveFramePollToken += 1
+      if (liveFramePollTimer) clearTimeout(liveFramePollTimer)
+      liveFramePollTimer = null
       simStreamActive.value = false
     }
 
@@ -218,8 +238,12 @@ export default {
       }
       const nextSessionId = session.session_id
       currentSessionId.value = nextSessionId
+      if (sessionLoadController) sessionLoadController.abort()
+      sessionLoadController = new AbortController()
       try {
-        const res = await apiFetch(`/api/messages?session_id=${encodeURIComponent(nextSessionId)}`)
+        const res = await apiFetch(`/api/messages?session_id=${encodeURIComponent(nextSessionId)}`, {
+          signal: sessionLoadController.signal
+        })
         if (res.ok) {
           const data = await res.json()
           if (Array.isArray(data) && data.length > 0) {
@@ -228,7 +252,8 @@ export default {
             conversation.value = [{ id: Date.now(), role: 'assistant', text: WELCOME_TEXT }]
           }
         }
-      } catch (_) {
+      } catch (err) {
+        if (err?.name === 'AbortError') return
         conversation.value = [{ id: Date.now(), role: 'assistant', text: WELCOME_TEXT }]
       }
       planningState.value = { steps: [], updatedAt: 0 }
@@ -313,11 +338,12 @@ export default {
         })
 
         if (!res.ok) {
-          const idxErr = conversation.value.findIndex(m => m.id === assistantId)
+          const idxErr = conversation.value.findIndex(m => m.id === mainMessageId)
           const errText = '无法连接后端（http ' + res.status + '）'
           if (idxErr !== -1) {
             conversation.value[idxErr].loading = false
             conversation.value[idxErr].text = errText
+            conversation.value[idxErr].thinkingDone = true
           } else {
             conversation.value.push({ id: Date.now() + 2, role: 'assistant', text: errText })
           }
@@ -326,13 +352,14 @@ export default {
 
         if (!res.body || !res.body.getReader) {
           const textBody = await res.text()
-          const idxNoStream = conversation.value.findIndex(m => m.id === assistantId)
+          const idxNoStream = conversation.value.findIndex(m => m.id === mainMessageId)
           const txt = textBody || '[后端返回空响应]'
           if (idxNoStream !== -1) {
             conversation.value[idxNoStream].loading = false
             conversation.value[idxNoStream].text = txt
+            conversation.value[idxNoStream].thinkingDone = true
           } else {
-            conversation.value.push({ id: assistantId, role: 'assistant', text: txt })
+            conversation.value.push({ id: mainMessageId, role: 'assistant', agent: 'main', text: txt, thinkingDone: true })
           }
           return
         }
@@ -559,11 +586,12 @@ export default {
           }
         }
       } catch (e) {
-        const idxNet = conversation.value.findIndex(m => m.role === 'assistant' && m.loading)
+        const idxNet = conversation.value.findIndex(m => m.id === mainMessageId)
         const errMsg = '[网络错误] ' + String(e)
         if (idxNet !== -1) {
           conversation.value[idxNet].loading = false
           conversation.value[idxNet].text = errMsg
+          conversation.value[idxNet].thinkingDone = true
         } else {
           conversation.value.push({ id: Date.now() + 2, role: 'assistant', text: errMsg })
         }
@@ -573,6 +601,10 @@ export default {
     }
 
     onMounted(checkAuth)
+    onBeforeUnmount(() => {
+      stopLiveFrameStream()
+      if (sessionLoadController) sessionLoadController.abort()
+    })
 
     return {
       authLoading,

@@ -158,6 +158,7 @@ export default {
   },
   emits: ['sendMessage'],
   setup (props, { emit }) {
+    const markdownCache = new Map()
     const text = ref('')
     const messagesRef = ref(null)
     const textareaRef = ref(null)
@@ -183,7 +184,14 @@ export default {
 
     function renderMarkdown (content) {
       const raw = String(content || '')
-      return md.render(preprocessMarkdown(raw))
+      if (markdownCache.has(raw)) return markdownCache.get(raw)
+      const rendered = md.render(preprocessMarkdown(raw))
+      markdownCache.set(raw, rendered)
+      if (markdownCache.size > 200) {
+        const oldestKey = markdownCache.keys().next().value
+        markdownCache.delete(oldestKey)
+      }
+      return rendered
     }
 
     function preprocessMarkdown (raw) {
@@ -286,23 +294,36 @@ export default {
       el.style.height = `${nextHeight}px`
     }
 
+    let scrollRaf = 0
+
     function scrollToBottom () {
       const el = messagesRef.value
       if (!el) return
       el.scrollTop = el.scrollHeight
     }
 
+    function scheduleScrollToBottom () {
+      if (scrollRaf) cancelAnimationFrame(scrollRaf)
+      scrollRaf = requestAnimationFrame(() => {
+        nextTick(scrollToBottom)
+      })
+    }
+
     watch(
       () => props.conversation.length,
       () => {
-        nextTick(scrollToBottom)
+        scheduleScrollToBottom()
       }
     )
 
     watch(
-      () => props.conversation.map(item => `${item.id}:${item.text}:${item.thinking || ''}:${item.loading}:${item.thinkingDone ? 1 : 0}:${item.thinkingTruncated ? 1 : 0}`).join('|'),
+      () => props.conversation.slice(-3).map(item => {
+        const textLen = String(item?.text || '').length
+        const thinkLen = String(item?.thinking || '').length
+        return `${item?.id}:${textLen}:${thinkLen}:${item?.loading ? 1 : 0}:${item?.thinkingDone ? 1 : 0}`
+      }).join('|'),
       () => {
-        nextTick(scrollToBottom)
+        scheduleScrollToBottom()
       }
     )
 
@@ -314,6 +335,7 @@ export default {
     })
 
     onBeforeUnmount(() => {
+      if (scrollRaf) cancelAnimationFrame(scrollRaf)
       document.removeEventListener('click', handleGlobalClick)
       document.removeEventListener('keydown', handleGlobalKeydown)
     })

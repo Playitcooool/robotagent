@@ -40,7 +40,7 @@
 </template>
 
 <script>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, onBeforeUnmount } from 'vue'
 
 export default {
   name: 'Sidebar',
@@ -54,16 +54,23 @@ export default {
   setup (props, { emit }) {
     const sessions = ref([])
     const deletingSessionId = ref('')
+    let loadController = null
+    let loadSeq = 0
 
     async function load () {
+      const seq = ++loadSeq
+      if (loadController) loadController.abort()
+      loadController = new AbortController()
       if (!props.authToken) {
         sessions.value = []
         return
       }
       try {
         const res = await fetch('/api/sessions', {
-          headers: { Authorization: `Bearer ${props.authToken}` }
+          headers: { Authorization: `Bearer ${props.authToken}` },
+          signal: loadController.signal
         })
+        if (seq !== loadSeq) return
         if (res.ok) {
           const data = await res.json()
           sessions.value = Array.isArray(data) ? data.filter(Boolean) : []
@@ -71,6 +78,7 @@ export default {
           sessions.value = []
         }
       } catch (e) {
+        if (e?.name === 'AbortError') return
         sessions.value = []
       }
     }
@@ -103,6 +111,9 @@ export default {
     onMounted(load)
     watch(() => props.reloadToken, () => { load() })
     watch(() => props.authToken, () => { load() })
+    onBeforeUnmount(() => {
+      if (loadController) loadController.abort()
+    })
 
     function snippet (t) { return (t || '').slice(0, 80) + (t && t.length > 80 ? '…' : '') }
     function sessionTitle (s) {
