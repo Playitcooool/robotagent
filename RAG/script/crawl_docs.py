@@ -30,6 +30,70 @@ BLOCKED_EXTENSIONS = {
     ".avi",
 }
 
+MCP_TOOL_KEYWORDS = {
+    "pybullet": [
+        "pybullet",
+        "bullet",
+        "urdf",
+        "rigid body",
+        "physics engine",
+        "collision",
+        "gripper",
+        "grasp",
+        "path planning",
+        "trajectory",
+        "friction",
+        "restitution",
+        "elasticity",
+        "camera",
+        "render",
+        "simulation state",
+        "step simulation",
+    ],
+    "gazebo": [
+        "gazebo",
+        "ignition",
+        "ros2",
+        "spawn_entity",
+        "delete_entity",
+        "get_entity_state",
+        "set_entity_state",
+        "model_states",
+        "pause_physics",
+        "unpause_physics",
+        "reset_world",
+        "reset_simulation",
+        "sensor_msgs/image",
+        "camera topic",
+        "sdf",
+        "urdf",
+    ],
+}
+
+MCP_URL_HINTS = {
+    "pybullet": [
+        "pybullet",
+        "bullet",
+        "physics",
+        "urdf",
+        "grasp",
+        "trajectory",
+        "planning",
+        "camera",
+    ],
+    "gazebo": [
+        "gazebo",
+        "ignition",
+        "ros",
+        "spawn",
+        "model",
+        "entity",
+        "state",
+        "sensor",
+        "camera",
+    ],
+}
+
 DEFAULT_ROBOTICS_DOC_SITES = [
     {"url": "https://gazebosim.org/docs/latest/", "depth": 2},
     {"url": "https://docs.ros.org/en/humble/", "depth": 2},
@@ -110,6 +174,31 @@ def _iter_internal_links(soup: BeautifulSoup, url: str, domain: str, visited: se
     return sorted(set(links_to_crawl))
 
 
+def _active_profiles(profile: str) -> list[str]:
+    p = (profile or "all").strip().lower()
+    if p == "all":
+        return ["pybullet", "gazebo"]
+    if p in MCP_TOOL_KEYWORDS:
+        return [p]
+    return ["pybullet", "gazebo"]
+
+
+def _mcp_relevance_score(url: str, title: str, md_text: str, profile: str = "all") -> int:
+    active = _active_profiles(profile)
+    url_l = (url or "").lower()
+    text = f"{title or ''}\n{md_text or ''}".lower()
+    score = 0
+
+    for group in active:
+        for k in MCP_TOOL_KEYWORDS[group]:
+            if k in text:
+                score += 1
+        for h in MCP_URL_HINTS[group]:
+            if h in url_l:
+                score += 1
+    return score
+
+
 def crawl_and_convert(
     url: str,
     domain: str,
@@ -120,6 +209,8 @@ def crawl_and_convert(
     visited: set[str] | None = None,
     session: requests.Session | None = None,
     min_markdown_chars: int = 200,
+    tool_profile: str = "all",
+    min_relevance_score: int = 3,
 ):
     if current_depth > max_depth:
         return
@@ -158,20 +249,26 @@ def crawl_and_convert(
 
     if len(md) < min_markdown_chars:
         logger.info("Skip short page (%s chars): %s", len(md), url)
-        return
-
     title = (soup.title.text.strip() if soup.title else "document").strip()
-    filepath = _url_to_file_path(save_dir, domain, title, url)
-    try:
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(f"# {title}\n\n")
-            f.write(f"Source URL: {url}\n\n")
-            f.write("---\n\n")
-            f.write(md)
-        logger.info("Saved: %s", filepath)
-    except Exception as e:
-        logger.warning("Write failed %s: %s", filepath, e)
-        return
+    relevance = _mcp_relevance_score(url, title, md, profile=tool_profile)
+    if relevance < min_relevance_score:
+        logger.info("Skip low relevance(score=%s): %s", relevance, url)
+    else:
+        filepath = _url_to_file_path(save_dir, domain, title, url)
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(f"# {title}\n\n")
+                f.write(f"Source URL: {url}\n\n")
+                f.write(f"MCP Relevance Score: {relevance}\n\n")
+                f.write("---\n\n")
+                f.write(md)
+            logger.info("Saved(score=%s): %s", relevance, filepath)
+        except Exception as e:
+            logger.warning("Write failed %s: %s", filepath, e)
+            return
+
+    # Continue crawling children even if current page is not relevant,
+    # because index pages are often low-content but point to relevant docs.
 
     if current_depth >= max_depth:
         return
@@ -189,6 +286,8 @@ def crawl_and_convert(
             visited=visited,
             session=session,
             min_markdown_chars=min_markdown_chars,
+            tool_profile=tool_profile,
+            min_relevance_score=min_relevance_score,
         )
 
 
@@ -199,6 +298,8 @@ def batch_crawl(
     max_depth: int = 2,
     max_workers: int = 3,
     min_markdown_chars: int = 200,
+    tool_profile: str = "all",
+    min_relevance_score: int = 3,
 ):
     tasks = []
     for item in urls:
@@ -234,6 +335,8 @@ def batch_crawl(
             visited=visited,
             session=session,
             min_markdown_chars=min_markdown_chars,
+            tool_profile=tool_profile,
+            min_relevance_score=min_relevance_score,
         )
         return {"site": root_url, "visited_pages": len(visited)}
 
@@ -254,6 +357,18 @@ def parse_args():
     parser.add_argument("--max-depth", type=int, default=2)
     parser.add_argument("--max-workers", type=int, default=3)
     parser.add_argument("--min-markdown-chars", type=int, default=200)
+    parser.add_argument(
+        "--tool-profile",
+        default="all",
+        choices=["all", "pybullet", "gazebo"],
+        help="Only keep pages relevant to selected MCP tool profile.",
+    )
+    parser.add_argument(
+        "--min-relevance-score",
+        type=int,
+        default=3,
+        help="Minimum relevance score for saving a page.",
+    )
     parser.add_argument(
         "--preset",
         action="store_true",
@@ -285,4 +400,6 @@ if __name__ == "__main__":
         max_depth=args.max_depth,
         max_workers=args.max_workers,
         min_markdown_chars=args.min_markdown_chars,
+        tool_profile=args.tool_profile,
+        min_relevance_score=args.min_relevance_score,
     )
