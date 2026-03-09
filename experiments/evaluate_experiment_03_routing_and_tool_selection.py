@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 
 from experiment_utils import (
+    add_judge_args,
     call_judge,
     dump_json,
     dump_jsonl,
@@ -78,9 +79,7 @@ def main():
     parser.add_argument("--input", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--with-judge", action="store_true")
-    parser.add_argument("--base-url", default="")
-    parser.add_argument("--api-key", default="")
-    parser.add_argument("--model", default="")
+    add_judge_args(parser)
     args = parser.parse_args()
 
     rows = load_jsonl(Path(args.input))
@@ -96,11 +95,11 @@ def main():
     if args.with_judge:
         if not judge_enabled(args):
             raise ValueError("Judge requested but base-url/model are missing.")
-        base_url, api_key, model = get_judge_config(args)
+        base_url, api_key, model, timeout = get_judge_config(args)
         judgments = []
         for row, detail in zip(rows, details):
             prompt = build_judge_prompt(row, detail["expected_route"], detail["actual_routes"])
-            judgment = call_judge(base_url, api_key, model, prompt)
+            judgment = call_judge(base_url, api_key, model, prompt, timeout=timeout)
             detail["judgment"] = judgment
             judgments.append(judgment)
         summary["judge_correctness"] = maybe_mean(j.get("correctness", 0) for j in judgments)
@@ -115,4 +114,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

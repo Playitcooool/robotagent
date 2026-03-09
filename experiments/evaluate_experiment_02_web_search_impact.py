@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 
 from experiment_utils import (
+    add_judge_args,
     call_judge,
     dump_json,
     dump_jsonl,
@@ -52,9 +53,7 @@ def main():
     parser.add_argument("--system-b", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--with-judge", action="store_true")
-    parser.add_argument("--base-url", default="")
-    parser.add_argument("--api-key", default="")
-    parser.add_argument("--model", default="")
+    add_judge_args(parser)
     args = parser.parse_args()
 
     rows_a = normalize_rows(load_jsonl(Path(args.system_a)))
@@ -65,7 +64,7 @@ def main():
     judgments = []
     if args.with_judge and not judge_enabled(args):
         raise ValueError("Judge requested but base-url/model are missing.")
-    base_url, api_key, model = get_judge_config(args)
+    base_url, api_key, model, timeout = get_judge_config(args)
 
     for rid in common_ids:
         row_a = rows_a[rid]
@@ -78,7 +77,7 @@ def main():
             "b_source_coverage": source_coverage(row_b),
         }
         if args.with_judge:
-            judgment = call_judge(base_url, api_key, model, build_pairwise_prompt(row_a, row_b))
+            judgment = call_judge(base_url, api_key, model, build_pairwise_prompt(row_a, row_b), timeout=timeout)
             item["judgment"] = judgment
             judgments.append(judgment)
         details.append(item)
@@ -117,4 +116,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

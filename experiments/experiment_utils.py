@@ -6,7 +6,7 @@ from statistics import mean
 from typing import Iterable
 from urllib.parse import urlparse
 
-import requests
+from langchain_openai import ChatOpenAI
 
 
 JUDGE_SYSTEM_PROMPT = (
@@ -86,38 +86,47 @@ def is_valid_url(url: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+def add_judge_args(parser):
+    parser.add_argument("--judge-api-base", default=os.environ.get("JUDGE_API_BASE", ""))
+    parser.add_argument("--judge-api-key", default=os.environ.get("JUDGE_API_KEY", ""))
+    parser.add_argument("--judge-model", default=os.environ.get("JUDGE_MODEL", ""))
+    parser.add_argument("--judge-timeout", type=float, default=float(os.environ.get("JUDGE_TIMEOUT", "90.0")))
+    return parser
+
+
 def get_judge_config(args):
-    base_url = getattr(args, "base_url", "") or os.environ.get("JUDGE_BASE_URL", "")
-    api_key = getattr(args, "api_key", "") or os.environ.get("JUDGE_API_KEY", "")
-    model = getattr(args, "model", "") or os.environ.get("JUDGE_MODEL", "")
-    return base_url, api_key, model
+    base_url = getattr(args, "judge_api_base", "") or os.environ.get("JUDGE_API_BASE", "")
+    api_key = getattr(args, "judge_api_key", "") or os.environ.get("JUDGE_API_KEY", "")
+    model = getattr(args, "judge_model", "") or os.environ.get("JUDGE_MODEL", "")
+    timeout = float(
+        getattr(args, "judge_timeout", 90.0) or os.environ.get("JUDGE_TIMEOUT", "90.0")
+    )
+    return base_url, api_key, model, timeout
 
 
 def judge_enabled(args) -> bool:
-    base_url, _, model = get_judge_config(args)
+    base_url, _, model, _ = get_judge_config(args)
     return bool(base_url and model)
 
 
 def call_judge(base_url: str, api_key: str, model: str, user_prompt: str, timeout: float = 90.0):
-    payload = {
-        "model": model,
-        "temperature": 0,
-        "messages": [
-            {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-    }
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    resp = requests.post(
-        f"{base_url.rstrip('/')}/chat/completions",
-        headers=headers,
-        json=payload,
+    llm = ChatOpenAI(
+        base_url=base_url,
+        api_key=api_key or "dummy",
+        model=model,
+        temperature=0,
         timeout=timeout,
     )
-    resp.raise_for_status()
-    data = resp.json()
-    content = data["choices"][0]["message"]["content"]
+    response = llm.invoke(
+        [
+            {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
+    content = getattr(response, "content", "")
+    if isinstance(content, list):
+        content = "".join(
+            str(block.get("text", "")) if isinstance(block, dict) else str(block)
+            for block in content
+        )
     return json.loads(content)
-

@@ -3,7 +3,7 @@ import json
 import os
 from pathlib import Path
 
-import requests
+from langchain_openai import ChatOpenAI
 
 
 SYSTEM_PROMPT = (
@@ -28,26 +28,25 @@ def load_jsonl(path: Path):
 
 
 def call_judge(base_url: str, api_key: str, model: str, user_prompt: str, timeout: float = 60.0):
-    payload = {
-        "model": model,
-        "temperature": 0,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-    }
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    resp = requests.post(
-        f"{base_url.rstrip('/')}/chat/completions",
-        headers=headers,
-        json=payload,
+    llm = ChatOpenAI(
+        base_url=base_url,
+        api_key=api_key or "dummy",
+        model=model,
+        temperature=0,
         timeout=timeout,
     )
-    resp.raise_for_status()
-    data = resp.json()
-    content = data["choices"][0]["message"]["content"]
+    response = llm.invoke(
+        [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
+    content = getattr(response, "content", "")
+    if isinstance(content, list):
+        content = "".join(
+            str(block.get("text", "")) if isinstance(block, dict) else str(block)
+            for block in content
+        )
     return json.loads(content)
 
 
@@ -106,14 +105,15 @@ def main():
     parser.add_argument("--predictions", required=True, help="JSONL file with id/prompt/answer/references")
     parser.add_argument("--baseline", default="", help="Optional JSONL for pairwise A/B judge")
     parser.add_argument("--out-dir", required=True)
-    parser.add_argument("--base-url", default=os.environ.get("JUDGE_BASE_URL", ""))
-    parser.add_argument("--api-key", default=os.environ.get("JUDGE_API_KEY", ""))
-    parser.add_argument("--model", default=os.environ.get("JUDGE_MODEL", ""))
+    parser.add_argument("--judge-api-base", default=os.environ.get("JUDGE_API_BASE", ""))
+    parser.add_argument("--judge-api-key", default=os.environ.get("JUDGE_API_KEY", ""))
+    parser.add_argument("--judge-model", default=os.environ.get("JUDGE_MODEL", ""))
+    parser.add_argument("--judge-timeout", type=float, default=float(os.environ.get("JUDGE_TIMEOUT", "60.0")))
     parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args()
 
-    if not args.base_url or not args.model:
-        raise ValueError("base-url and model are required (or set JUDGE_BASE_URL / JUDGE_MODEL)")
+    if not args.judge_api_base or not args.judge_model:
+        raise ValueError("judge-api-base and judge-model are required (or set JUDGE_API_BASE / JUDGE_MODEL)")
 
     pred_path = Path(args.predictions)
     out_dir = Path(args.out_dir)
@@ -133,13 +133,13 @@ def main():
             if row_b is None:
                 continue
             prompt = build_pairwise_prompt(row_a, row_b)
-            judgment = call_judge(args.base_url, args.api_key, args.model, prompt)
+            judgment = call_judge(args.judge_api_base, args.judge_api_key, args.judge_model, prompt, timeout=args.judge_timeout)
             rows_out.append({"id": rid, "judgment": judgment})
     else:
         for row in rows_a:
             rid = str(row.get("id", ""))
             prompt = build_single_prompt(row)
-            judgment = call_judge(args.base_url, args.api_key, args.model, prompt)
+            judgment = call_judge(args.judge_api_base, args.judge_api_key, args.judge_model, prompt, timeout=args.judge_timeout)
             rows_out.append({"id": rid, "judgment": judgment})
 
     summary = summarize(rows_out, pairwise=pairwise)
