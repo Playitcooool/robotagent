@@ -20,7 +20,7 @@ from tools import AnalysisTool
 from deepagents import CompiledSubAgent
 
 # 替换相对导入为绝对导入
-from prompts import AnalysisAgentPrompt, SimulationAgentPrompt, PyBulletSkillPrompt
+from prompts import AnalysisAgentPrompt, SimulationAgentPrompt
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 logger = logging.getLogger("uvicorn")
@@ -143,47 +143,15 @@ async def init_subagents():
             f"Simulation tools loaded from services={loaded_services}, total={len(simulation_tools)}"
         )
 
-        def _tool_name(tool_obj) -> str:
-            name = getattr(tool_obj, "name", None)
-            return str(name or "").strip().lower()
-
-        def _is_pybullet_tool(tool_obj) -> bool:
-            n = _tool_name(tool_obj)
-            if not n:
-                return False
-            keywords = (
-                "pybullet",
-                "simulation",
-                "simulator",
-                "spawn_",
-                "push_",
-                "initialize_simulation",
-                "check_simulation_state",
-            )
-            return any(k in n for k in keywords)
-
-        pybullet_tool_names = sorted(
-            [_tool_name(t) for t in simulation_tools if _is_pybullet_tool(t)]
-        )
-
         simulation_chat = ChatOpenAI(
             base_url=config["model_url"],
             model=config["llm"],
             api_key="no_need",
         )
-        simulation_system_prompt = SimulationAgentPrompt.SYSTEM_PROMPT
-        pybullet_skill_disabled = str(os.environ.get("PYBULLET_SKILL_DISABLED", "")).strip() == "1"
-        if pybullet_tool_names and not pybullet_skill_disabled:
-            simulation_system_prompt += (
-                "\n\n"
-                + PyBulletSkillPrompt.PYBULLET_SKILL_PROMPT
-                + "\n\n"
-                + f"[PyBullet Tool Inventory]\n{pybullet_tool_names}\n"
-            )
         simulation_graph = create_agent(
             model=simulation_chat,
             tools=simulation_tools,
-            system_prompt=simulation_system_prompt,
+            system_prompt=SimulationAgentPrompt.SYSTEM_PROMPT,
         )
         simulation_agent = CompiledSubAgent(
             name="simulator",
