@@ -843,6 +843,8 @@ def qdrant_retrieve_context(
     include_debug: bool = False,
 ) -> str:
     """Agentic RAG for robotics papers: query rewrite + multi-route retrieval + fusion."""
+    if str(os.environ.get("RAG_DISABLED", "")).strip() == "1":
+        return "RAG is disabled for this request."
     if not query or not query.strip():
         return "Error: query is required."
 

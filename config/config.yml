@@ -4,4 +4,4 @@ model_url: "http://localhost:1234/v1"
 
 mcp:
   ip: "http://localhost"
-  port: "8001"
+  port: "18001"

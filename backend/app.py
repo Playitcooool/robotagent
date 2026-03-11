@@ -675,6 +675,7 @@ async def chat_send(
         if str(t).strip()
     }
     web_search_enabled = "web_search" in enabled_tools
+    rag_disabled = "no_rag" in enabled_tools
     user_id = current_user.get("uid", "unknown")
     await _append_chat_message(user_id, session_id, "user", user_message)
 
@@ -696,6 +697,9 @@ async def chat_send(
         )
 
     async def event_stream():
+        prev_rag_disabled = os.environ.get("RAG_DISABLED")
+        if rag_disabled:
+            os.environ["RAG_DISABLED"] = "1"
         main_latest_text = ""
         main_stream_text = ""
         thinking_stream_text = ""
@@ -1315,6 +1319,12 @@ async def chat_send(
                 {"type": "error", "error": f"处理请求失败：{str(e)}"},
                 ensure_ascii=False,
             ) + "\n"
+        finally:
+            if rag_disabled:
+                if prev_rag_disabled is None:
+                    os.environ.pop("RAG_DISABLED", None)
+                else:
+                    os.environ["RAG_DISABLED"] = prev_rag_disabled
 
     return StreamingResponse(
         event_stream(),

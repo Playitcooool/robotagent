@@ -14,5 +14,5 @@ services:
       - PYBULLET_STREAM_DIR=/app/mcp/.sim_stream
     tty: true
     ports:
-      - "8001:8000"
+      - "18001:8000"
     command: ["python", "mcp_server.py"]

@@ -123,6 +123,7 @@ def main():
     parser.add_argument("--password", default="exp_runner_12345")
     parser.add_argument("--register", action="store_true")
     parser.add_argument("--enable-web-search", action="store_true")
+    parser.add_argument("--disable-rag", action="store_true")
     parser.add_argument("--prompt-prefix", default="")
     parser.add_argument("--prompt-suffix", default="")
     parser.add_argument("--limit", type=int, default=0)
@@ -139,7 +140,11 @@ def main():
         if not token:
             raise RuntimeError("Failed to obtain auth token from backend.")
 
-    enabled_tools = ["web_search"] if args.enable_web_search else []
+    enabled_tools = []
+    if args.enable_web_search:
+        enabled_tools.append("web_search")
+    if args.disable_rag:
+        enabled_tools.append("no_rag")
 
     outputs = []
     for idx, row in enumerate(rows):
