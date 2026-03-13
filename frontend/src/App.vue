@@ -288,7 +288,8 @@ export default {
         thinking: '',
         thinkingTruncated: false,
         loadingKind: 'thinking',
-        webSearchResults: []
+        webSearchResults: [],
+        ragReferences: []
       }
       assistantMessageIds[assistantId] = { main: mainMessageId }
 
@@ -311,7 +312,7 @@ export default {
         if (bucket[source]) return bucket[source]
         const msgId = `${assistantId}:${source}`
         bucket[source] = msgId
-        assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [] }
+        assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [], ragReferences: [] }
         conversation.value.push({
           id: msgId,
           role: 'assistant',
@@ -322,7 +323,8 @@ export default {
           thinkingTruncated: false,
           loading: true,
           loadingKind: 'thinking',
-          webSearchResults: []
+          webSearchResults: [],
+          ragReferences: []
         })
         return msgId
       }
@@ -394,7 +396,7 @@ export default {
 
               let st = assistantStreams[msgId]
               if (!st) {
-                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [] }
+                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [], ragReferences: [] }
               }
 
               if (idx !== -1) {
@@ -406,7 +408,7 @@ export default {
                 conversation.value[idx].text = st.text
               } else {
                 st.text += chunk
-                conversation.value.push({ id: msgId, role: 'assistant', agent: normalizeSource(obj.source), text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated), loadingKind: st.loadingKind || 'thinking', webSearchResults: st.webSearchResults || [] })
+                conversation.value.push({ id: msgId, role: 'assistant', agent: normalizeSource(obj.source), text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated), loadingKind: st.loadingKind || 'thinking', webSearchResults: st.webSearchResults || [], ragReferences: st.ragReferences || [] })
               }
             } else if (obj.type === 'thinking') {
               maybeStartSimStream(obj.source)
@@ -416,7 +418,7 @@ export default {
               if (!chunk) continue
               let st = assistantStreams[msgId]
               if (!st) {
-                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [] }
+                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [], ragReferences: [] }
               }
               st.thinking += chunk
               if (idx !== -1) {
@@ -438,7 +440,8 @@ export default {
                   thinkingTruncated: Boolean(st.thinkingTruncated),
                   loading: false,
                   loadingKind: st.loadingKind || 'thinking',
-                  webSearchResults: st.webSearchResults || []
+                  webSearchResults: st.webSearchResults || [],
+                  ragReferences: st.ragReferences || []
                 })
               }
             } else if (obj.type === 'thinking_done') {
@@ -472,7 +475,7 @@ export default {
               const idxStatus = conversation.value.findIndex(m => m.id === msgId)
               let st = assistantStreams[msgId]
               if (!st) {
-                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [] }
+                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [], ragReferences: [] }
               }
               if (obj.status_kind === 'search') {
                 st.loadingKind = 'search'
@@ -494,7 +497,8 @@ export default {
                   thinkingTruncated: Boolean(st.thinkingTruncated),
                   loading: true,
                   loadingKind: st.loadingKind || 'thinking',
-                  webSearchResults: st.webSearchResults || []
+                  webSearchResults: st.webSearchResults || [],
+                  ragReferences: st.ragReferences || []
                 })
               }
             } else if (obj.type === 'web_search_results') {
@@ -503,7 +507,7 @@ export default {
               const idxSrc = conversation.value.findIndex(m => m.id === msgId)
               let st = assistantStreams[msgId]
               if (!st) {
-                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [] }
+                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [], ragReferences: [] }
               }
               const refs = Array.isArray(obj.results) ? obj.results : []
               st.webSearchResults = refs
@@ -511,6 +515,18 @@ export default {
               if (idxSrc !== -1) {
                 conversation.value[idxSrc].webSearchResults = refs
                 conversation.value[idxSrc].loadingKind = 'thinking'
+              }
+            } else if (obj.type === 'rag_results') {
+              const msgId = ensureAgentMessage(obj.source || 'main')
+              const idxSrc = conversation.value.findIndex(m => m.id === msgId)
+              let st = assistantStreams[msgId]
+              if (!st) {
+                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [], ragReferences: [] }
+              }
+              const refs = Array.isArray(obj.results) ? obj.results : []
+              st.ragReferences = refs
+              if (idxSrc !== -1) {
+                conversation.value[idxSrc].ragReferences = refs
               }
             } else if (obj.type === 'planning') {
               const incoming = Array.isArray(obj.plan)
@@ -554,6 +570,7 @@ export default {
                   conversation.value[idxDone].thinkingTruncated = Boolean(stDone.thinkingTruncated || conversation.value[idxDone].thinkingTruncated)
                   conversation.value[idxDone].loadingKind = stDone.loadingKind || 'thinking'
                   conversation.value[idxDone].webSearchResults = stDone.webSearchResults || conversation.value[idxDone].webSearchResults || []
+                  conversation.value[idxDone].ragReferences = stDone.ragReferences || conversation.value[idxDone].ragReferences || []
                   delete assistantStreams[msgId]
                 }
               }
@@ -571,14 +588,14 @@ export default {
               const idxRem = conversation.value.findIndex(m => m.id === msgId)
               let st = assistantStreams[msgId]
               if (!st) {
-                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false }
+                st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, webSearchResults: [], ragReferences: [] }
               }
               st.text += chunk
               if (idxRem !== -1) {
                 conversation.value[idxRem].loading = false
                 conversation.value[idxRem].text = st.text
               } else {
-                conversation.value.push({ id: msgId, role: 'assistant', agent: normalizeSource(obj.source), text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated) })
+                conversation.value.push({ id: msgId, role: 'assistant', agent: normalizeSource(obj.source), text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated), webSearchResults: st.webSearchResults || [], ragReferences: st.ragReferences || [] })
               }
             }
           } catch (err) {

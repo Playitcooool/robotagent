@@ -50,6 +50,14 @@
                 </li>
               </ul>
             </div>
+            <div v-if="m.role === 'assistant' && Array.isArray(m.ragReferences) && m.ragReferences.length" class="rag-sources">
+              <div class="rag-sources-title">参考资料</div>
+              <ul>
+                <li v-for="(r, idx) in m.ragReferences" :key="`${m.id}-rag-${idx}`">
+                  <a :href="r.url" target="_blank" rel="noopener noreferrer">{{ r.title || r.url }}</a>
+                </li>
+              </ul>
+            </div>
           </div>
         </div>
       </div>

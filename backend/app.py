@@ -859,6 +859,57 @@ async def chat_send(
                     return refs
                 return []
 
+            def _extract_rag_refs(raw_text: str):
+                text = _normalize_text(raw_text).strip()
+                if not text:
+                    return []
+                for parser in (json.loads, ast.literal_eval):
+                    try:
+                        parsed = parser(text)
+                    except Exception:
+                        continue
+                    if not isinstance(parsed, dict):
+                        continue
+                    refs = []
+                    raw_refs = parsed.get("references")
+                    if isinstance(raw_refs, list):
+                        for item in raw_refs[:8]:
+                            if not isinstance(item, dict):
+                                continue
+                            title = _normalize_text(item.get("label") or "Reference")
+                            url = _normalize_text(item.get("url") or "")
+                            if not url:
+                                continue
+                            refs.append(
+                                {
+                                    "title": _truncate_text(title, max_len=140),
+                                    "url": url,
+                                }
+                            )
+                    if refs:
+                        return refs
+                    raw_results = parsed.get("results")
+                    if isinstance(raw_results, list):
+                        for item in raw_results[:8]:
+                            if not isinstance(item, dict):
+                                continue
+                            title = _normalize_text(
+                                item.get("citation_label")
+                                or item.get("doc_source")
+                                or "Reference"
+                            )
+                            url = _normalize_text(item.get("citation_url") or "")
+                            if not url:
+                                continue
+                            refs.append(
+                                {
+                                    "title": _truncate_text(title, max_len=140),
+                                    "url": url,
+                                }
+                            )
+                    return refs
+                return []
+
             def _is_main_agent_message(meta) -> bool:
                 if not isinstance(meta, dict):
                     return True
@@ -1153,6 +1204,7 @@ async def chat_send(
                         # Timeline output disabled by product requirement.
                         tool_source = _resolve_tool_source(name_msg)
                         is_web_search_tool = name_msg == "web_search"
+                        is_rag_tool = name_msg == "qdrant_retrieve_context"
                         tool_status_text = (
                             "联网搜索中..."
                             if is_web_search_tool
@@ -1177,6 +1229,17 @@ async def chat_send(
                                 yield json.dumps(
                                     {
                                         "type": "web_search_results",
+                                        "source": "main",
+                                        "results": refs,
+                                    },
+                                    ensure_ascii=False,
+                                ) + "\n"
+                        if is_rag_tool and tool_text:
+                            refs = _extract_rag_refs(tool_text)
+                            if refs:
+                                yield json.dumps(
+                                    {
+                                        "type": "rag_results",
                                         "source": "main",
                                         "results": refs,
                                     },
