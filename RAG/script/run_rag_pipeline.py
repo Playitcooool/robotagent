@@ -31,7 +31,7 @@ def split_pdfs(pdf_dir: Path, batch_dir: Path, batch_size: int) -> int:
 
 
 def run_mineru(
-    batch_dir: Path,
+    pdf_dir: Path,
     output_dir: Path,
     log_dir: Path,
     max_retry: int = 3,
@@ -40,9 +40,9 @@ def run_mineru(
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
-    batches = sorted([p for p in batch_dir.iterdir() if p.is_dir() and p.name.startswith("batch_")])
-    if not batches:
-        print("[MinerU] no batches found, skip")
+    pdfs = sorted([p for p in pdf_dir.iterdir() if p.suffix.lower() == ".pdf"]) if pdf_dir.exists() else []
+    if not pdfs:
+        print("[MinerU] no pdfs found, skip")
         return
 
     env = {
@@ -52,20 +52,28 @@ def run_mineru(
         "TOKENIZERS_PARALLELISM": "false",
     }
 
-    for batch in batches:
-        log_file = log_dir / f"{batch.name}.log"
-        done_file = log_dir / f"{batch.name}.done"
-        retry_file = log_dir / f"{batch.name}.retry"
+    for pdf in pdfs:
+        log_file = log_dir / f"{pdf.stem}.log"
+        done_file = log_dir / f"{pdf.stem}.done"
+        retry_file = log_dir / f"{pdf.stem}.retry"
         if done_file.exists():
-            print(f"[MinerU] skip done {batch.name}")
+            print(f"[MinerU] skip done {pdf.name}")
             continue
 
         retry = int(retry_file.read_text()) if retry_file.exists() else 0
         while retry < max_retry:
-            print(f"[MinerU] run {batch.name} retry={retry}")
+            print(f"[MinerU] run {pdf.name} retry={retry}")
             with log_file.open("w", encoding="utf-8") as lf:
                 proc = subprocess.run(
-                    ["mineru", "-p", str(batch), "-o", str(output_dir), "--backend", backend],
+                    [
+                        "mineru",
+                        "-p",
+                        str(pdf),
+                        "-o",
+                        str(output_dir),
+                        "--backend",
+                        backend,
+                    ],
                     stdout=lf,
                     stderr=subprocess.STDOUT,
                     env=env,
@@ -75,11 +83,11 @@ def run_mineru(
                 done_file.touch()
                 if retry_file.exists():
                     retry_file.unlink()
-                print(f"[MinerU] ok {batch.name}")
+                print(f"[MinerU] ok {pdf.name}")
                 break
             retry += 1
             retry_file.write_text(str(retry), encoding="utf-8")
-            print(f"[MinerU] fail {batch.name}, retry={retry}")
+            print(f"[MinerU] fail {pdf.name}, retry={retry}")
             time.sleep(sleep_between)
 
 
@@ -264,8 +272,6 @@ def parse_args():
     parser.add_argument("--min-quality-score", type=float, default=2.0)
 
     parser.add_argument("--pdf-dir", default="RAG/arxiv_pdfs_filtered")
-    parser.add_argument("--batch-dir", default="RAG/batches")
-    parser.add_argument("--batch-size", type=int, default=5)
     parser.add_argument("--output-dir", default="RAG/output")
     parser.add_argument("--log-dir", default="RAG/logs")
     parser.add_argument("--md-dir", default="RAG/extracted_md")
@@ -291,7 +297,6 @@ def parse_args():
 def main():
     args = parse_args()
     pdf_dir = Path(args.pdf_dir)
-    batch_dir = Path(args.batch_dir)
     output_dir = Path(args.output_dir)
     log_dir = Path(args.log_dir)
     md_dir = Path(args.md_dir)
@@ -313,19 +318,16 @@ def main():
     else:
         print("[Pipeline] skip download")
 
-    print("[Pipeline] step2 split")
-    split_pdfs(pdf_dir=pdf_dir, batch_dir=batch_dir, batch_size=args.batch_size)
-
     if not args.skip_mineru:
-        print("[Pipeline] step3 mineru")
-        run_mineru(batch_dir=batch_dir, output_dir=output_dir, log_dir=log_dir)
+        print("[Pipeline] step2 mineru")
+        run_mineru(pdf_dir=pdf_dir, output_dir=output_dir, log_dir=log_dir)
     else:
         print("[Pipeline] skip mineru")
 
-    print("[Pipeline] step4 extract markdown")
+    print("[Pipeline] step3 extract markdown")
     extract_markdown(source_dir=output_dir, dest_dir=md_dir)
 
-    print("[Pipeline] step5 chunk")
+    print("[Pipeline] step4 chunk")
     cut_chunks(
         md_dir=md_dir,
         chunk_dir=chunk_dir,
@@ -335,7 +337,7 @@ def main():
     )
 
     if args.to_qdrant:
-        print("[Pipeline] step6 qdrant")
+        print("[Pipeline] step5 qdrant")
         write_to_qdrant(
             chunk_dir=chunk_dir,
             pdf_dir=pdf_dir,
