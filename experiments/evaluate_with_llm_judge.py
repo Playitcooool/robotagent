@@ -27,27 +27,46 @@ def load_jsonl(path: Path):
     return rows
 
 
-def call_judge(base_url: str, api_key: str, model: str, user_prompt: str, timeout: float = 60.0):
-    llm = ChatOpenAI(
-        base_url=base_url,
-        api_key=api_key or "dummy",
-        model=model,
-        temperature=0,
-        timeout=timeout,
-    )
-    response = llm.invoke(
-        [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ]
-    )
-    content = getattr(response, "content", "")
-    if isinstance(content, list):
-        content = "".join(
-            str(block.get("text", "")) if isinstance(block, dict) else str(block)
-            for block in content
-        )
-    return json.loads(content)
+def call_judge(base_url: str, api_key: str, model: str, user_prompt: str, timeout: float = 60.0, max_retries: int = 3):
+    """调用 LLM judge，支持重试机制"""
+    import time
+
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            llm = ChatOpenAI(
+                base_url=base_url,
+                api_key=api_key or "dummy",
+                model=model,
+                temperature=0,
+                timeout=timeout,
+            )
+            response = llm.invoke(
+                [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ]
+            )
+            content = getattr(response, "content", "")
+            if isinstance(content, list):
+                content = "".join(
+                    str(block.get("text", "")) if isinstance(block, dict) else str(block)
+                    for block in content
+                )
+            return json.loads(content)
+        except json.JSONDecodeError as e:
+            last_error = f"JSON decode error: {e}"
+            print(f"[WARN] Judge JSON decode failed (attempt {attempt + 1}/{max_retries}): {last_error}")
+        except Exception as e:
+            last_error = str(e)
+            print(f"[WARN] Judge API call failed (attempt {attempt + 1}/{max_retries}): {last_error}")
+
+        if attempt < max_retries - 1:
+            time.sleep(2 ** attempt)  # 指数退避
+
+    # 所有重试都失败了，返回默认结构
+    print(f"[ERROR] Judge failed after {max_retries} attempts: {last_error}")
+    return {"error": last_error, "verdict": "UNKNOWN"}
 
 
 def build_single_prompt(row):

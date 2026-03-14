@@ -54,7 +54,8 @@ def parse_tool_name(status_text: str):
     return ""
 
 
-def run_one_prompt(base_url: str, token: str, prompt: str, session_id: str, enabled_tools: list[str]):
+def run_one_prompt(base_url: str, token: str, prompt: str, session_id: str, enabled_tools: list[str], max_retries: int = 3):
+    """运行单个 prompt，支持重试机制"""
     url = f"{base_url.rstrip('/')}/api/chat/send"
     headers = {
         "Content-Type": "application/json",
@@ -68,34 +69,59 @@ def run_one_prompt(base_url: str, token: str, prompt: str, session_id: str, enab
     references = []
     usage = {}
 
-    with http_post_json(url, payload, headers) as resp:
-        for raw in resp:
-            line = raw.decode("utf-8").strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except Exception:
-                continue
-            obj["timestamp"] = time.time()
-            events.append(obj)
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            with http_post_json(url, payload, headers) as resp:
+                for raw in resp:
+                    line = raw.decode("utf-8").strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    obj["timestamp"] = time.time()
+                    events.append(obj)
 
-            etype = str(obj.get("type", "")).lower()
-            if etype == "delta":
-                source = str(obj.get("source", "main") or "main").lower()
-                text_by_source[source] = text_by_source.get(source, "") + str(obj.get("text", ""))
-            elif etype == "status":
-                tool_name = parse_tool_name(str(obj.get("text", "")).strip())
-                if tool_name:
-                    tool_names.append(tool_name)
-            elif etype == "web_search_results":
-                for item in obj.get("results") or []:
-                    title = str(item.get("title") or item.get("url") or "").strip()
-                    url = str(item.get("url") or "").strip()
-                    if title and url:
-                        references.append(f"[{title}]({url})")
-            elif etype == "usage":
-                usage = obj.get("usage") or usage
+                    etype = str(obj.get("type", "")).lower()
+                    if etype == "delta":
+                        source = str(obj.get("source", "main") or "main").lower()
+                        text_by_source[source] = text_by_source.get(source, "") + str(obj.get("text", ""))
+                    elif etype == "status":
+                        tool_name = parse_tool_name(str(obj.get("text", "")).strip())
+                        if tool_name:
+                            tool_names.append(tool_name)
+                    elif etype == "web_search_results":
+                        for item in obj.get("results") or []:
+                            title = str(item.get("title") or item.get("url") or "").strip()
+                            url = str(item.get("url") or "").strip()
+                            if title and url:
+                                references.append(f"[{title}]({url})")
+                    elif etype == "usage":
+                        usage = obj.get("usage") or usage
+
+            # 成功获取响应，跳出重试循环
+            break
+
+        except Exception as e:
+            last_error = str(e)
+            print(f"[WARN] API call failed (attempt {attempt + 1}/{max_retries}): {last_error}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # 指数退避
+
+    if last_error and not events:
+        print(f"[ERROR] All retries failed for prompt: {last_error}")
+        return {
+            "send_ts": send_ts,
+            "answer": "",
+            "references": references,
+            "tool_names": tool_names,
+            "events": events,
+            "token_usage": usage,
+            "sources": text_by_source,
+            "error": last_error,
+        }
 
     final_answer = text_by_source.get("main") or ""
     if not final_answer:
