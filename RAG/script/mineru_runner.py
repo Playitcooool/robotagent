@@ -31,7 +31,7 @@ def get_pdfs(skip_done: bool = True):
     """获取要处理的 PDF 列表
 
     Args:
-        skip_done: 是否跳过已完成的文件
+        skip_done: 是否跳过已处理的文件（通过检查 output 目录中是否有对应输出文件夹）
     """
     if not PDF_ROOT.exists():
         return []
@@ -41,12 +41,16 @@ def get_pdfs(skip_done: bool = True):
     if not skip_done:
         return all_pdfs
 
-    # 过滤掉已完成的（通过检查 .done 标志文件）
+    # 过滤掉已完成的（通过检查 output 目录中是否有对应的输出文件夹）
     pending = []
     for pdf in all_pdfs:
-        done_flag = LOG_ROOT / f"{pdf.stem}.done"
-        if not done_flag.exists():
+        # mineru 的输出是按 PDF 文件名（不含扩展名）创建的文件夹
+        output_folder = OUTPUT_ROOT / pdf.stem
+        if not output_folder.exists():
             pending.append(pdf)
+
+    # 按修改时间排序（从最近修改的开始）
+    pending.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
     return pending
 
@@ -120,15 +124,9 @@ def run_pdf(pdf: Path):
     }
 
     log_file = LOG_ROOT / f"{pdf.stem}.log"
-    retry_file = LOG_ROOT / f"{pdf.stem}.retry"
-    done_flag = LOG_ROOT / f"{pdf.stem}.done"
 
-    retry = int(retry_file.read_text()) if retry_file.exists() else 0
-    if retry >= MAX_RETRY:
-        print(f"[SKIP] {pdf.name} exceeded max retries")
-        return
-
-    print(f"[RUN] {pdf.name} (retry {retry})")
+    # 每次都重新尝试
+    print(f"[RUN] {pdf.name}")
 
     before_snapshot = set(OUTPUT_ROOT.iterdir()) if OUTPUT_ROOT.exists() else set()
 
@@ -153,13 +151,8 @@ def run_pdf(pdf: Path):
     success = (proc.returncode == 0) and output_ok and (not fatal_in_log)
 
     if success:
-        done_flag.touch()
-        if retry_file.exists():
-            retry_file.unlink()
         print(f"[OK] {pdf.name} finished")
     else:
-        retry += 1
-        retry_file.write_text(str(retry))
         reason = []
         if proc.returncode != 0:
             reason.append(f"exit={proc.returncode}")
@@ -167,7 +160,7 @@ def run_pdf(pdf: Path):
             reason.append("no_output_artifacts")
         if fatal_in_log:
             reason.append("fatal_error_in_log")
-        print(f"[FAIL] {pdf.name}, retry {retry} ({', '.join(reason)})")
+        print(f"[FAIL] {pdf.name} ({', '.join(reason)})")
 
     # 给 macOS 回收内存一点时间
     time.sleep(SLEEP_BETWEEN)
