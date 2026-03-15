@@ -294,6 +294,40 @@ def build_single_experience_prompt(
     return {"system": system, "user": json.dumps(payload, ensure_ascii=False)}
 
 
+def build_batch_experience_prompt(
+    prompt_id: int,
+    prompt: str,
+    trajectories: List[Dict[str, Any]],
+) -> Dict[str, str]:
+    system = (
+        "你是经验提炼器。基于同一 prompt 的多条轨迹及其评分，提炼一次可执行经验。"
+        "仅返回严格 JSON，不要额外文本。"
+    )
+    payload = {
+        "task": "提炼该 prompt 的合并经验并用于下一轮 system prompt",
+        "prompt_id": prompt_id,
+        "prompt": prompt,
+        "trajectories": [
+            {
+                "attempt_id": t.get("attempt_id"),
+                "response": t.get("response", ""),
+                "messages": t.get("messages", []),
+                "score": t.get("score", {}),
+            }
+            for t in trajectories
+        ],
+        "output_schema": {
+            "principles": ["string"],
+            "dos": ["string"],
+            "donts": ["string"],
+            "failure_patterns": ["string"],
+            "checklist": ["string"],
+            "one_paragraph_summary": "string",
+        },
+    }
+    return {"system": system, "user": json.dumps(payload, ensure_ascii=False)}
+
+
 async def score_trajectory(
     judge_client: DeepAgentClient, trajectory: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -322,6 +356,31 @@ async def summarize_single_experience(
 ) -> Dict[str, Any]:
     prompt = build_single_experience_prompt(trajectory=trajectory, score=score)
     raw = await summary_client.chat(prompt["system"], prompt["user"])
+    parsed = extract_first_json_object(raw)
+    if parsed is None:
+        parsed = {
+            "principles": [],
+            "dos": [],
+            "donts": [],
+            "failure_patterns": ["summary_output_not_json"],
+            "checklist": [],
+            "one_paragraph_summary": raw[:800],
+        }
+    return parsed
+
+
+async def summarize_batch_experience(
+    summary_client: DeepAgentClient,
+    prompt_id: int,
+    prompt: str,
+    scored_trajectories: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    prompt_pack = build_batch_experience_prompt(
+        prompt_id=prompt_id,
+        prompt=prompt,
+        trajectories=scored_trajectories,
+    )
+    raw = await summary_client.chat(prompt_pack["system"], prompt_pack["user"])
     parsed = extract_first_json_object(raw)
     if parsed is None:
         parsed = {
@@ -438,6 +497,7 @@ async def collect_trajectories_online(
         if not pending_for_prompt:
             continue
 
+        scored_for_prompt: List[Dict[str, Any]] = []
         for trajectory in pending_for_prompt:
             key = (trajectory["prompt_id"], trajectory["attempt_id"])
             if key in scored_keys:
@@ -465,16 +525,33 @@ async def collect_trajectories_online(
             print(
                 f"[score] saved prompt={trajectory['prompt_id']} attempt={trajectory['attempt_id']}"
             )
+            scored_item = dict(trajectory)
+            scored_item["score"] = score
+            scored_for_prompt.append(scored_item)
 
-            summary = await summarize_single_experience(
-                summary_client=summary_client, trajectory=trajectory, score=score
+        if scored_for_prompt:
+            summary = await summarize_batch_experience(
+                summary_client=summary_client,
+                prompt_id=prompt_id,
+                prompt=prompt,
+                scored_trajectories=scored_for_prompt,
+            )
+            overall_scores = [
+                float(t.get("score", {}).get("overall_score", 0.0))
+                for t in scored_for_prompt
+            ]
+            avg_overall = (
+                sum(overall_scores) / len(overall_scores)
+                if overall_scores
+                else 0.0
             )
             experience_item = {
-                "prompt_id": trajectory["prompt_id"],
-                "attempt_id": trajectory["attempt_id"],
-                "score": score,
+                "prompt_id": prompt_id,
+                "attempt_id": -1,
+                "score": {"overall_score": avg_overall},
                 "summary": summary,
                 "created_at": int(time.time()),
+                "meta": {"aggregate_of_attempts": [t.get("attempt_id") for t in scored_for_prompt]},
             }
             memory_bank["meta"] = {
                 "method": "training_free_grpo_online_memory",
@@ -487,7 +564,7 @@ async def collect_trajectories_online(
             with open(memory_md_path, "w", encoding="utf-8") as f:
                 f.write(render_memory_markdown(memory_bank))
             print(
-                f"[memory] appended experience prompt={trajectory['prompt_id']} attempt={trajectory['attempt_id']}; total={len(memory_bank['experiences'])}"
+                f"[memory] appended experience prompt={prompt_id} attempts={experience_item['meta']['aggregate_of_attempts']}; total={len(memory_bank['experiences'])}"
             )
 
 
