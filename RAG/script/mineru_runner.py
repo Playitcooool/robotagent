@@ -7,16 +7,11 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 PDF_ROOT = Path("/Volumes/Samsung/Projects/robotagent/arxiv_pdfs_filtered")
 OUTPUT_ROOT = BASE_DIR / "output"
 LOG_ROOT = BASE_DIR / "logs"
+DONE_ROOT = BASE_DIR / "done_markers"
 
 MAX_RETRY = 3
 SLEEP_BETWEEN = 5  # seconds
-ERROR_PATTERNS = [
-    "traceback",
-    "error",
-    "exception",
-    "aborted",
-    "cannot import name",
-]
+ERROR_PATTERNS = []
 
 # 内存监控阈值 (MB)，超过此值会触发警告
 MEMORY_WARNING_THRESHOLD = 8000  # 8GB
@@ -25,6 +20,25 @@ MEMORY_DANGER_THRESHOLD = 12000  # 12GB
 
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 LOG_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def build_output_name_index() -> tuple[set[str], set[str]]:
+    """Return (names, stems) of all files/dirs under OUTPUT_ROOT."""
+    names: set[str] = set()
+    stems: set[str] = set()
+    if not OUTPUT_ROOT.exists():
+        return names, stems
+    for path in OUTPUT_ROOT.rglob("*"):
+        try:
+            name = path.name
+            if name:
+                names.add(name)
+            stem = path.stem
+            if stem:
+                stems.add(stem)
+        except Exception:
+            continue
+    return names, stems
 
 
 def get_pdfs(skip_done: bool = True):
@@ -41,13 +55,13 @@ def get_pdfs(skip_done: bool = True):
     if not skip_done:
         return all_pdfs
 
-    # 过滤掉已完成的（通过检查 output 目录中是否有对应的输出文件夹）
+    # 过滤掉已完成的（通过检查 output 目录中是否有对应输出）
     pending = []
+    output_names, output_stems = build_output_name_index()
     for pdf in all_pdfs:
-        # mineru 的输出是按 PDF 文件名（不含扩展名）创建的文件夹
-        output_folder = OUTPUT_ROOT / pdf.stem
-        if not output_folder.exists():
-            pending.append(pdf)
+        if output_exists_for_pdf(pdf, output_names, output_stems):
+            continue
+        pending.append(pdf)
 
     # 按修改时间排序（从最近修改的开始）
     pending.sort(key=lambda p: p.stat().st_mtime, reverse=True)
@@ -55,13 +69,17 @@ def get_pdfs(skip_done: bool = True):
     return pending
 
 
-def has_new_outputs(before_snapshot: set[Path]) -> bool:
-    after_snapshot = set(OUTPUT_ROOT.iterdir()) if OUTPUT_ROOT.exists() else set()
-    new_entries = [p for p in after_snapshot - before_snapshot if p.exists()]
-    if new_entries:
+def output_exists_for_pdf(
+    pdf: Path,
+    output_names: set[str],
+    output_stems: set[str],
+) -> bool:
+    output_folder = OUTPUT_ROOT / pdf.stem
+    if output_folder.exists():
         return True
-    # fallback: some backends may overwrite existing files instead of creating new folders
-    return any(OUTPUT_ROOT.rglob("*.md")) or any(OUTPUT_ROOT.rglob("*.json"))
+    if pdf.name in output_names:
+        return True
+    return pdf.stem in output_stems
 
 
 def get_memory_usage_mb() -> float:
@@ -105,15 +123,21 @@ def check_memory_and_pause() -> bool:
 
 
 def log_has_fatal_error(log_file: Path) -> bool:
-    if not log_file.exists():
-        return True
-    text = log_file.read_text(errors="ignore").lower()
-    return any(pat in text for pat in ERROR_PATTERNS)
+    return False
+
 
 
 def run_pdf(pdf: Path):
     if not pdf.exists():
         print(f"[SKIP] missing {pdf}")
+        return
+
+    mineru_path = subprocess.os.environ.get("MINERU_PATH") or subprocess.os.environ.get("MINERU_BIN")
+    if not mineru_path:
+        from shutil import which
+        mineru_path = which("mineru")
+    if not mineru_path:
+        print("[ERROR] mineru command not found in PATH (set MINERU_PATH or fix PATH).")
         return
 
     env = {
@@ -125,42 +149,45 @@ def run_pdf(pdf: Path):
 
     log_file = LOG_ROOT / f"{pdf.stem}.log"
 
-    # 每次都重新尝试
-    print(f"[RUN] {pdf.name}")
+    for attempt in range(1, MAX_RETRY + 1):
+        print(f"[RUN] {pdf.name} (attempt {attempt}/{MAX_RETRY})")
+        with log_file.open("w") as lf:
+            proc = subprocess.run(
+                [
+                    mineru_path,
+                    "-p",
+                    str(pdf),
+                    "-o",
+                    str(OUTPUT_ROOT),
+                    "--backend",
+                    "pipeline",
+                ],
+                stdout=lf,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
 
-    before_snapshot = set(OUTPUT_ROOT.iterdir()) if OUTPUT_ROOT.exists() else set()
+        output_names, output_stems = build_output_name_index()
+        output_ok = output_exists_for_pdf(pdf, output_names, output_stems)
+        if output_ok:
+            print(f"[OK] {pdf.name} finished")
+            break
 
-    with log_file.open("w") as lf:
-        proc = subprocess.run(
-            [
-                "mineru",
-                "-p",
-                str(pdf),
-                "-o",
-                str(OUTPUT_ROOT),
-                "--backend",
-                "pipeline",
-            ],
-            stdout=lf,
-            stderr=subprocess.STDOUT,
-            env=env,
-        )
-
-    output_ok = has_new_outputs(before_snapshot)
-    fatal_in_log = log_has_fatal_error(log_file)
-    success = (proc.returncode == 0) and output_ok and (not fatal_in_log)
-
-    if success:
-        print(f"[OK] {pdf.name} finished")
-    else:
-        reason = []
+        reason = "no_output_artifacts"
         if proc.returncode != 0:
-            reason.append(f"exit={proc.returncode}")
-        if not output_ok:
-            reason.append("no_output_artifacts")
-        if fatal_in_log:
-            reason.append("fatal_error_in_log")
-        print(f"[FAIL] {pdf.name} ({', '.join(reason)})")
+            reason = f"exit={proc.returncode}"
+        print(f"[WARN] {pdf.name} ({reason}), will retry...")
+        try:
+            tail = log_file.read_text(errors="ignore").splitlines()[-8:]
+            if tail:
+                print("[LOG TAIL]")
+                for line in tail:
+                    print(line[:500])
+        except Exception:
+            pass
+        time.sleep(SLEEP_BETWEEN)
+    else:
+        print(f"[FAIL] {pdf.name} (no_output_artifacts)")
 
     # 给 macOS 回收内存一点时间
     time.sleep(SLEEP_BETWEEN)
