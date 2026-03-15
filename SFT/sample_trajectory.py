@@ -8,6 +8,7 @@ from deepagents import create_deep_agent
 from langchain_openai import ChatOpenAI
 from langchain.messages import HumanMessage, AIMessage, ToolMessage
 from langchain.agents.middleware import ToolRetryMiddleware
+import yaml
 
 # ===============================
 # 路径处理（与你原来一致）
@@ -25,7 +26,7 @@ from tools.SubAgentTool import init_subagents
 # ===============================
 PROMPT_FILE = "/Volumes/Samsung/Projects/robotagent/SFT/data.txt"
 OUTPUT_JSONL = "trajectories.jsonl"
-SAMPLES_PER_PROMPT = 1
+SAMPLES_PER_PROMPT = 4
 
 
 # ===============================
@@ -123,15 +124,21 @@ async def sample_trajectories_incremental(
 # ===============================
 # 主入口
 # ===============================
+with open(
+    "/Volumes/Samsung/Projects/robotagent/config/config.yml", "r", encoding="utf-8"
+) as f:
+    config = yaml.load(f.read(), yaml.FullLoader)
+
+
 async def main():
     # 初始化 subagents
     subagents = list(await init_subagents())
 
     # 初始化 LLM
     chat = ChatOpenAI(
-        base_url="http://localhost:1234/v1",
-        model="qwen-qwen3-14b-mlx@4bit",
-        api_key="no_need",
+        base_url=config["model_url"],
+        model=config["llm"],
+        api_key=config["api_key"],
     )
 
     # 创建 Deep Agent

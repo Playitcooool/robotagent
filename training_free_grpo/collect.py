@@ -346,6 +346,7 @@ async def collect_trajectories_online(
     agent_builder: Callable[[str], Awaitable[Any]],
     prompts: List[str],
     output_path: str,
+    mirror_output_path: Optional[str],
     score_path: str,
     memory_json_path: str,
     memory_md_path: str,
@@ -426,6 +427,8 @@ async def collect_trajectories_online(
                 },
             }
             append_jsonl(output_path, trajectory)
+            if mirror_output_path and mirror_output_path != output_path:
+                append_jsonl(mirror_output_path, trajectory)
             finished_keys.add(key)
             print(f"[collect] saved prompt={prompt_id} attempt={attempt_id}")
 
@@ -536,6 +539,12 @@ def parse_args() -> argparse.Namespace:
         default="output/training_free_grpo/trajectories.jsonl",
     )
     parser.add_argument(
+        "--mirror_output_path",
+        type=str,
+        default="trajectories.jsonl",
+        help="Optional secondary trajectories.jsonl path for downstream tooling.",
+    )
+    parser.add_argument(
         "--score_path",
         type=str,
         default="output/training_free_grpo/trajectory_scores.jsonl",
@@ -571,6 +580,7 @@ async def async_main() -> None:
 
     for path in [
         os.path.dirname(args.output_path),
+        os.path.dirname(args.mirror_output_path),
         os.path.dirname(args.score_path),
         os.path.dirname(args.memory_json_path),
         os.path.dirname(args.memory_md_path),
@@ -629,6 +639,7 @@ async def async_main() -> None:
                 agent_builder=agent_builder,
                 prompts=prompts,
                 output_path=args.output_path,
+                mirror_output_path=args.mirror_output_path,
                 score_path=args.score_path,
                 memory_json_path=args.memory_json_path,
                 memory_md_path=args.memory_md_path,
@@ -645,6 +656,7 @@ async def async_main() -> None:
             agent_builder=agent_builder,
             prompts=prompts,
             output_path=args.output_path,
+            mirror_output_path=args.mirror_output_path,
             score_path=args.score_path,
             memory_json_path=args.memory_json_path,
             memory_md_path=args.memory_md_path,
