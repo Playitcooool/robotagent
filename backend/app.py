@@ -795,8 +795,19 @@ async def chat_send(
                         continue
                     if isinstance(parsed, dict):
                         result = parsed.get("result") or parsed.get("message")
+                        artifacts = parsed.get("artifacts")
                         if result is not None:
-                            return _normalize_text(result).strip()
+                            result_text = _normalize_text(result).strip()
+                            if isinstance(artifacts, list) and artifacts:
+                                cleaned = [
+                                    _normalize_text(str(a)).strip()
+                                    for a in artifacts
+                                    if a is not None
+                                ]
+                                cleaned = [a for a in cleaned if a]
+                                if cleaned:
+                                    return f"{result_text} | artifacts: {', '.join(cleaned)}"
+                            return result_text
                         # Common simulator return payload: format to readable summary.
                         if any(
                             k in parsed
