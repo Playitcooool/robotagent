@@ -8,11 +8,13 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
+import yaml
+
 current_file = os.path.abspath(__file__)
 current_dir = os.path.dirname(current_file)
-root_dir = os.path.dirname(os.path.dirname(current_dir))
+root_dir = os.path.dirname(current_dir)
 if root_dir not in sys.path:
-    sys.path.append(root_dir)
+    sys.path.insert(0, root_dir)
 
 _cached_subagents: List[Any] | None = None
 _subagent_lock = asyncio.Lock()
@@ -20,7 +22,6 @@ _subagent_lock = asyncio.Lock()
 # Collection runtime behavior (intended for single-trajectory isolation)
 REBUILD_AGENT_EVERY = 1
 CLEANUP_SIMULATION_PER_ATTEMPT = True
-MCP_CLEANUP_URL = "http://localhost:8001/mcp"
 
 
 @dataclass
@@ -373,6 +374,8 @@ async def collect_trajectories_online(
     attempt_since_rebuild = 0
 
     for prompt_id, prompt in enumerate(prompts):
+        pending_for_prompt: List[Dict[str, Any]] = []
+
         for attempt_id in range(samples_per_prompt):
             key = (prompt_id, attempt_id)
             if key in finished_keys:
@@ -397,9 +400,7 @@ async def collect_trajectories_online(
                 )
                 attempt_since_rebuild += 1
             except Exception as e:
-                print(
-                    f"[collect] failed prompt={prompt_id} attempt={attempt_id}: {e}"
-                )
+                print(f"[collect] failed prompt={prompt_id} attempt={attempt_id}: {e}")
                 continue
             finally:
                 if cleanup_after_attempt is not None:
@@ -432,16 +433,25 @@ async def collect_trajectories_online(
             finished_keys.add(key)
             print(f"[collect] saved prompt={prompt_id} attempt={attempt_id}")
 
+            pending_for_prompt.append(trajectory)
+
+        if not pending_for_prompt:
+            continue
+
+        for trajectory in pending_for_prompt:
+            key = (trajectory["prompt_id"], trajectory["attempt_id"])
             if key in scored_keys:
                 continue
 
-            score = await score_trajectory(judge_client=judge_client, trajectory=trajectory)
+            score = await score_trajectory(
+                judge_client=judge_client, trajectory=trajectory
+            )
             score_record: Dict[str, Any] = {
-                "prompt_id": prompt_id,
-                "attempt_id": attempt_id,
-                "prompt": prompt,
-                "messages": trajectory_messages,
-                "response": response,
+                "prompt_id": trajectory["prompt_id"],
+                "attempt_id": trajectory["attempt_id"],
+                "prompt": trajectory["prompt"],
+                "messages": trajectory["messages"],
+                "response": trajectory["response"],
                 "score": score,
                 "meta": {
                     "model": judge_client.model,
@@ -452,14 +462,16 @@ async def collect_trajectories_online(
             }
             append_jsonl(score_path, score_record)
             scored_keys.add(key)
-            print(f"[score] saved prompt={prompt_id} attempt={attempt_id}")
+            print(
+                f"[score] saved prompt={trajectory['prompt_id']} attempt={trajectory['attempt_id']}"
+            )
 
             summary = await summarize_single_experience(
                 summary_client=summary_client, trajectory=trajectory, score=score
             )
             experience_item = {
-                "prompt_id": prompt_id,
-                "attempt_id": attempt_id,
+                "prompt_id": trajectory["prompt_id"],
+                "attempt_id": trajectory["attempt_id"],
                 "score": score,
                 "summary": summary,
                 "created_at": int(time.time()),
@@ -475,7 +487,7 @@ async def collect_trajectories_online(
             with open(memory_md_path, "w", encoding="utf-8") as f:
                 f.write(render_memory_markdown(memory_bank))
             print(
-                f"[memory] appended experience prompt={prompt_id} attempt={attempt_id}; total={len(memory_bank['experiences'])}"
+                f"[memory] appended experience prompt={trajectory['prompt_id']} attempt={trajectory['attempt_id']}; total={len(memory_bank['experiences'])}"
             )
 
 
@@ -520,6 +532,12 @@ async def build_agent(
     )
 
 
+with open(
+    "/Volumes/Samsung/Projects/robotagent/config/config.yml", "r", encoding="utf-8"
+) as f:
+    config = yaml.load(f.read(), yaml.FullLoader)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -527,11 +545,9 @@ def parse_args() -> argparse.Namespace:
             "collect -> score -> summarize-one -> append memory -> next round."
         )
     )
-    parser.add_argument("--base_url", type=str, default="http://localhost:1234/v1")
-    parser.add_argument(
-        "--model", type=str, default="lmstudio-community-qwen3-4b-instruct-2507-mlx"
-    )
-    parser.add_argument("--api_key", type=str, default="no_need")
+    parser.add_argument("--base_url", type=str, default=config["model_url"])
+    parser.add_argument("--model", type=str, default=config["llm"])
+    parser.add_argument("--api_key", type=str, default=config["api_key"])
     parser.add_argument("--prompts", type=str, default="SFT/data.txt")
     parser.add_argument(
         "--output_path",
@@ -577,6 +593,19 @@ def parse_args() -> argparse.Namespace:
 
 async def async_main() -> None:
     args = parse_args()
+    config_path = os.path.join(root_dir, "config", "config.yml")
+    mcp_cleanup_url = None
+    try:
+        import yaml
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.load(f.read(), Loader=yaml.FullLoader) or {}
+        mcp_cfg = cfg.get("mcp") or {}
+        base = str(mcp_cfg.get("ip") or "http://localhost").rstrip("/")
+        port = str(mcp_cfg.get("port") or "8001")
+        mcp_cleanup_url = f"{base}:{port}/mcp"
+    except Exception:
+        mcp_cleanup_url = "http://localhost:8001/mcp"
 
     for path in [
         os.path.dirname(args.output_path),
@@ -629,7 +658,7 @@ async def async_main() -> None:
     if CLEANUP_SIMULATION_PER_ATTEMPT:
         from fastmcp import Client
 
-        mcp_client = Client(MCP_CLEANUP_URL)
+        mcp_client = Client(mcp_cleanup_url)
 
         async def cleanup_hook() -> None:
             await mcp_client.call_tool("cleanup_simulation_tool")
