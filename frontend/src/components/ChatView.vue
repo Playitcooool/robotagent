@@ -8,7 +8,7 @@
           :class="['message', m.role]"
         >
           <!-- typing indicator -->
-          <div v-if="m.loading" class="bubble typing-card">
+          <div v-if="m.loading" :class="['bubble', 'typing-card', isSubagent(m) ? 'subagent-bubble' : '']">
             <div class="typing-head">
               <span class="typing-label">
                 {{ m.loadingKind === 'search' ? '搜索中' : '正在思考并调用工具' }}
@@ -28,36 +28,76 @@
           </div>
 
           <!-- markdown-rendered message -->
-          <div v-else class="bubble">
-            <div v-if="m.role === 'assistant'" :class="['agent-chip', `agent-${agentKey(m.agent)}`]">
-              <span class="agent-icon">{{ agentIcon(m.agent) }}</span>
-              <span class="agent-name">{{ agentName(m.agent) }}</span>
-            </div>
-            <ThinkingTrace
-              v-if="m.role === 'assistant' && m.thinking"
-              :done="Boolean(m.thinkingDone)"
-            />
-            <div
-              class="markdown answer"
-              v-html="renderMarkdown(m.text)"
-            ></div>
-            <div v-if="m.role === 'assistant' && Array.isArray(m.webSearchResults) && m.webSearchResults.length" class="web-sources">
-              <div class="web-sources-title">搜索结果与出处</div>
-              <ul>
-                <li v-for="(r, idx) in m.webSearchResults" :key="`${m.id}-src-${idx}`">
-                  <a :href="r.url" target="_blank" rel="noopener noreferrer">{{ r.title || r.url }}</a>
-                  <span v-if="r.snippet" class="snippet">{{ r.snippet }}</span>
-                </li>
-              </ul>
-            </div>
-            <div v-if="m.role === 'assistant' && Array.isArray(m.ragReferences) && m.ragReferences.length" class="rag-sources">
-              <div class="rag-sources-title">参考资料</div>
-              <ul>
-                <li v-for="(r, idx) in m.ragReferences" :key="`${m.id}-rag-${idx}`">
-                  <a :href="r.url" target="_blank" rel="noopener noreferrer">{{ r.title || r.url }}</a>
-                </li>
-              </ul>
-            </div>
+          <div v-else :class="['bubble', isSubagent(m) ? 'subagent-bubble' : '']">
+            <template v-if="isSubagent(m)">
+              <details class="subagent-details">
+                <summary class="subagent-summary">
+                  <div :class="['agent-chip', `agent-${agentKey(m.agent)}`]">
+                    <span class="agent-icon">{{ agentIcon(m.agent) }}</span>
+                    <span class="agent-name">{{ agentName(m.agent) }}</span>
+                  </div>
+                  <span class="subagent-hint">点击展开</span>
+                </summary>
+                <div class="subagent-body">
+                  <ThinkingTrace
+                    v-if="m.role === 'assistant' && m.thinking"
+                    :done="Boolean(m.thinkingDone)"
+                  />
+                  <div
+                    class="markdown answer"
+                    v-html="renderMarkdown(m.text)"
+                  ></div>
+                  <div v-if="m.role === 'assistant' && Array.isArray(m.webSearchResults) && m.webSearchResults.length" class="web-sources">
+                    <div class="web-sources-title">搜索结果与出处</div>
+                    <ul>
+                      <li v-for="(r, idx) in m.webSearchResults" :key="`${m.id}-src-${idx}`">
+                        <a :href="r.url" target="_blank" rel="noopener noreferrer">{{ r.title || r.url }}</a>
+                        <span v-if="r.snippet" class="snippet">{{ r.snippet }}</span>
+                      </li>
+                    </ul>
+                  </div>
+                  <div v-if="m.role === 'assistant' && Array.isArray(m.ragReferences) && m.ragReferences.length" class="rag-sources">
+                    <div class="rag-sources-title">参考资料</div>
+                    <ul>
+                      <li v-for="(r, idx) in m.ragReferences" :key="`${m.id}-rag-${idx}`">
+                        <a :href="r.url" target="_blank" rel="noopener noreferrer">{{ r.title || r.url }}</a>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </details>
+            </template>
+            <template v-else>
+              <div v-if="m.role === 'assistant'" :class="['agent-chip', `agent-${agentKey(m.agent)}`]">
+                <span class="agent-icon">{{ agentIcon(m.agent) }}</span>
+                <span class="agent-name">{{ agentName(m.agent) }}</span>
+              </div>
+              <ThinkingTrace
+                v-if="m.role === 'assistant' && m.thinking"
+                :done="Boolean(m.thinkingDone)"
+              />
+              <div
+                class="markdown answer"
+                v-html="renderMarkdown(m.text)"
+              ></div>
+              <div v-if="m.role === 'assistant' && Array.isArray(m.webSearchResults) && m.webSearchResults.length" class="web-sources">
+                <div class="web-sources-title">搜索结果与出处</div>
+                <ul>
+                  <li v-for="(r, idx) in m.webSearchResults" :key="`${m.id}-src-${idx}`">
+                    <a :href="r.url" target="_blank" rel="noopener noreferrer">{{ r.title || r.url }}</a>
+                    <span v-if="r.snippet" class="snippet">{{ r.snippet }}</span>
+                  </li>
+                </ul>
+              </div>
+              <div v-if="m.role === 'assistant' && Array.isArray(m.ragReferences) && m.ragReferences.length" class="rag-sources">
+                <div class="rag-sources-title">参考资料</div>
+                <ul>
+                  <li v-for="(r, idx) in m.ragReferences" :key="`${m.id}-rag-${idx}`">
+                    <a :href="r.url" target="_blank" rel="noopener noreferrer">{{ r.title || r.url }}</a>
+                  </li>
+                </ul>
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -294,6 +334,11 @@ export default {
       return '🧠'
     }
 
+    function isSubagent (msg) {
+      if (!msg || msg.role !== 'assistant') return false
+      return agentKey(msg.agent) !== 'main'
+    }
+
     function autoResizeTextarea () {
       const el = textareaRef.value
       if (!el) return
@@ -377,6 +422,7 @@ export default {
       agentKey,
       agentName,
       agentIcon,
+      isSubagent,
       messagesRef,
       textareaRef,
       toolPickerRef

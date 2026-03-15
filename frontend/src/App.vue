@@ -325,7 +325,7 @@ export default {
         const msgId = `${assistantId}:${source}`
         bucket[source] = msgId
         assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [], ragReferences: [] }
-        conversation.value.push({
+        const newMsg = {
           id: msgId,
           role: 'assistant',
           agent: source,
@@ -337,7 +337,15 @@ export default {
           loadingKind: 'thinking',
           webSearchResults: [],
           ragReferences: []
-        })
+        }
+        if (source !== 'main') {
+          const mainIdx = conversation.value.findIndex(m => m.id === mainMessageId)
+          if (mainIdx !== -1 && conversation.value[mainIdx]?.loading) {
+            conversation.value.splice(mainIdx, 0, newMsg)
+            return msgId
+          }
+        }
+        conversation.value.push(newMsg)
         return msgId
       }
 

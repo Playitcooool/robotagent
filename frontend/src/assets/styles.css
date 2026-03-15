@@ -482,6 +482,13 @@ body {
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.16);
 }
 
+.subagent-bubble {
+  max-width: 62ch;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .message.user .bubble {
   background: #122033;
   border-color: rgba(47, 125, 255, 0.4);
@@ -501,6 +508,37 @@ body {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.01em;
+}
+
+.subagent-details {
+  width: 100%;
+}
+
+.subagent-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.subagent-summary::-webkit-details-marker {
+  display: none;
+}
+
+.subagent-summary .agent-chip {
+  margin-bottom: 0;
+}
+
+.subagent-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.subagent-body {
+  margin-top: 8px;
 }
 
 .agent-chip .agent-icon {
