@@ -94,6 +94,7 @@ export default {
     let liveFramePollStart = 0
     let liveFramePollTimer = null
     let liveFramePollToken = 0
+    let liveFrameFinalSeen = false
     let sessionLoadController = null
 
     const authToken = ref(localStorage.getItem(AUTH_TOKEN_KEY) || '')
@@ -176,6 +177,7 @@ export default {
       conversation.value = [{ id: Date.now(), role: 'assistant', text: WELCOME_TEXT }]
       liveFrame.value = null
       planningState.value = { steps: [], updatedAt: 0 }
+      liveFrameFinalSeen = false
       stopLiveFrameStream()
     }
 
@@ -199,7 +201,16 @@ export default {
         ) {
           simStreamActive.value = true
           liveFrame.value = payload
-          scheduleNextLiveFramePoll(token, payload.done ? 1200 : 250)
+          if (payload.done) {
+            if (liveFrameFinalSeen) {
+              stopLiveFrameStream()
+              return
+            }
+            liveFrameFinalSeen = true
+            scheduleNextLiveFramePoll(token, 800)
+            return
+          }
+          scheduleNextLiveFramePoll(token, 250)
           return
         }
         scheduleNextLiveFramePoll(token, 1200)
@@ -221,6 +232,7 @@ export default {
       if (liveFramePollTimer) clearTimeout(liveFramePollTimer)
       liveFramePollToken += 1
       liveFramePollStart = Date.now() / 1000
+      liveFrameFinalSeen = false
       pollLiveFrame(liveFramePollToken)
     }
 
