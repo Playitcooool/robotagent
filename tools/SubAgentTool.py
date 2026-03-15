@@ -77,7 +77,9 @@ async def init_subagents():
     subagents = []
 
     analysis_chat = ChatOpenAI(
-        base_url=config["model_url"], model=config["llm"], api_key="no_need"
+        base_url=config["model_url"],
+        model=config["llm"],
+        api_key=config.get("api_key", "no_need"),
     )
     analysis_tool = []
     for func_name in AnalysisTool.__all__:
@@ -146,7 +148,7 @@ async def init_subagents():
         simulation_chat = ChatOpenAI(
             base_url=config["model_url"],
             model=config["llm"],
-            api_key="no_need",
+            api_key=config.get("api_key", "no_need"),
         )
         simulation_graph = create_agent(
             model=simulation_chat,

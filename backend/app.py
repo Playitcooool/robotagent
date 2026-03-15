@@ -111,7 +111,7 @@ def get_tools():
 chatBot = ChatOpenAI(
     base_url=config["model_url"],
     model=config["llm"],
-    api_key="no_need",
+    api_key=config.get("api_key", "no_need"),
     streaming=True,
 )
 
