@@ -1,8 +1,14 @@
 llm: "glm-4.7-flash"
-
-model_url: "https://open.bigmodel.cn/api/v1"
-
+model_url: "https://open.bigmodel.cn/api/paas/v4/"
 api_key: "235ac0e639d64a30935483b0992ad537.5z7M1MTnGTQqTNNw"
+
+analysis_llm: "mlx-community:Qwen3.5-4B-MLX-8bit"
+analysis_model_url: "http://localhost:1234/v1"
+analysis_api_key: "no_need"
+
+simulation_llm: "mlx-community:Qwen3.5-4B-MLX-8bit"
+simulation_model_url: "http://localhost:1234/v1"
+simulation_api_key: "no_need"
 
 mcp:
   ip: "http://localhost"
