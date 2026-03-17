@@ -190,6 +190,14 @@ def cleanup_simulation():
             # Best-effort cleanup; always clear local state.
             pass
         simulation_instance = None
+        # 清理帧文件
+        try:
+            if LATEST_META_FILE.exists():
+                LATEST_META_FILE.unlink()
+            if LATEST_FRAME_FILE.exists():
+                LATEST_FRAME_FILE.unlink()
+        except Exception:
+            pass
     else:
         print("No simulation environment to close.")
 
@@ -198,7 +206,7 @@ def step(n: int = 240):
     """执行指定步数的仿真"""
     for _ in range(n):
         p.stepSimulation()
-        time.sleep(1.0 / 240.0)
+        # 移除非必要的sleep以提高性能，帧发布由调用者控制
 
 
 # ======================

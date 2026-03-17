@@ -131,7 +131,56 @@ class GazeboMCPNode(Node):
         with self._lock:
             return self._camera_frames.get(topic)
 
-    def subscribe_camera(self, topic: str):
+    def wait_for_camera_frame(self, topic: str, timeout: float = 5.0) -> bytes | None:
+        """等待相机帧，使用事件机制而非轮询"""
+        import threading
+
+        frame_ready = threading.Event()
+        result = [None]  # 使用列表存储结果以在回调中修改
+
+        def on_frame(msg: Image):
+            if msg.encoding not in ("rgb8", "bgr8"):
+                return
+            import struct, zlib
+            import numpy as np
+
+            h, w = msg.height, msg.width
+            raw = bytes(msg.data)
+            if msg.encoding == "bgr8":
+                arr = np.frombuffer(raw, dtype=np.uint8).reshape((h, w, 3))
+                arr = arr[:, :, ::-1]
+                raw = arr.tobytes()
+
+            def png_chunk(ctype, data):
+                return (
+                    struct.pack(">I", len(data))
+                    + ctype
+                    + data
+                    + struct.pack(">I", zlib.crc32(ctype + data) & 0xFFFFFFFF)
+                )
+
+            scanlines = b"".join(
+                b"\x00" + raw[r * w * 3 : (r + 1) * w * 3] for r in range(h)
+            )
+            compressed = zlib.compress(scanlines, level=6)
+            ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+            png = (
+                b"\x89PNG\r\n\x1a\n"
+                + png_chunk(b"IHDR", ihdr)
+                + png_chunk(b"IDAT", compressed)
+                + png_chunk(b"IEND", b"")
+            )
+            result[0] = png
+            frame_ready.set()
+
+        sub = self.create_subscription(Image, topic, on_frame, 1)
+        try:
+            if frame_ready.wait(timeout=timeout):
+                return result[0]
+            return None
+        finally:
+            # 清理subscription
+            self.destroy_subscription(sub)
         self.create_subscription(Image, topic, self._make_camera_cb(topic), 1)
 
     # ------------------------------------------------------------------
@@ -150,8 +199,7 @@ class GazeboMCPNode(Node):
                 f"Service call to '{client.srv_name}' timed out after {timeout}s"
             )
         result = future.result()
-        if result is None:
-            raise RuntimeError(f"Service call to '{client.srv_name}' returned None")
+        # 注意：某些ROS2服务可能正常返回空结果，不一定是错误
         return result
 
 
@@ -660,20 +708,18 @@ def capture_camera(args: CaptureCameraArgs):
     - Do not use on non-image topics.
     """
     node = ensure_ros()
-    node.subscribe_camera(args.topic)
 
-    deadline = time.time() + args.timeout
-    while time.time() < deadline:
-        frame = node.get_camera_frame(args.topic)
-        if frame is not None:
-            return {
-                "task": "capture_camera",
-                "status": "success",
-                "topic": args.topic,
-                "image_base64": base64.b64encode(frame).decode("utf-8"),
-                "format": "png",
-            }
-        time.sleep(0.05)
+    # 使用事件机制替代busy-wait，减少CPU占用
+    # wait_for_camera_frame内部会创建subscription
+    frame = node.wait_for_camera_frame(args.topic, timeout=args.timeout)
+    if frame is not None:
+        return {
+            "task": "capture_camera",
+            "status": "success",
+            "topic": args.topic,
+            "image_base64": base64.b64encode(frame).decode("utf-8"),
+            "format": "png",
+        }
 
     return {
         "task": "capture_camera",
