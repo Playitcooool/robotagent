@@ -6,13 +6,18 @@ flowchart LR
   frontend[前端 Vue3]:::proc
   backend[后端 FastAPI]:::proc
   mcp[MCP PyBullet 服务]:::proc
-  model[模型服务
-(OpenAI-compatible)]:::ext
+
+  subgraph 模型服务
+    main_agent[主代理<br/>GLM4.7-flash<br/>智谱AI API]
+    sub_agent[子代理<br/>Qwen3.5 4B<br/>本地部署]
+  end
 
   redis_chat[(Redis DB1
 聊天记录)]:::store
   redis_auth[(Redis DB2
 用户/会话)]:::store
+  qdrant[(Qdrant
+向量知识库)]:::store
   sim_dir[(共享帧目录
 mcp/.sim_stream)]:::store
 
@@ -20,8 +25,9 @@ mcp/.sim_stream)]:::store
   frontend -->|API 请求| backend
   backend -->|鉴权/会话| redis_auth
   backend -->|聊天记录| redis_chat
-  backend -->|模型调用| model
-
+  backend -->|任务规划| main_agent
+  main_agent -->|工具调用| sub_agent
+  sub_agent -->|检索增强| qdrant
   backend -->|工具调用| mcp
   mcp -->|latest.png/json| sim_dir
   backend -->|SSE/拉取| sim_dir
