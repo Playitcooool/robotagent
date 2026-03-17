@@ -22,6 +22,9 @@ _subagent_lock = asyncio.Lock()
 # Collection runtime behavior (intended for single-trajectory isolation)
 REBUILD_AGENT_EVERY = 1
 CLEANUP_SIMULATION_PER_ATTEMPT = True
+DEFAULT_REQUEST_TIMEOUT_S = 300.0
+DEFAULT_ATTEMPT_TIMEOUT_S = 600.0
+DEFAULT_CLEANUP_TIMEOUT_S = 30.0
 
 
 @dataclass
@@ -34,6 +37,7 @@ class DeepAgentClient:
     initial_delay: float
     temperature: float
     max_tokens: int
+    request_timeout_s: Optional[float]
 
     async def chat(self, system_prompt: str, user_content: str) -> str:
         from deepagents import create_deep_agent
@@ -46,6 +50,7 @@ class DeepAgentClient:
             api_key=self.api_key,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
+            request_timeout=self.request_timeout_s,
         )
         agent = create_deep_agent(
             model=chat,
@@ -59,8 +64,9 @@ class DeepAgentClient:
                 )
             ],
         )
-        result = await agent.ainvoke(
-            {"messages": [{"role": "user", "content": user_content}]}
+        result = await maybe_wait_for(
+            agent.ainvoke({"messages": [{"role": "user", "content": user_content}]}),
+            self.request_timeout_s,
         )
         for msg in reversed(result.get("messages", [])):
             cls_name = msg.__class__.__name__
@@ -73,6 +79,39 @@ class DeepAgentClient:
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
+
+
+async def maybe_wait_for(awaitable: Awaitable[Any], timeout_s: Optional[float]) -> Any:
+    if timeout_s is None or timeout_s <= 0:
+        return await awaitable
+    return await asyncio.wait_for(awaitable, timeout=timeout_s)
+
+
+def normalize_timeout(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except Exception:
+        return None
+    return v if v > 0 else None
+
+
+async def reset_subagents() -> None:
+    async with _subagent_lock:
+        global _cached_subagents
+        _cached_subagents = None
+
+
+def is_stream_error(err: Exception) -> bool:
+    text = str(err).lower()
+    return (
+        "sse" in text
+        or "streamable_http" in text
+        or "brokenresourceerror" in text
+        or "closedresourceerror" in text
+        or "connection" in text and "closed" in text
+    )
 
 
 def load_prompts(path: str, max_prompts: int) -> List[str]:
@@ -416,6 +455,11 @@ async def collect_trajectories_online(
     judge_client: DeepAgentClient,
     summary_client: DeepAgentClient,
     max_experiences_in_prompt: int,
+    attempt_timeout_s: Optional[float],
+    cleanup_timeout_s: Optional[float],
+    attempt_retries: int,
+    attempt_retry_delay_s: float,
+    attempt_retry_backoff: float,
     cleanup_after_attempt: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     finished_keys = load_finished_keys(output_path)
@@ -446,27 +490,52 @@ async def collect_trajectories_online(
                 max_experiences_in_prompt=max_experiences_in_prompt,
             )
 
-            try:
-                if (
-                    agent is None
-                    or rebuild_agent_every > 0
-                    and attempt_since_rebuild >= rebuild_agent_every
-                ):
-                    agent = await agent_builder(current_system_prompt)
-                    attempt_since_rebuild = 0
-                result = await agent.ainvoke(
-                    {"messages": [{"role": "user", "content": prompt}]}
-                )
-                attempt_since_rebuild += 1
-            except Exception as e:
-                print(f"[collect] failed prompt={prompt_id} attempt={attempt_id}: {e}")
+            result = None
+            retry_delay = max(0.0, attempt_retry_delay_s)
+            for retry_idx in range(max(0, attempt_retries) + 1):
+                try:
+                    if (
+                        agent is None
+                        or rebuild_agent_every > 0
+                        and attempt_since_rebuild >= rebuild_agent_every
+                    ):
+                        agent = await agent_builder(current_system_prompt)
+                        attempt_since_rebuild = 0
+                    result = await maybe_wait_for(
+                        agent.ainvoke(
+                            {"messages": [{"role": "user", "content": prompt}]}
+                        ),
+                        attempt_timeout_s,
+                    )
+                    attempt_since_rebuild += 1
+                    break
+                except asyncio.TimeoutError:
+                    print(
+                        f"[collect] timeout prompt={prompt_id} attempt={attempt_id} after {attempt_timeout_s}s"
+                    )
+                except Exception as e:
+                    print(
+                        f"[collect] failed prompt={prompt_id} attempt={attempt_id} retry={retry_idx}: {e}"
+                    )
+                    if is_stream_error(e):
+                        await reset_subagents()
+                    agent = None
+                finally:
+                    if cleanup_after_attempt is not None:
+                        try:
+                            await maybe_wait_for(
+                                cleanup_after_attempt(), cleanup_timeout_s
+                            )
+                        except Exception as e:
+                            print(f"[collect] cleanup_after_attempt failed: {e}")
+
+                if retry_idx < max(0, attempt_retries):
+                    if retry_delay > 0:
+                        await asyncio.sleep(retry_delay)
+                    retry_delay = retry_delay * attempt_retry_backoff if attempt_retry_backoff > 0 else retry_delay
+
+            if result is None:
                 continue
-            finally:
-                if cleanup_after_attempt is not None:
-                    try:
-                        await cleanup_after_attempt()
-                    except Exception as e:
-                        print(f"[collect] cleanup_after_attempt failed: {e}")
 
             trajectory_messages = extract_messages(result)
             response = ""
@@ -576,6 +645,7 @@ async def build_agent(
     max_retries: int,
     backoff_factor: float,
     initial_delay: float,
+    request_timeout_s: Optional[float],
 ) -> Any:
     from deepagents import create_deep_agent
     from langchain.agents.middleware import ToolRetryMiddleware
@@ -592,6 +662,7 @@ async def build_agent(
         base_url=base_url,
         model=model,
         api_key=api_key,
+        request_timeout=request_timeout_s,
     )
 
     return create_deep_agent(
@@ -665,11 +736,50 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--judge_max_tokens", type=int, default=1024)
     parser.add_argument("--summary_max_tokens", type=int, default=1024)
     parser.add_argument("--max_experiences_in_prompt", type=int, default=20)
+    parser.add_argument(
+        "--request_timeout_s",
+        type=float,
+        default=DEFAULT_REQUEST_TIMEOUT_S,
+        help="Per-request timeout in seconds for model calls. Set <=0 to disable.",
+    )
+    parser.add_argument(
+        "--attempt_timeout_s",
+        type=float,
+        default=DEFAULT_ATTEMPT_TIMEOUT_S,
+        help="Overall timeout in seconds for each collect attempt. Set <=0 to disable.",
+    )
+    parser.add_argument(
+        "--cleanup_timeout_s",
+        type=float,
+        default=DEFAULT_CLEANUP_TIMEOUT_S,
+        help="Timeout in seconds for cleanup per attempt. Set <=0 to disable.",
+    )
+    parser.add_argument(
+        "--attempt_retries",
+        type=int,
+        default=2,
+        help="Retries for a collect attempt when stream errors occur.",
+    )
+    parser.add_argument(
+        "--attempt_retry_delay_s",
+        type=float,
+        default=1.0,
+        help="Initial retry delay in seconds for attempt retries.",
+    )
+    parser.add_argument(
+        "--attempt_retry_backoff",
+        type=float,
+        default=2.0,
+        help="Backoff multiplier for attempt retry delay.",
+    )
     return parser.parse_args()
 
 
 async def async_main() -> None:
     args = parse_args()
+    request_timeout_s = normalize_timeout(args.request_timeout_s)
+    attempt_timeout_s = normalize_timeout(args.attempt_timeout_s)
+    cleanup_timeout_s = normalize_timeout(args.cleanup_timeout_s)
     config_path = os.path.join(root_dir, "config", "config.yml")
     mcp_cleanup_url = None
     try:
@@ -706,6 +816,7 @@ async def async_main() -> None:
             max_retries=args.max_retries,
             backoff_factor=args.backoff_factor,
             initial_delay=args.initial_delay,
+            request_timeout_s=request_timeout_s,
         )
 
     judge_model = args.judge_model.strip() or args.model
@@ -719,6 +830,7 @@ async def async_main() -> None:
         initial_delay=args.initial_delay,
         temperature=args.judge_temperature,
         max_tokens=args.judge_max_tokens,
+        request_timeout_s=request_timeout_s,
     )
     summary_client = DeepAgentClient(
         base_url=args.base_url,
@@ -729,6 +841,7 @@ async def async_main() -> None:
         initial_delay=args.initial_delay,
         temperature=args.summary_temperature,
         max_tokens=args.summary_max_tokens,
+        request_timeout_s=request_timeout_s,
     )
 
     cleanup_hook = None
@@ -755,6 +868,11 @@ async def async_main() -> None:
                 judge_client=judge_client,
                 summary_client=summary_client,
                 max_experiences_in_prompt=args.max_experiences_in_prompt,
+                attempt_timeout_s=attempt_timeout_s,
+                cleanup_timeout_s=cleanup_timeout_s,
+                attempt_retries=args.attempt_retries,
+                attempt_retry_delay_s=args.attempt_retry_delay_s,
+                attempt_retry_backoff=args.attempt_retry_backoff,
                 cleanup_after_attempt=cleanup_hook,
             )
     else:
@@ -772,6 +890,11 @@ async def async_main() -> None:
             judge_client=judge_client,
             summary_client=summary_client,
             max_experiences_in_prompt=args.max_experiences_in_prompt,
+            attempt_timeout_s=attempt_timeout_s,
+            cleanup_timeout_s=cleanup_timeout_s,
+            attempt_retries=args.attempt_retries,
+            attempt_retry_delay_s=args.attempt_retry_delay_s,
+            attempt_retry_backoff=args.attempt_retry_backoff,
             cleanup_after_attempt=cleanup_hook,
         )
 

@@ -98,6 +98,15 @@ async def init_subagents():
     )
     subagents.append(analysis_agent)
 
+    disable_sim = str(os.environ.get("DISABLE_SIM_SUBAGENT", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if disable_sim:
+        logger.info("Simulation subagent disabled by DISABLE_SIM_SUBAGENT")
+        return tuple(subagents)
+
     try:
         max_retries = int(os.environ.get("SIM_MCP_MAX_RETRIES", "8"))
         retry_delay_s = float(os.environ.get("SIM_MCP_RETRY_DELAY_SECONDS", "1.0"))
