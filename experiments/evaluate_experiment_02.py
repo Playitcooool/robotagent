@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-实验2评估脚本: 机器人任务执行质量评估 (DeepSeek Judge)
+实验2评估脚本: 机器人仿真任务执行质量评估
 
-使用 DeepSeek 评估任务执行质量。
+使用外部LLM Judge (DeepSeek) 评估机器人仿真任务轨迹的执行质量。
+分析不同任务类型（抓取、推、放置等）的执行质量差异。
 
 使用方式:
     python evaluate_experiment_02.py \

@@ -48,11 +48,33 @@
                     v-html="renderMarkdown(m.text)"
                   ></div>
                   <div v-if="m.role === 'assistant' && Array.isArray(m.webSearchResults) && m.webSearchResults.length" class="web-sources">
-                    <div class="web-sources-title">搜索结果与出处</div>
+                    <div class="web-sources-title">
+                      {{ m.webSearchResults[0]?.source === 'semantic_scholar' || m.webSearchResults[0]?.source === 'arxiv' ? '学术论文' : '搜索结果与出处' }}
+                    </div>
                     <ul>
                       <li v-for="(r, idx) in m.webSearchResults" :key="`${m.id}-src-${idx}`">
-                        <a :href="r.url" target="_blank" rel="noopener noreferrer">{{ r.title || r.url }}</a>
-                        <span v-if="r.snippet" class="snippet">{{ r.snippet }}</span>
+                        <!-- 学术论文显示 -->
+                        <template v-if="r.source === 'semantic_scholar' || r.source === 'arxiv'">
+                          <div class="paper-item">
+                            <a :href="r.url" target="_blank" rel="noopener noreferrer" class="paper-title">{{ r.title }}</a>
+                            <div class="paper-meta">
+                              <span class="paper-authors">{{ r.authors }}</span>
+                              <span v-if="r.year" class="paper-year">({{ r.year }})</span>
+                              <span v-if="r.venue" class="paper-venue">{{ r.venue }}</span>
+                            </div>
+                            <div v-if="r.abstract" class="paper-abstract">{{ r.abstract }}</div>
+                            <div class="paper-links">
+                              <a v-if="r.url" :href="r.url" target="_blank" rel="noopener noreferrer" class="link-btn">论文主页</a>
+                              <a v-if="r.pdf_url" :href="r.pdf_url" target="_blank" rel="noopener noreferrer" class="link-btn pdf">PDF</a>
+                              <span v-if="r.citations" class="citation-count">{{ r.citations }} 引用</span>
+                            </div>
+                          </div>
+                        </template>
+                        <!-- 普通搜索显示 -->
+                        <template v-else>
+                          <a :href="r.url" target="_blank" rel="noopener noreferrer">{{ r.title || r.url }}</a>
+                          <span v-if="r.snippet" class="snippet">{{ r.snippet }}</span>
+                        </template>
                       </li>
                     </ul>
                   </div>
@@ -81,11 +103,33 @@
                 v-html="renderMarkdown(m.text)"
               ></div>
               <div v-if="m.role === 'assistant' && Array.isArray(m.webSearchResults) && m.webSearchResults.length" class="web-sources">
-                <div class="web-sources-title">搜索结果与出处</div>
+                <div class="web-sources-title">
+                  {{ m.webSearchResults[0]?.source === 'semantic_scholar' || m.webSearchResults[0]?.source === 'arxiv' ? '学术论文' : '搜索结果与出处' }}
+                </div>
                 <ul>
                   <li v-for="(r, idx) in m.webSearchResults" :key="`${m.id}-src-${idx}`">
-                    <a :href="r.url" target="_blank" rel="noopener noreferrer">{{ r.title || r.url }}</a>
-                    <span v-if="r.snippet" class="snippet">{{ r.snippet }}</span>
+                    <!-- 学术论文显示 -->
+                    <template v-if="r.source === 'semantic_scholar' || r.source === 'arxiv'">
+                      <div class="paper-item">
+                        <a :href="r.url" target="_blank" rel="noopener noreferrer" class="paper-title">{{ r.title }}</a>
+                        <div class="paper-meta">
+                          <span class="paper-authors">{{ r.authors }}</span>
+                          <span v-if="r.year" class="paper-year">({{ r.year }})</span>
+                          <span v-if="r.venue" class="paper-venue">{{ r.venue }}</span>
+                        </div>
+                        <div v-if="r.abstract" class="paper-abstract">{{ r.abstract }}</div>
+                        <div class="paper-links">
+                          <a v-if="r.url" :href="r.url" target="_blank" rel="noopener noreferrer" class="link-btn">论文主页</a>
+                          <a v-if="r.pdf_url" :href="r.pdf_url" target="_blank" rel="noopener noreferrer" class="link-btn pdf">PDF</a>
+                          <span v-if="r.citations" class="citation-count">{{ r.citations }} 引用</span>
+                        </div>
+                      </div>
+                    </template>
+                    <!-- 普通搜索显示 -->
+                    <template v-else>
+                      <a :href="r.url" target="_blank" rel="noopener noreferrer">{{ r.title || r.url }}</a>
+                      <span v-if="r.snippet" class="snippet">{{ r.snippet }}</span>
+                    </template>
                   </li>
                 </ul>
               </div>

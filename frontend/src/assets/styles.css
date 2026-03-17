@@ -917,6 +917,90 @@ body {
   margin-top: 2px;
 }
 
+/* 学术论文样式 */
+.web-sources .paper-item {
+  margin-bottom: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  border-left: 3px solid #4a9eff;
+}
+
+.web-sources .paper-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: #7cb4ff;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.web-sources .paper-meta {
+  font-size: 12px;
+  color: #8a9aaa;
+  margin-bottom: 6px;
+}
+
+.web-sources .paper-authors {
+  color: #a0b0c0;
+}
+
+.web-sources .paper-year {
+  margin-left: 4px;
+  color: #7cb4ff;
+}
+
+.web-sources .paper-venue {
+  margin-left: 6px;
+  font-style: italic;
+  color: #8899aa;
+}
+
+.web-sources .paper-abstract {
+  font-size: 12px;
+  color: #9aa8b8;
+  line-height: 1.5;
+  margin-bottom: 8px;
+  max-height: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.web-sources .paper-links {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.web-sources .link-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: 3px;
+  background: rgba(74, 158, 255, 0.15);
+  color: #7cb4ff;
+  text-decoration: none;
+  transition: all 0.2s;
+}
+
+.web-sources .link-btn:hover {
+  background: rgba(74, 158, 255, 0.3);
+  text-decoration: none;
+}
+
+.web-sources .link-btn.pdf {
+  background: rgba(239, 83, 80, 0.15);
+  color: #ef5350;
+}
+
+.web-sources .link-btn.pdf:hover {
+  background: rgba(239, 83, 80, 0.3);
+}
+
+.web-sources .citation-count {
+  font-size: 11px;
+  color: #67c23a;
+  margin-left: auto;
+}
+
 .rag-sources {
   margin-top: 10px;
   border-top: 1px dashed rgba(255, 255, 255, 0.18);

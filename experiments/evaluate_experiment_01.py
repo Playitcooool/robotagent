@@ -1,28 +1,36 @@
 #!/usr/bin/env python3
 """
-实验1评估脚本: 机器人仿真任务执行质量评估
+实验1评估脚本: RAG问答系统质量评估
 
-使用外部LLM Judge评估仿真任务的执行质量。
+评估RAG系统回答机器人领域问题的质量。
+直接使用 RAG tool 进行查询，使用外部LLM Judge (DeepSeek) 进行评估。
 
 使用方式:
     python evaluate_experiment_01.py \
-        --trajectories ../trajectories.jsonl \
+        --queries data/rag_queries.jsonl \
         --out-dir results/exp01
-
-图表输出到 results/exp01/figures/
 """
 
 import argparse
 import json
 import os
 import re
+import sys
 import yaml
 from pathlib import Path
 from statistics import mean
+from collections import defaultdict
+
+# 添加项目根目录到路径
+current_dir = Path(__file__).parent
+root_dir = current_dir.parent
+sys.path.insert(0, str(root_dir))
 
 import matplotlib.pyplot as plt
 import seaborn as sns
 from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from tools.GeneralTool import qdrant_retrieve_context
 
 # 设置中文字体
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial Unicode MS', 'SimHei']
@@ -32,7 +40,7 @@ plt.rcParams['axes.unicode_minus'] = False
 def load_config(config_path: str = None) -> dict:
     """加载配置文件"""
     if config_path is None:
-        config_path = Path(__file__).parent / "config.yaml"
+        config_path = current_dir / "config.yaml"
     else:
         config_path = Path(config_path)
 
@@ -45,13 +53,24 @@ def load_config(config_path: str = None) -> dict:
 
 # ============ 配置 ============
 
-JUDGE_SYSTEM_PROMPT = """你是一个严格的机器人任务评估专家。
-评估每个仿真任务的执行质量。
-只返回JSON，不要包含markdown或解释。"""
+JUDGE_SYSTEM_PROMPT = """你是一个严格的学术问答评估专家。
+评估RAG系统回答机器人领域问题的质量。
+只返回JSON，不要包含markdown或解释。
+
+评分维度：
+- relevance: 问题相关性 (1-5)
+- accuracy: 答案准确性 (1-5)
+- completeness: 答案完整性 (1-5)
+- citation: 引用质量 (1-5)
+- overall_score: 综合得分 (1-5)
+
+返回格式：
+{"relevance": 4, "accuracy": 3, "completeness": 4, "citation": 3, "overall_score": 3.5,
+ "pros": ["优点1", "优点2"], "cons": ["缺点1"], "brief_reason": "简要说明"}"""
 
 
-def load_trajectories(path: Path):
-    """加载轨迹数据"""
+def load_queries(path: Path):
+    """加载查询数据"""
     rows = []
     with path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -65,9 +84,28 @@ def load_trajectories(path: Path):
     return rows
 
 
-def call_judge(llm: ChatOpenAI, prompt: str, max_retries: int = 3):
-    """调用LLM Judge"""
+def call_rag(query: str) -> str:
+    """调用RAG获取回答"""
+    try:
+        # 直接调用 RAG tool
+        result = qdrant_retrieve_context.invoke({"query": query})
+        return result if result else ""
+    except Exception as e:
+        print(f"[WARN] RAG call failed: {e}")
+        return ""
+
+
+def call_judge(llm: ChatOpenAI, query: str, answer: str, max_retries: int = 3):
+    """调用LLM Judge评估回答质量"""
     import time
+
+    prompt = f"""请评估以下RAG系统回答的质量：
+
+问题：{query}
+
+RAG回答：{answer}
+
+请严格按照评分标准给出评分和反馈。"""
 
     last_error = None
     for attempt in range(max_retries):
@@ -82,10 +120,21 @@ def call_judge(llm: ChatOpenAI, prompt: str, max_retries: int = 3):
                     str(block.get("text", "")) if isinstance(block, dict) else str(block)
                     for block in content
                 )
+
             # 提取JSON
             json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
             if json_match:
-                return json.loads(json_match.group())
+                result = json.loads(json_match.group())
+                # 确保有所有必要字段
+                result.setdefault("relevance", 0)
+                result.setdefault("accuracy", 0)
+                result.setdefault("completeness", 0)
+                result.setdefault("citation", 0)
+                result.setdefault("overall_score", 0)
+                result.setdefault("pros", [])
+                result.setdefault("cons", [])
+                result.setdefault("brief_reason", "")
+                return result
             return json.loads(content)
         except json.JSONDecodeError as e:
             last_error = f"JSON decode error: {e}"
@@ -93,236 +142,208 @@ def call_judge(llm: ChatOpenAI, prompt: str, max_retries: int = 3):
         except Exception as e:
             last_error = str(e)
             print(f"[WARN] Judge API call failed (attempt {attempt + 1}/{max_retries}): {last_error}")
+        time.sleep(1)
 
-        if attempt < max_retries - 1:
-            time.sleep(2 ** attempt)
+    print(f"[ERROR] Judge failed after {max_retries} retries: {last_error}")
+    return {
+        "relevance": 0, "accuracy": 0, "completeness": 0,
+        "citation": 0, "overall_score": 0,
+        "pros": [], "cons": [], "brief_reason": f"Judge failed: {last_error}"
+    }
 
-    print(f"[ERROR] Judge failed after {max_retries} attempts: {last_error}")
-    return {"error": last_error, "verdict": "UNKNOWN"}
 
+def evaluate_rag(queries: list, llm, model_name: str, out_dir: Path):
+    """评估RAG系统"""
+    results = []
+    total = len(queries)
 
-def build_evaluation_prompt(traj: dict) -> str:
-    """构建评估prompt"""
-    prompt = traj.get("prompt", "")
-    response = traj.get("response", "")
+    print(f"Loaded {total} queries")
+    print(f"Using Judge: {model_name}")
 
-    messages = traj.get("messages", [])
-    tool_results = []
-    for msg in messages:
-        if msg.get("role") == "tool" and msg.get("name") == "task":
-            tool_results.append(msg.get("content", ""))
+    for i, q in enumerate(queries, 1):
+        query_id = q.get("id", f"query_{i}")
+        query_text = q.get("query", "")
 
-    tool_summary = "\n".join(tool_results[-3:]) if tool_results else "无工具调用记录"
+        print(f"[{i}/{total}] Evaluating {query_id}: {query_text[:30]}...")
 
-    return f"""评估以下机器人仿真任务的执行质量。
+        # 调用RAG
+        answer = call_rag(query_text)
 
-任务描述: {prompt}
+        if not answer:
+            print(f"[WARN] No answer for {query_id}, skipping...")
+            results.append({
+                "query_id": query_id,
+                "query": query_text,
+                "answer": "",
+                "score": {"relevance": 0, "accuracy": 0, "completeness": 0,
+                         "citation": 0, "overall_score": 0}
+            })
+            continue
 
-执行结果: {response[-500:] if response else '无响应'}
+        # 调用Judge评估
+        score = call_judge(llm, query_text, answer)
 
-工具返回: {tool_summary[-500:] if tool_summary else '无'}
+        results.append({
+            "query_id": query_id,
+            "query": query_text,
+            "answer": answer,
+            "score": score
+        })
 
-请评估并返回JSON:
-```json
-{{
-    "task_completion": 1-5,
-    "position_accuracy": 1-5,
-    "trajectory_quality": 1-5,
-    "overall_score": 1-5,
-    "verdict": "SUCCESS 或 FAIL"
-}}
-```"""
+        # 保存进度
+        if i % 5 == 0:
+            with (out_dir / "details.jsonl").open("w", encoding="utf-8") as f:
+                for r in results:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    # 保存最终结果
+    with (out_dir / "details.jsonl").open("w", encoding="utf-8") as f:
+        for r in results:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    return results
 
 
 def generate_charts(results: list, out_dir: Path):
-    """生成图表"""
-    fig_dir = out_dir / "figures"
-    fig_dir.mkdir(parents=True, exist_ok=True)
+    """生成可视化图表"""
+    figures_dir = out_dir / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
 
-    # 提取评分数据
-    scores = ["task_completion", "position_accuracy", "trajectory_quality", "overall_score"]
-    score_data = {s: [] for s in scores}
-    verdicts = []
+    # 提取分数
+    scores = [r.get("score", {}) for r in results if r.get("score")]
+    if not scores:
+        return
 
-    for r in results:
-        j = r.get("judgment", {})
-        for s in scores:
-            v = j.get(s)
-            if v:
-                score_data[s].append(v)
-        verdict = j.get("verdict", "UNKNOWN")
-        verdicts.append(verdict)
+    # 1. 评分维度柱状图
+    dimensions = ["relevance", "accuracy", "completeness", "citation", "overall_score"]
+    avg_scores = {d: mean([s.get(d, 0) for s in scores]) for d in dimensions}
 
-    # 1. 成功/失败饼图
-    fig, ax = plt.subplots(figsize=(8, 6))
-    success_count = sum(1 for v in verdicts if v == "SUCCESS")
-    fail_count = sum(1 for v in verdicts if v == "FAIL")
-    unknown_count = len(verdicts) - success_count - fail_count
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars = ax.bar(avg_scores.keys(), avg_scores.values(), color=['#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#e74c3c'])
+    ax.set_ylim(0, 5)
+    ax.set_ylabel("Score (1-5)")
+    ax.set_title("RAG Answer Quality by Dimension")
+    for bar, val in zip(bars, avg_scores.values()):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                f"{val:.2f}", ha='center', va='bottom')
+    plt.tight_layout()
+    plt.savefig(figures_dir / "score_bars.png", dpi=150)
+    plt.close()
 
-    labels = ['Success', 'Fail', 'Unknown']
-    sizes = [success_count, fail_count, unknown_count]
-    colors = ['#2ecc71', '#e74c3c', '#95a5a6']
-    explode = (0.05, 0.05, 0)
-
-    if sum(sizes) > 0:
-        wedges, texts, autotexts = ax.pie(
-            sizes, explode=explode, labels=labels, colors=colors,
-            autopct='%1.1f%%', shadow=True, startangle=90
-        )
-        ax.set_title('Task Success Rate', fontsize=14, fontweight='bold')
+    # 2. 得分分布直方图
+    overall_scores = [s.get("overall_score", 0) for s in scores if s.get("overall_score", 0) > 0]
+    if overall_scores:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.hist(overall_scores, bins=5, edgecolor='black', alpha=0.7, color='#3498db')
+        ax.set_xlabel("Overall Score")
+        ax.set_ylabel("Count")
+        ax.set_title("Distribution of Overall Scores")
+        ax.set_xticks(range(1, 6))
         plt.tight_layout()
-        plt.savefig(fig_dir / "success_rate_pie.png", dpi=150, bbox_inches='tight')
+        plt.savefig(figures_dir / "score_distribution.png", dpi=150)
         plt.close()
 
-    # 2. 评分柱状图
-    fig, ax = plt.subplots(figsize=(10, 6))
-    score_means = [mean(score_data[s]) if score_data[s] else 0 for s in scores]
-    score_stds = []
-    for s in scores:
-        if len(score_data[s]) > 1:
-            import statistics
-            score_stds.append(statistics.stdev(score_data[s]) if len(score_data[s]) > 1 else 0)
-        else:
-            score_stds.append(0)
+    # 3. 分类别评分热力图
+    categories = defaultdict(list)
+    for r in results:
+        query = r.get("query", "")
+        score = r.get("score", {})
+        # 简单分类
+        cat = "general"
+        if "机器人" in query or "操作" in query:
+            cat = "robotics"
+        elif "学习" in query or "policy" in query.lower() or "RL" in query:
+            cat = "learning"
+        elif "RAG" in query or "rag" in query.lower():
+            cat = "rag"
+        elif "仿真" in query or "sim" in query.lower():
+            cat = "simulation"
+        elif "benchmark" in query.lower() or "基准" in query:
+            cat = "benchmark"
+        categories[cat].append(score.get("overall_score", 0))
 
-    x_labels = ['Task\nCompletion', 'Position\nAccuracy', 'Trajectory\nQuality', 'Overall\nScore']
-    bars = ax.bar(x_labels, score_means, yerr=score_stds, capsize=5,
-                  color=['#3498db', '#9b59b6', '#1abc9c', '#e67e22'], alpha=0.8)
+    if categories:
+        cat_scores = {k: mean(v) for k, v in categories.items() if v}
+        fig, ax = plt.subplots(figsize=(8, 5))
+        bars = ax.barh(list(cat_scores.keys()), list(cat_scores.values()), color='#2ecc71')
+        ax.set_xlim(0, 5)
+        ax.set_xlabel("Average Score")
+        ax.set_title("Score by Query Category")
+        for bar, val in zip(bars, cat_scores.values()):
+            ax.text(bar.get_width() + 0.1, bar.get_y() + bar.get_height()/2,
+                    f"{val:.2f}", va='center')
+        plt.tight_layout()
+        plt.savefig(figures_dir / "category_scores.png", dpi=150)
+        plt.close()
 
-    ax.set_ylim(0, 5.5)
-    ax.set_ylabel('Score (1-5)', fontsize=12)
-    ax.set_title('Evaluation Scores by Dimension', fontsize=14, fontweight='bold')
-    ax.axhline(y=3, color='gray', linestyle='--', alpha=0.5, label='Baseline (3.0)')
-
-    # 添加数值标签
-    for bar, mean_val in zip(bars, score_means):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height + 0.2,
-                f'{mean_val:.2f}', ha='center', va='bottom', fontsize=11)
-
-    plt.tight_layout()
-    plt.savefig(fig_dir / "score_bars.png", dpi=150, bbox_inches='tight')
-    plt.close()
-
-    # 3. 评分分布箱线图
-    fig, ax = plt.subplots(figsize=(10, 6))
-    score_lists = [score_data[s] for s in scores]
-    bp = ax.boxplot(score_lists, labels=x_labels, patch_artist=True)
-
-    colors_box = ['#3498db', '#9b59b6', '#1abc9c', '#e67e22']
-    for patch, color in zip(bp['boxes'], colors_box):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.6)
-
-    ax.set_ylim(0, 6)
-    ax.set_ylabel('Score (1-5)', fontsize=12)
-    ax.set_title('Score Distribution (Box Plot)', fontsize=14, fontweight='bold')
-
-    plt.tight_layout()
-    plt.savefig(fig_dir / "score_distribution.png", dpi=150, bbox_inches='tight')
-    plt.close()
-
-    print(f"Charts saved to {fig_dir}/")
+    print(f"Saved charts to {figures_dir}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="评估机器人仿真任务质量")
-    parser.add_argument("--trajectories", required=True, help="轨迹数据JSONL文件")
+    parser = argparse.ArgumentParser(description="评估RAG问答质量")
+    parser.add_argument("--queries", required=True, help="RAG查询数据JSONL文件")
     parser.add_argument("--out-dir", required=True, help="输出目录")
-    parser.add_argument("--config", default=None, help="配置文件路径")
-    parser.add_argument("--judge-api-base", default=None, help="Judge API Base URL")
-    parser.add_argument("--judge-api-key", default=None, help="Judge API Key")
-    parser.add_argument("--judge-model", default=None, help="Judge模型名称")
-    parser.add_argument("--limit", type=int, default=0, help="限制评估数量")
-    parser.add_argument("--skip-judge", action="store_true", help="跳过Judge，仅生成图表")
     args = parser.parse_args()
 
-    # 加载配置文件
-    config = load_config(args.config)
+    # 加载配置
+    config = load_config()
     judge_config = config.get("judge", {})
 
-    api_base = args.judge_api_base or os.environ.get("JUDGE_API_BASE") or judge_config.get("api_base", "")
-    api_key = args.judge_api_key or os.environ.get("JUDGE_API_KEY") or judge_config.get("api_key", "")
-    model = args.judge_model or os.environ.get("JUDGE_MODEL") or judge_config.get("model", "deepseek-chat")
+    # 初始化LLM Judge
+    llm = ChatOpenAI(
+        model=judge_config.get("model", "deepseek-chat"),
+        base_url=judge_config.get("api_base", "https://api.deepseek.com"),
+        api_key=judge_config.get("api_key", ""),
+        timeout=judge_config.get("timeout", 120),
+        max_retries=judge_config.get("max_retries", 3)
+    )
 
+    # 加载查询
+    queries = load_queries(Path(args.queries))
+    print(f"Using Judge: {judge_config.get('model', 'deepseek-chat')} @ {judge_config.get('api_base', 'https://api.deepseek.com')}")
+
+    # 创建输出目录
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 如果有已存在的结果，加载它们用于生成图表
-    details_path = out_dir / "details.jsonl"
-    if details_path.exists():
-        results = []
-        with details_path.open("r") as f:
-            for line in f:
-                results.append(json.loads(line.strip()))
-        print(f"Loaded {len(results)} existing results")
-        generate_charts(results, out_dir)
-        return
-
-    if args.skip_judge:
-        print("No existing results found. Run without --skip-judge first.")
-        return
-
-    if not api_base or not model:
-        raise ValueError("需要配置 judge API（在 config.yaml 中）")
-
-    # 加载数据
-    traj_path = Path(args.trajectories)
-    trajectories = load_trajectories(traj_path)
-    if args.limit > 0:
-        trajectories = trajectories[:args.limit]
-
-    print(f"Loaded {len(trajectories)} trajectories")
-    print(f"Using Judge: {model} @ {api_base}")
-
-    # 初始化LLM
-    llm = ChatOpenAI(
-        base_url=api_base,
-        api_key=api_key or "dummy",
-        model=model,
-        temperature=0,
-        timeout=judge_config.get("timeout", 60),
-    )
-
     # 评估
-    results = []
-    for i, traj in enumerate(trajectories):
-        print(f"[{i+1}/{len(trajectories)}] Evaluating prompt_id={traj.get('prompt_id')}, attempt={traj.get('attempt_id')}")
-        prompt = build_evaluation_prompt(traj)
-        judgment = call_judge(llm, prompt)
+    model_name = judge_config.get("model", "deepseek-chat")
+    results = evaluate_rag(queries, llm, model_name, out_dir)
 
-        result = {
-            "prompt_id": traj.get("prompt_id"),
-            "attempt_id": traj.get("attempt_id"),
-            "prompt": traj.get("prompt"),
-            "judgment": judgment
+    # 生成统计
+    scores = [r.get("score", {}) for r in results if r.get("score")]
+    valid_scores = [s for s in scores if s.get("overall_score", 0) > 0]
+
+    if valid_scores:
+        summary = {
+            "total": len(queries),
+            "evaluated": len(valid_scores),
+            "avg_relevance": mean([s.get("relevance", 0) for s in valid_scores]),
+            "avg_accuracy": mean([s.get("accuracy", 0) for s in valid_scores]),
+            "avg_completeness": mean([s.get("completeness", 0) for s in valid_scores]),
+            "avg_citation": mean([s.get("citation", 0) for s in valid_scores]),
+            "avg_overall_score": mean([s.get("overall_score", 0) for s in valid_scores]),
         }
-        results.append(result)
-
-        with (out_dir / "details.jsonl").open("a", encoding="utf-8") as f:
-            f.write(json.dumps(result, ensure_ascii=False) + "\n")
-
-    # 汇总统计
-    summary = {
-        "total": len(results),
-        "success_count": sum(1 for r in results if r["judgment"].get("verdict") == "SUCCESS"),
-        "fail_count": sum(1 for r in results if r["judgment"].get("verdict") == "FAIL"),
-    }
-
-    scores = ["task_completion", "position_accuracy", "trajectory_quality", "overall_score"]
-    for score in scores:
-        values = [r["judgment"].get(score, 0) for r in results if r["judgment"].get(score)]
-        if values:
-            summary[f"avg_{score}"] = mean(values)
+    else:
+        summary = {"total": len(queries), "evaluated": 0}
 
     with (out_dir / "summary.json").open("w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
-    print("\n=== Summary ===")
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    print(f"\n=== Summary ===")
+    print(f"Total queries: {summary['total']}")
+    print(f"Evaluated: {summary.get('evaluated', 0)}")
+    if valid_scores:
+        print(f"Avg relevance: {summary['avg_relevance']:.2f}")
+        print(f"Avg accuracy: {summary['avg_accuracy']:.2f}")
+        print(f"Avg completeness: {summary['avg_completeness']:.2f}")
+        print(f"Avg citation: {summary['avg_citation']:.2f}")
+        print(f"Avg overall score: {summary['avg_overall_score']:.2f}")
 
     # 生成图表
     generate_charts(results, out_dir)
+
+    print(f"\nResults saved to {out_dir}")
 
 
 if __name__ == "__main__":
