@@ -211,10 +211,11 @@ export default {
 
       eventSource.onerror = () => {
         eventSource.close()
-        // 如果不是主动关闭，可以选择重连
-        if (authToken.value && simStreamActive.value) {
+        // 只有在连接仍然处于活动状态时才重连
+        if (liveFrameEventSource === eventSource && authToken.value && simStreamActive.value) {
           setTimeout(() => {
-            if (authToken.value && simStreamActive.value) {
+            // 再次检查，确保用户没有主动关闭
+            if (liveFrameEventSource === null && authToken.value && simStreamActive.value) {
               startLiveFrameStream()
             }
           }, 1000)
