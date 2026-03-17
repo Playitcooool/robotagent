@@ -37,7 +37,7 @@ def build_output_name_index() -> tuple[set[str], set[str]]:
         return names, stems
     for path in OUTPUT_ROOT.rglob("*"):
         try:
-            name = path.name
+            name = path.name  
             if name:
                 names.add(name)
             stem = path.stem

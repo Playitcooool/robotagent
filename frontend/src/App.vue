@@ -91,10 +91,8 @@ export default {
     const assistantMessageIds = {}
     const liveFrame = ref(null)
     const planningState = ref({ steps: [], updatedAt: 0 })
-    let liveFramePollStart = 0
-    let liveFramePollTimer = null
-    let liveFramePollToken = 0
-    let liveFrameFinalSeen = false
+    let liveFrameEventSource = null
+    let liveFrameStartTimestamp = 0
     let sessionLoadController = null
 
     const authToken = ref(localStorage.getItem(AUTH_TOKEN_KEY) || '')
@@ -177,69 +175,60 @@ export default {
       conversation.value = [{ id: Date.now(), role: 'assistant', text: WELCOME_TEXT }]
       liveFrame.value = null
       planningState.value = { steps: [], updatedAt: 0 }
-      liveFrameFinalSeen = false
       stopLiveFrameStream()
-    }
-
-    async function pollLiveFrame (token) {
-      if (!authToken.value || token !== liveFramePollToken) return
-      try {
-        const res = await apiFetch('/api/sim/latest-frame')
-        if (!res.ok || token !== liveFramePollToken) {
-          scheduleNextLiveFramePoll(token, 1200)
-          return
-        }
-        const payload = await res.json().catch(() => null)
-        if (!payload || token !== liveFramePollToken) {
-          scheduleNextLiveFramePoll(token, 1200)
-          return
-        }
-        if (
-          payload.has_frame &&
-          typeof payload.timestamp === 'number' &&
-          payload.timestamp >= liveFramePollStart
-        ) {
-          simStreamActive.value = true
-          liveFrame.value = payload
-          if (payload.done) {
-            if (liveFrameFinalSeen) {
-              stopLiveFrameStream()
-              return
-            }
-            liveFrameFinalSeen = true
-            scheduleNextLiveFramePoll(token, 800)
-            return
-          }
-          scheduleNextLiveFramePoll(token, 250)
-          return
-        }
-        scheduleNextLiveFramePoll(token, 1200)
-      } catch (_) {
-        scheduleNextLiveFramePoll(token, 1500)
-      }
-    }
-
-    function scheduleNextLiveFramePoll (token, delayMs) {
-      if (token !== liveFramePollToken) return
-      if (liveFramePollTimer) clearTimeout(liveFramePollTimer)
-      liveFramePollTimer = setTimeout(() => {
-        pollLiveFrame(token)
-      }, delayMs)
     }
 
     function startLiveFrameStream () {
       if (!authToken.value) return
-      if (liveFramePollTimer) clearTimeout(liveFramePollTimer)
-      liveFramePollToken += 1
-      liveFramePollStart = Date.now() / 1000
-      liveFrameFinalSeen = false
-      pollLiveFrame(liveFramePollToken)
+      stopLiveFrameStream()
+
+      liveFrameStartTimestamp = Date.now() / 1000
+      const eventSource = new EventSource(`/api/sim/stream?since=${liveFrameStartTimestamp}`)
+
+      eventSource.addEventListener('frame', (event) => {
+        try {
+          const payload = JSON.parse(event.data)
+          if (
+            payload.has_frame &&
+            typeof payload.timestamp === 'number' &&
+            payload.timestamp >= liveFrameStartTimestamp
+          ) {
+            simStreamActive.value = true
+            liveFrame.value = payload
+            if (payload.done) {
+              // 完成后等待一下再关闭
+              setTimeout(() => {
+                if (liveFrameEventSource === eventSource) {
+                  stopLiveFrameStream()
+                }
+              }, 800)
+            }
+          }
+        } catch (e) {
+          console.error('Failed to parse frame:', e)
+        }
+      })
+
+      eventSource.onerror = () => {
+        eventSource.close()
+        // 如果不是主动关闭，可以选择重连
+        if (authToken.value && simStreamActive.value) {
+          setTimeout(() => {
+            if (authToken.value && simStreamActive.value) {
+              startLiveFrameStream()
+            }
+          }, 1000)
+        }
+      }
+
+      liveFrameEventSource = eventSource
     }
 
     function stopLiveFrameStream () {
-      liveFramePollToken += 1
-      if (liveFramePollTimer) clearTimeout(liveFramePollTimer)
-      liveFramePollTimer = null
+      if (liveFrameEventSource) {
+        liveFrameEventSource.close()
+        liveFrameEventSource = null
+      }
       simStreamActive.value = false
     }
 
