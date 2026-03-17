@@ -815,8 +815,8 @@ def web_search(query: str, max_results: int = 5, timeout: float = 8.0) -> str:
 @tool(response_format="content")
 def academic_search(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
     """
-    Search academic papers from Semantic Scholar and arXiv.
-    Returns structured results with paper title, authors, year, abstract, and citations.
+    Search academic papers from arXiv.
+    Returns structured results with paper title, authors, year, abstract, and PDF links.
     Supports citation in final answers.
     """
     q = " ".join((query or "").split())
@@ -826,121 +826,64 @@ def academic_search(query: str, max_results: int = 5, timeout: float = 15.0) -> 
     limit = max(1, min(max_results, 10))
     all_results = []
 
-    # 1. Search Semantic Scholar API
-    ss_endpoint = "https://api.semanticscholar.org/graph/v1/paper/search"
-    ss_params = {
-        "query": q,
-        "limit": limit,
-        "fields": "title,authors,year,venue,abstract,url,citationCount,openAccessPdf,externalIds",
+    # Search arXiv API
+    arxiv_endpoint = "http://export.arxiv.org/api/query"
+    arxiv_params = {
+        "search_query": f"all:{q}",
+        "start": 0,
+        "max_results": limit,
+        "sortBy": "relevance",
     }
 
     try:
-        resp = requests.get(ss_endpoint, params=ss_params, timeout=timeout)
+        resp = requests.get(arxiv_endpoint, params=arxiv_params, timeout=timeout)
         resp.raise_for_status()
-        ss_data = resp.json()
 
-        for paper in ss_data.get("data", []):
-            authors = paper.get("authors", [])[:3]  # Limit to first 3 authors
-            author_names = ", ".join([a.get("name", "Unknown") for a in authors])
-            year = paper.get("year", "N/A")
-            venue = paper.get("venue", "")
-            citation_count = paper.get("citationCount", 0)
+        # Parse XML response
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(resp.text)
 
-            # Get PDF link if available
+        # Define namespace
+        ns = {'atom': 'http://www.w3.org/2005/Atom'}
+
+        for entry in root.findall('atom:entry', ns)[:limit]:
+            title = entry.find('atom:title', ns).text or "Unknown"
+            summary = entry.find('atom:summary', ns).text or ""
+            authors = [a.find('atom:name', ns).text for a in entry.findall('atom:author', ns)]
+            author_names = ", ".join(authors[:3])
+
+            # Get arXiv ID and PDF
+            arxiv_id = ""
             pdf_url = ""
-            oa_pdf = paper.get("openAccessPdf")
-            if oa_pdf:
-                pdf_url = oa_pdf.get("url", "")
-            elif paper.get("externalIds", {}).get("ArXiv"):
-                pdf_url = f"https://arxiv.org/pdf/{paper['externalIds']['ArXiv']}.pdf"
+            for link in entry.findall('atom:link', ns):
+                if link.get('title') == 'pdf':
+                    pdf_url = link.get('href', '')
+                    arxiv_id = pdf_url.split('/')[-1].replace('.pdf', '')
+                    break
 
-            # Get paper ID for citation
-            paper_id = paper.get("paperId", "")
+            # Extract year from published date
+            published = entry.find('atom:published', ns).text or ""
+            year = published[:4] if published else "N/A"
 
             all_results.append({
                 "type": "paper",
-                "title": paper.get("title", "Unknown Title"),
+                "title": title.strip(),
                 "authors": author_names,
                 "year": year,
-                "venue": venue,
-                "abstract": paper.get("abstract", "")[:500] + ("..." if len(paper.get("abstract", "")) > 500 else ""),
-                "url": paper.get("url", ""),
+                "venue": "arXiv",
+                "abstract": summary[:500] + ("..." if len(summary) > 500 else ""),
+                "url": f"https://arxiv.org/abs/{arxiv_id}",
                 "pdf_url": pdf_url,
-                "citations": citation_count,
-                "semantic_scholar_id": paper_id,
-                "source": "semantic_scholar",
+                "citations": 0,
+                "arxiv_id": arxiv_id,
+                "source": "arxiv",
             })
     except Exception as e:
         all_results.append({
             "type": "error",
-            "source": "semantic_scholar",
-            "error": f"Semantic Scholar search failed: {e}"
+            "source": "arxiv",
+            "error": f"arXiv search failed: {e}"
         })
-
-    # 2. Search arXiv API if we don't have enough results
-    if len(all_results) < limit:
-        arxiv_limit = limit - len(all_results)
-        arxiv_endpoint = "http://export.arxiv.org/api/query"
-        arxiv_params = {
-            "search_query": f"all:{q}",
-            "start": 0,
-            "max_results": arxiv_limit,
-            "sortBy": "relevance",
-        }
-
-        try:
-            resp = requests.get(arxiv_endpoint, params=arxiv_params, timeout=timeout)
-            resp.raise_for_status()
-
-            # Parse XML response
-            import xml.etree.ElementTree as ET
-            root = ET.fromstring(resp.text)
-
-            # Define namespace
-            ns = {'atom': 'http://www.w3.org/2005/Atom'}
-
-            for entry in root.findall('atom:entry', ns)[:arxiv_limit]:
-                title = entry.find('atom:title', ns).text or "Unknown"
-                summary = entry.find('atom:summary', ns).text or ""
-                authors = [a.find('atom:name', ns).text for a in entry.findall('atom:author', ns)]
-                author_names = ", ".join(authors[:3])
-
-                # Get arXiv ID and PDF
-                arxiv_id = ""
-                pdf_url = ""
-                for link in entry.findall('atom:link', ns):
-                    if link.get('title') == 'pdf':
-                        pdf_url = link.get('href', '')
-                        arxiv_id = pdf_url.split('/')[-1].replace('.pdf', '')
-                        break
-
-                # Extract year from published date
-                published = entry.find('atom:published', ns).text or ""
-                year = published[:4] if published else "N/A"
-
-                # Check if already added (avoid duplicates)
-                is_dup = any(r.get('title', '').lower() == title.lower() for r in all_results)
-
-                if not is_dup:
-                    all_results.append({
-                        "type": "paper",
-                        "title": title.strip(),
-                        "authors": author_names,
-                        "year": year,
-                        "venue": "arXiv",
-                        "abstract": summary[:500] + ("..." if len(summary) > 500 else ""),
-                        "url": f"https://arxiv.org/abs/{arxiv_id}",
-                        "pdf_url": pdf_url,
-                        "citations": 0,
-                        "arxiv_id": arxiv_id,
-                        "source": "arxiv",
-                    })
-        except Exception as e:
-            all_results.append({
-                "type": "error",
-                "source": "arxiv",
-                "error": f"arXiv search failed: {e}"
-            })
 
     # Build citations for traceability
     citations = []
@@ -1112,6 +1055,25 @@ def qdrant_retrieve_context(
         if len(references) >= min(8, safe_top_k):
             break
 
+    # 如果本地检索结果为空，调用academic_search作为补充
+    academic_results = []
+    if not results:
+        web_warnings = []
+        try:
+            academic_response = academic_search.invoke({"query": query, "max_results": 5})
+            academic_data = json.loads(academic_response) if academic_response else {}
+            academic_results = academic_data.get("results", [])
+            if academic_results:
+                web_warnings.append("academic search used as fallback due to empty local results")
+            else:
+                web_warnings.append("both local and academic search returned no results")
+        except Exception as e:
+            web_warnings.append(f"academic search fallback failed: {e}")
+
+        warnings = web_warnings
+    else:
+        warnings = []
+
     response = {
         "query": query,
         "query_profile": profile,
@@ -1131,8 +1093,9 @@ def qdrant_retrieve_context(
         "references": references,
         "references_markdown": [r["markdown"] for r in references],
         "results": results,
+        "academic_search_results": academic_results,
         "warnings": (
-            []
+            warnings
             if results
             else [
                 "no documents retrieved; check Qdrant service, collection name, or embedding model"
