@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-实验1评估脚本: RAG问答系统质量评估
+实验1评估脚本: Agentic 学术搜索问答系统质量评估
 
-评估RAG系统回答机器人领域问题的质量。
-直接使用 RAG tool 进行查询，使用外部LLM Judge (DeepSeek) 进行评估。
+评估使用 Agent + Academic Search 回答机器人领域问题的质量。
+创建带有 academic_search 工具的 agent，使用外部LLM Judge (DeepSeek) 进行评估。
 
 使用方式:
     python evaluate_experiment_01.py \
         --queries data/rag_queries.jsonl \
-        --out-dir results/exp01
+        --out-dir results/exp01_academic_agent
 """
 
 import argparse
@@ -17,6 +17,7 @@ import os
 import re
 import sys
 import yaml
+import asyncio
 from pathlib import Path
 from statistics import mean
 from collections import defaultdict
@@ -30,7 +31,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
-from tools.GeneralTool import qdrant_retrieve_context
+from deepagents import create_deep_agent
+from tools.GeneralTool import academic_search
 
 # 设置中文字体
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial Unicode MS', 'SimHei']
@@ -53,20 +55,46 @@ def load_config(config_path: str = None) -> dict:
 
 # ============ 配置 ============
 
+# Agent 系统提示词
+AGENT_SYSTEM_PROMPT = """你是一个专业的学术问答助手，专门回答机器人领域的学术问题。
+
+你可以通过调用 academic_search 工具搜索学术论文来回答问题。
+该工具会从 OpenAlex 和 arXiv 搜索相关论文。
+
+请按照以下步骤回答问题：
+1. 分析用户问题，确定需要搜索的关键词
+2. 调用 academic_search 工具搜索相关论文
+3. 根据搜索结果整理并回答用户问题
+4. 在回答中引用相关论文（标题、年份、作者等）
+
+注意：
+- 请尽可能提供准确的论文信息
+- 如果搜索结果与问题不相关，请调整关键词重新搜索
+- 回答要清晰、有条理"""
+
 JUDGE_SYSTEM_PROMPT = """你是一个严格的学术问答评估专家。
-评估RAG系统回答机器人领域问题的质量。
+评估 Agent + 学术搜索系统回答机器人领域问题的质量。
 只返回JSON，不要包含markdown或解释。
 
 评分维度：
-- relevance: 问题相关性 (1-5)
-- accuracy: 答案准确性 (1-5)
-- completeness: 答案完整性 (1-5)
-- citation: 引用质量 (1-5)
+- relevance: 问题相关性 (1-5) - 搜索结果与问题的相关程度
+- accuracy: 答案准确性 (1-5) - 论文信息是否准确
+- completeness: 答案完整性 (1-5) - 是否提供了足够的信息
+- citation: 引用质量 (1-5) - 引用论文的质量和相关性
 - overall_score: 综合得分 (1-5)
 
 返回格式：
 {"relevance": 4, "accuracy": 3, "completeness": 4, "citation": 3, "overall_score": 3.5,
  "pros": ["优点1", "优点2"], "cons": ["缺点1"], "brief_reason": "简要说明"}"""
+
+
+def load_config_full() -> dict:
+    """加载完整配置"""
+    config_path = root_dir / "config" / "config.yml"
+    if not config_path.exists():
+        return {}
+    with config_path.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 
 def load_queries(path: Path):
@@ -84,14 +112,54 @@ def load_queries(path: Path):
     return rows
 
 
-def call_rag(query: str) -> str:
-    """调用RAG获取回答"""
+def create_academic_agent(base_url: str, model: str, api_key: str):
+    """创建带有 academic_search 工具的 agent"""
+    # 创建 LLM
+    chat = ChatOpenAI(
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+        temperature=0.0,
+        request_timeout=120,
+    )
+
+    # 创建 agent，带有 academic_search 工具
+    agent = create_deep_agent(
+        model=chat,
+        tools=[academic_search],
+        system_prompt=AGENT_SYSTEM_PROMPT,
+    )
+
+    return agent
+
+
+async def call_agent(agent, query: str) -> str:
+    """调用 Agent 获取回答"""
     try:
-        # 直接调用 RAG tool
-        result = qdrant_retrieve_context.invoke({"query": query})
-        return result if result else ""
+        result = await agent.ainvoke({"messages": [{"role": "user", "content": query}]})
+
+        # 提取最终回答
+        for msg in reversed(result.get("messages", [])):
+            cls_name = msg.__class__.__name__
+            if cls_name == "AIMessage":
+                return str(msg.content).strip()
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                return str(msg.get("content", "")).strip()
+
+        # 如果没找到，尝试获取所有内容
+        messages = result.get("messages", [])
+        if messages:
+            last_msg = messages[-1]
+            if hasattr(last_msg, "content"):
+                return str(last_msg.content).strip()
+            if isinstance(last_msg, dict):
+                return str(last_msg.get("content", "")).strip()
+
+        return ""
     except Exception as e:
-        print(f"[WARN] RAG call failed: {e}")
+        print(f"[WARN] Agent call failed: {e}")
+        import traceback
+        traceback.print_exc()
         return ""
 
 
@@ -99,13 +167,17 @@ def call_judge(llm: ChatOpenAI, query: str, answer: str, max_retries: int = 3):
     """调用LLM Judge评估回答质量"""
     import time
 
-    prompt = f"""请评估以下RAG系统回答的质量：
+    prompt = f"""请评估以下 Agent + 学术搜索系统回答的质量：
 
 问题：{query}
 
-RAG回答：{answer}
+Agent回答：{answer}
 
-请严格按照评分标准给出评分和反馈。"""
+请严格按照评分标准给出评分和反馈。评估时考虑：
+1. 搜索结果是否与问题相关
+2. 论文信息是否准确（标题、作者、年份等）
+3. 是否提供了足够的信息
+4. 引用的论文质量和相关性"""
 
     last_error = None
     for attempt in range(max_retries):
@@ -152,13 +224,14 @@ RAG回答：{answer}
     }
 
 
-def evaluate_rag(queries: list, llm, model_name: str, out_dir: Path):
-    """评估RAG系统"""
+async def evaluate_academic_agent(queries: list, agent, llm, model_name: str, out_dir: Path):
+    """评估 Agent + 学术搜索系统"""
     results = []
     total = len(queries)
 
     print(f"Loaded {total} queries")
-    print(f"Using Judge: {model_name}")
+    print(f"Using Agent model: {model_name}")
+    print(f"Using Judge: {llm.model_name}")
 
     for i, q in enumerate(queries, 1):
         query_id = q.get("id", f"query_{i}")
@@ -166,8 +239,8 @@ def evaluate_rag(queries: list, llm, model_name: str, out_dir: Path):
 
         print(f"[{i}/{total}] Evaluating {query_id}: {query_text[:30]}...")
 
-        # 调用RAG
-        answer = call_rag(query_text)
+        # 调用 Agent
+        answer = await call_agent(agent, query_text)
 
         if not answer:
             print(f"[WARN] No answer for {query_id}, skipping...")
@@ -180,7 +253,7 @@ def evaluate_rag(queries: list, llm, model_name: str, out_dir: Path):
             })
             continue
 
-        # 调用Judge评估
+        # 调用 Judge 评估
         score = call_judge(llm, query_text, answer)
 
         results.append({
@@ -222,7 +295,7 @@ def generate_charts(results: list, out_dir: Path):
     bars = ax.bar(avg_scores.keys(), avg_scores.values(), color=['#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#e74c3c'])
     ax.set_ylim(0, 5)
     ax.set_ylabel("Score (1-5)")
-    ax.set_title("RAG Answer Quality by Dimension")
+    ax.set_title("Agent + Academic Search Answer Quality by Dimension")
     for bar, val in zip(bars, avg_scores.values()):
         ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
                 f"{val:.2f}", ha='center', va='bottom')
@@ -280,8 +353,8 @@ def generate_charts(results: list, out_dir: Path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="评估RAG问答质量")
-    parser.add_argument("--queries", required=True, help="RAG查询数据JSONL文件")
+    parser = argparse.ArgumentParser(description="评估 Agent + 学术搜索问答质量")
+    parser.add_argument("--queries", required=True, help="学术搜索查询数据JSONL文件")
     parser.add_argument("--out-dir", required=True, help="输出目录")
     args = parser.parse_args()
 
@@ -289,7 +362,20 @@ def main():
     config = load_config()
     judge_config = config.get("judge", {})
 
-    # 初始化LLM Judge
+    # 加载完整配置（包含模型配置）
+    full_config = load_config_full()
+    model_config = full_config.get("model", {})
+
+    # 初始化 Agent LLM
+    agent_base_url = model_config.get("url", "https://api.deepseek.com")
+    agent_model = model_config.get("llm", "deepseek-chat")
+    agent_api_key = model_config.get("api_key", "")
+
+    # 创建 Agent
+    print(f"Creating agent with model: {agent_model} @ {agent_base_url}")
+    agent = create_academic_agent(agent_base_url, agent_model, agent_api_key)
+
+    # 初始化 LLM Judge
     llm = ChatOpenAI(
         model=judge_config.get("model", "deepseek-chat"),
         base_url=judge_config.get("api_base", "https://api.deepseek.com"),
@@ -307,8 +393,8 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 评估
-    model_name = judge_config.get("model", "deepseek-chat")
-    results = evaluate_rag(queries, llm, model_name, out_dir)
+    model_name = agent_model
+    results = asyncio.run(evaluate_academic_agent(queries, agent, llm, model_name, out_dir))
 
     # 生成统计
     scores = [r.get("score", {}) for r in results if r.get("score")]
