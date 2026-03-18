@@ -674,8 +674,9 @@ async def chat_send(
         for t in (payload.enabled_tools or [])
         if str(t).strip()
     }
-    web_search_enabled = "web_search" in enabled_tools
-    rag_disabled = "no_rag" in enabled_tools
+    # academic_search 已内置到 agent 工具中，始终启用
+    academic_search_enabled = True
+    web_search_enabled = "web_search" in enabled_tools  # 保留兼容旧版
     user_id = current_user.get("uid", "unknown")
     await _append_chat_message(user_id, session_id, "user", user_message)
 
@@ -870,6 +871,47 @@ async def chat_send(
                     return refs
                 return []
 
+            def _extract_academic_search_refs(raw_text: str):
+                """提取 academic_search 结果"""
+                text = _normalize_text(raw_text).strip()
+                if not text:
+                    return []
+                for parser in (json.loads, ast.literal_eval):
+                    try:
+                        parsed = parser(text)
+                    except Exception:
+                        continue
+                    if not isinstance(parsed, dict):
+                        continue
+                    results = parsed.get("results")
+                    if not isinstance(results, list):
+                        continue
+                    refs = []
+                    for item in results[:8]:
+                        if not isinstance(item, dict):
+                            continue
+                        # academic_search 返回的字段
+                        title = _normalize_text(item.get("title") or "Academic Paper")
+                        url = _normalize_text(item.get("url") or "")
+                        abstract = _normalize_text(item.get("abstract") or "")
+                        authors = _normalize_text(item.get("authors") or "")
+                        year = item.get("year", "")
+                        source = item.get("source", "")
+                        if not url:
+                            continue
+                        refs.append(
+                            {
+                                "title": _truncate_text(title, max_len=120),
+                                "url": url,
+                                "snippet": _truncate_text(abstract, max_len=220),
+                                "authors": authors,
+                                "year": str(year),
+                                "source": source,
+                            }
+                        )
+                    return refs
+                return []
+
             def _extract_rag_refs(raw_text: str):
                 text = _normalize_text(raw_text).strip()
                 if not text:
@@ -935,9 +977,9 @@ async def chat_send(
                 return True
 
             runtime_tool_note = (
-                "本轮可用工具：web_search。若问题需要最新外部信息，请自主判断并调用 web_search。"
-                if web_search_enabled
-                else "本轮禁用工具：web_search。请勿调用 web_search。"
+                "本轮可用工具：academic_search（学术论文搜索）。若问题需要搜索学术论文，请自主判断并调用 academic_search。"
+                if academic_search_enabled
+                else "本轮禁用工具：academic_search。"
             )
             input_messages = [
                 {"role": "system", "content": runtime_tool_note},
@@ -1215,9 +1257,12 @@ async def chat_send(
                         # Timeline output disabled by product requirement.
                         tool_source = _resolve_tool_source(name_msg)
                         is_web_search_tool = name_msg == "web_search"
+                        is_academic_search_tool = name_msg == "academic_search"
                         is_rag_tool = name_msg == "qdrant_retrieve_context"
                         tool_status_text = (
-                            "联网搜索中..."
+                            "学术论文搜索中..."
+                            if is_academic_search_tool
+                            else "联网搜索中..."
                             if is_web_search_tool
                             else f"正在执行工具：{name_msg or 'tool'}"
                         )
@@ -1229,13 +1274,24 @@ async def chat_send(
                                     "type": "status",
                                     "text": tool_status_text,
                                     "source": tool_source,
-                                    "status_kind": "search" if is_web_search_tool else "tool",
+                                    "status_kind": "search" if (is_web_search_tool or is_academic_search_tool) else "tool",
                                 },
                                 ensure_ascii=False,
                             ) + "\n"
                         tool_text = _normalize_text(content_msg)
                         if is_web_search_tool and tool_text:
                             refs = _extract_web_search_refs(tool_text)
+                            if refs:
+                                yield json.dumps(
+                                    {
+                                        "type": "web_search_results",
+                                        "source": "main",
+                                        "results": refs,
+                                    },
+                                    ensure_ascii=False,
+                                ) + "\n"
+                        if is_academic_search_tool and tool_text:
+                            refs = _extract_academic_search_refs(tool_text)
                             if refs:
                                 yield json.dumps(
                                     {

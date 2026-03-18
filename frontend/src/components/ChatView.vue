@@ -164,19 +164,7 @@
           <span class="tool-plus-symbol">+</span>
         </button>
         <div v-if="toolMenuOpen" class="tool-menu">
-          <button
-            type="button"
-            :class="['tool-item', webSearchEnabled ? 'active' : '']"
-            @click="toggleWebSearch"
-            aria-label="联网搜索"
-          >
-            <span class="tool-item-icon" aria-hidden="true">🌐</span>
-            <span class="tool-item-main">
-              <span class="tool-item-title">联网搜索</span>
-              <span class="tool-item-sub">获取外部网页信息</span>
-            </span>
-            <span class="tool-item-check">{{ webSearchEnabled ? '已启用' : '未启用' }}</span>
-          </button>
+          <!-- 学术搜索已内置到 agent 工具中，不再显示开关 -->
         </div>
       </div>
       <textarea
@@ -260,7 +248,6 @@ export default {
     const landingGreeting = ref('你好，我是 RobotAgent。有什么可以帮你？')
     const toolMenuOpen = ref(false)
     const enabledTools = ref([])
-    const webSearchEnabled = ref(false)
 
     function send () {
       const payload = text.value.trim()
@@ -330,16 +317,7 @@ export default {
       toolMenuOpen.value = !toolMenuOpen.value
     }
 
-    function toggleWebSearch () {
-      webSearchEnabled.value = !webSearchEnabled.value
-      if (webSearchEnabled.value) {
-        if (!enabledTools.value.includes('web_search')) {
-          enabledTools.value.push('web_search')
-        }
-      } else {
-        enabledTools.value = enabledTools.value.filter((t) => t !== 'web_search')
-      }
-    }
+    // 学术搜索已内置到 agent 工具中，不再需要单独的开关
 
     function handleGlobalClick (evt) {
       if (!toolMenuOpen.value) return
@@ -453,7 +431,6 @@ export default {
       text,
       canSend,
       toolMenuOpen,
-      webSearchEnabled,
       landingGreeting,
       send,
       renderMarkdown,
@@ -462,7 +439,6 @@ export default {
       onCompositionEnd,
       onInput,
       toggleToolMenu,
-      toggleWebSearch,
       agentKey,
       agentName,
       agentIcon,
