@@ -804,13 +804,23 @@ def _web_search_impl(query: str, max_results: int = 5, timeout: float = 8.0) -> 
 
 @tool(response_format="content")
 def web_search(query: str, max_results: int = 5, timeout: float = 8.0) -> str:
-    """Search the web for recent/general information using Tavily."""
+    """
+    Search the web for recent/general information using Tavily.
+
+    IMPORTANT: Every factual claim in your answer must cite a source from results
+    using [number] notation, e.g. [1], [2]. Always include a reference list at the end.
+    """
     return _web_search_impl(query=query, max_results=max_results, timeout=timeout)
 
 
 @tool(response_format="content")
 def academic_search(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
-    """Search academic papers from OpenAlex and arXiv."""
+    """
+    Search academic papers from OpenAlex and arXiv.
+
+    IMPORTANT: Every factual claim in your answer must cite a source from results
+    using [number] notation, e.g. [1], [2]. Always include a reference list at the end.
+    """
     return _academic_search_impl(query=query, max_results=max_results, timeout=timeout)
 
 
@@ -1023,6 +1033,9 @@ def search(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
     Unified search tool that automatically routes queries to the most appropriate engine:
     - Academic search (OpenAlex + arXiv) for research papers, publications, methodologies
     - Web search (Tavily) for news, products, current events, general knowledge
+
+    IMPORTANT: Every factual claim in your answer must cite a source from results
+    using [number] notation, e.g. [1], [2]. Always include a reference list at the end.
 
     Returns structured results with title, authors, year, URL, snippet, and source.
     """

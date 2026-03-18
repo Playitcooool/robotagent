@@ -57,23 +57,35 @@ def load_config(config_path: str = None) -> dict:
 # ============ 配置 ============
 
 # Agent 系统提示词
-AGENT_SYSTEM_PROMPT = """你是一个专业的问答助手，专门回答机器人领域的问题。
+AGENT_SYSTEM_PROMPT = """你是一个专业的学术问答助手，专门回答机器人领域的问题。
 
 你可以通过调用 search 工具搜索信息来回答问题。
 该工具同时搜索网页（Tavily）和学术论文（OpenAlex + arXiv），并自动去重合并结果。
 
-请按照以下步骤回答问题：
+请严格按照以下步骤回答问题：
 1. 分析用户问题，确定需要搜索的关键词
 2. 调用 search 工具搜索相关信息
 3. 根据搜索结果整理并回答用户问题
-4. 在回答中引用来源（论文标题、年份、作者或网页标题、URL）
+
+【强制引用规则——必须遵守】
+- 回答中的每一条事实性陈述，都必须标注来源
+- 引用格式：在陈述末尾加 [来源序号]
+- 在回答末尾必须包含完整的参考文献列表，格式如下：
+  - 论文：[编号] 作者, 标题, 年份, 期刊/会议, URL
+  - 网页：[编号] 标题, URL
+- 禁止在没有任何来源支撑的情况下给出事实性陈述
+- 不确定的内容必须明确写"该信息未经核实"或"搜索结果未提供此信息"，不得臆测
+
+【准确性规则】
+- 只引用搜索结果中明确包含的信息
+- 不要基于部分信息进行推断或扩展
+- 如果搜索结果不足以回答问题，明确说明"搜索结果不足以完全回答此问题"
 
 注意：
 - 每个问题最多搜索 1~2 次，避免过度搜索
 - 搜索 1 次后已有足够信息就直接回答，不要反复搜索
 - 只在搜索结果明显不足或与问题不相关时才重新搜索
-- 回答要简洁，控制在 300 字以内
-- 引用时优先使用搜索结果中最相关的 1~2 条即可"""
+- 回答控制在 300 字以内（不含参考文献列表）"""
 
 JUDGE_SYSTEM_PROMPT = """你是一个严格的学术问答评估专家。
 评估 Agent + 学术搜索系统回答机器人领域问题的质量。
@@ -339,27 +351,31 @@ def generate_charts(results: list, out_dir: Path):
     if not scores:
         return
 
-    # 1. 评分维度柱状图
+    # 1. 评分维度柱状图（百分比刻度）
     dimensions = ["relevance", "accuracy", "completeness", "citation", "overall_score"]
     avg_scores = {d: mean([s.get(d, 0) for s in scores]) for d in dimensions}
+    pct_scores = {d: (v / 5.0 * 100) for d, v in avg_scores.items()}
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    bars = ax.bar(
-        avg_scores.keys(),
-        avg_scores.values(),
-        color=["#3498db", "#2ecc71", "#f39c12", "#9b59b6", "#e74c3c"],
-    )
-    ax.set_ylim(0, 5)
-    ax.set_ylabel("Score (1-5)")
-    ax.set_title("Agent + Academic Search Answer Quality by Dimension")
-    for bar, val in zip(bars, avg_scores.values()):
+    fig, ax = plt.subplots(figsize=(12, 6))
+    labels = ["Relevance\n(相关度)", "Accuracy\n(准确性)", "Completeness\n(完整性)", "Citation\n(引用率)", "Overall\n(综合得分)"]
+    vals = [pct_scores[d] for d in dimensions]
+    colors = ["#3498db", "#e74c3c", "#f39c12", "#9b59b6", "#2ecc71"]
+    bars = ax.bar(labels, vals, color=colors)
+    ax.set_ylim(0, 100)
+    ax.set_ylabel("Percentage (%)")
+    ax.set_title("Agent + Academic Search Quality (%)")
+    for bar, val, orig in zip(bars, vals, [avg_scores[d] for d in dimensions]):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + 0.1,
-            f"{val:.2f}",
+            bar.get_height() + 1.5,
+            f"{val:.1f}%\n({orig:.2f}/5)",
             ha="center",
             va="bottom",
+            fontsize=10,
         )
+    ax.axhline(y=80, color="green", linestyle="--", alpha=0.5, label="80% target")
+    ax.axhline(y=60, color="orange", linestyle="--", alpha=0.5, label="60% baseline")
+    ax.legend(loc="upper right")
     plt.tight_layout()
     plt.savefig(figures_dir / "score_bars.png", dpi=150)
     plt.close()
@@ -475,16 +491,24 @@ def main():
     valid_scores = [s for s in scores if s.get("overall_score", 0) > 0]
 
     if valid_scores:
+        avg_r = mean([s.get("relevance", 0) for s in valid_scores])
+        avg_a = mean([s.get("accuracy", 0) for s in valid_scores])
+        avg_c = mean([s.get("completeness", 0) for s in valid_scores])
+        avg_ci = mean([s.get("citation", 0) for s in valid_scores])
+        avg_o = mean([s.get("overall_score", 0) for s in valid_scores])
         summary = {
             "total": len(queries),
             "evaluated": len(valid_scores),
-            "avg_relevance": mean([s.get("relevance", 0) for s in valid_scores]),
-            "avg_accuracy": mean([s.get("accuracy", 0) for s in valid_scores]),
-            "avg_completeness": mean([s.get("completeness", 0) for s in valid_scores]),
-            "avg_citation": mean([s.get("citation", 0) for s in valid_scores]),
-            "avg_overall_score": mean(
-                [s.get("overall_score", 0) for s in valid_scores]
-            ),
+            "avg_relevance": avg_r,
+            "avg_accuracy": avg_a,
+            "avg_completeness": avg_c,
+            "avg_citation": avg_ci,
+            "avg_overall_score": avg_o,
+            "avg_relevance_pct": round(avg_r / 5.0 * 100, 1),
+            "avg_accuracy_pct": round(avg_a / 5.0 * 100, 1),
+            "avg_completeness_pct": round(avg_c / 5.0 * 100, 1),
+            "avg_citation_pct": round(avg_ci / 5.0 * 100, 1),
+            "avg_overall_score_pct": round(avg_o / 5.0 * 100, 1),
         }
     else:
         summary = {"total": len(queries), "evaluated": 0}
@@ -496,11 +520,11 @@ def main():
     print(f"Total queries: {summary['total']}")
     print(f"Evaluated: {summary.get('evaluated', 0)}")
     if valid_scores:
-        print(f"Avg relevance: {summary['avg_relevance']:.2f}")
-        print(f"Avg accuracy: {summary['avg_accuracy']:.2f}")
-        print(f"Avg completeness: {summary['avg_completeness']:.2f}")
-        print(f"Avg citation: {summary['avg_citation']:.2f}")
-        print(f"Avg overall score: {summary['avg_overall_score']:.2f}")
+        print(f"Avg relevance:   {summary['avg_relevance']:.2f}/5  ({summary['avg_relevance_pct']:.1f}%)")
+        print(f"Avg accuracy:    {summary['avg_accuracy']:.2f}/5  ({summary['avg_accuracy_pct']:.1f}%)")
+        print(f"Avg completeness:{summary['avg_completeness']:.2f}/5  ({summary['avg_completeness_pct']:.1f}%)")
+        print(f"Avg citation:    {summary['avg_citation']:.2f}/5  ({summary['avg_citation_pct']:.1f}%)")
+        print(f"Avg overall:     {summary['avg_overall_score']:.2f}/5  ({summary['avg_overall_score_pct']:.1f}%)")
 
     # 生成图表
     generate_charts(results, out_dir)

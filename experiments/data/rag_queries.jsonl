@@ -1,0 +1,100 @@
+{"id":"rag_001","query":"请概述2021年以来机器人抓取领域的主流方法演进脉络。","category":"manipulation","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_002","query":"对比 diffusion policy 和 behavior cloning 在机器人操作中的优缺点。","category":"manipulation","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_003","query":"近五年双臂协作操作有哪些代表性工作？请给出任务设置和关键指标。","category":"manipulation","type":"fact+compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_004","query":"为什么很多操作策略在仿真里成功但实机失败？请结合近五年论文总结。","category":"sim2real","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_005","query":"请总结机器人 manipulation 中视觉表征学习的最新趋势。","category":"vision","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_006","query":"VLA（Vision-Language-Action）模型在机器人控制中近五年有什么进展？","category":"foundation_models","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_007","query":"OpenVLA 和 RT-2 类方法在任务泛化上的核心差异是什么？","category":"foundation_models","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_008","query":"请解释近五年机器人策略学习中 offline RL 的使用场景。","category":"learning","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_009","query":"在机器人抓取任务中，强化学习与模仿学习的融合方法有哪些？","category":"learning","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_010","query":"请给出近五年机器人领域最常用的操作任务benchmark及其评价指标。","category":"benchmark","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_011","query":"什么是 sim-to-real 迁移？当前主流的域随机化方法有哪些？","category":"sim2real","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_012","query":"近五年有哪些知名的人形机器人工作？它们分别解决了哪些关键问题？","category":"humanoid","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_013","query":"请解释为什么 PyBullet 在机器人仿真中比 MuJoCo 更适合入门？","category":"simulation","type":"reasoning","year_scope":"2021-2026","need_citation":false}
+{"id":"rag_014","query":"GRPO（Group Relative Policy Optimization）算法是什么？它在机器人训练中有什么优势？","category":"learning","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_015","query":"Agentic RAG 是什么？它与传统 RAG 有什么区别？","category":"rag","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_016","query":"近五年移动机器人 SLAM 技术有什么新进展？有哪些主流方法？","category":"navigation","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_017","query":"什么是机器人的末端执行器？请介绍近五年常用的夹爪和吸盘技术。","category":"hardware","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_018","query":"机器人在触觉感知领域有哪些最新进展？力反馈传感器是如何应用的？","category":"perception","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_019","query":"近五年有哪些著名的四足机器人工作？它们采用了哪些控制方法？","category":"locomotion","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_020","query":"请解释机器人示教学习（Teaching by Demonstration）的最新进展和代表性方法。","category":"learning","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_021","query":"近五年有哪些值得关注的机器人灵巧手工作？它们如何实现复杂操作？","category":"manipulation","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_022","query":"请对比分析强化学习在机器人中常用的 PPO、SAC、TD3 算法的优缺点。","category":"learning","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_023","query":"什么是零样本机器人操作（Zero-shot Robot Manipulation）？有哪些代表性方法？","category":"foundation_models","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_024","query":"近五年机器人领域有哪些重要的开源数据集和仿真平台？","category":"benchmark","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_025","query":"请介绍近五年机器人领域的多模态大模型进展，如 RT-3、PaLM-E 等。","category":"foundation_models","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_026","query":"什么是姿态估计（Pose Estimation）在机器人操作中的应用？有哪些常用方法？","category":"vision","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_027","query":"近五年有哪些著名的仓储机器人（如 Amazon Robotics）工作？","category":"application","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_028","query":"请解释什么是模型预测控制（MPC）在机器人控制中的应用。","category":"control","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_029","query":"近五年有哪些值得关注的软体机器人（Soft Robotics）研究？","category":"hardware","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_030","query":"机器人自我监督学习（Self-supervised Learning）有哪些最新进展？","category":"learning","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_031","query":"近五年多智能体机器人系统（Multi-agent Robot Systems）有哪些进展？","category":"multi-agent","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_032","query":"LLM-Based Agent 在机器人任务规划中的应用有哪些代表性工作？","category":"llm_agent","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_033","query":"ReAct（Reasoning + Acting）范式在机器人中如何实现？有哪些关键组件？","category":"llm_agent","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_034","query":"近五年视觉-语言-动作模型（VLA）的训练数据规模对泛化能力有何影响？","category":"foundation_models","type":"reasoning","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_035","query":"请介绍近五年机器人领域的世界模型（World Models）研究进展。","category":"learning","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_036","query":"Gazebo 仿真平台相比 PyBullet 有哪些优势？适用于哪些场景？","category":"simulation","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_037","query":"机器人操作任务中数据效率（Data Efficiency）有哪些最新的提升方法？","category":"learning","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_038","query":"请对比 CALVIN、RLBench 和 LIBERO 三个机器人操作 benchmark 的异同。","category":"benchmark","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_039","query":"近五年有哪些基于大模型（LLM）的机器人任务规划方法？效果如何？","category":"planning","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_040","query":"什么是物理信息神经网络（PINN）在机器人仿真中的应用？","category":"simulation","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_041","query":"机器人安全控制（Safe Control）领域近五年有哪些重要进展？","category":"safety","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_042","query":"请解释什么是接触动力学（Contact Dynamics）在机器人操作中的挑战。","category":"dynamics","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_043","query":"近五年有哪些基于 Transformer 架构的机器人操作策略工作？","category":"learning","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_044","query":"机器人灵巧操作（Dexterous Manipulation）领域的最新进展有哪些？","category":"manipulation","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_045","query":"近五年空中机器人（UAV）自主控制有哪些技术突破？","category":"aerial","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_046","query":"请介绍近五年手术机器人（Surgical Robotics）领域的研究进展。","category":"surgical","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_047","query":"什么是机器人视觉伺服（Visual Servoing）？近五年有哪些新方法？","category":"vision","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_048","query":"近五年农业机器人（Agricultural Robotics）领域有哪些代表性工作？","category":"agricultural","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_049","query":"请解释机器人系统中的末端执行器标定（Calibration）方法有哪些。","category":"calibration","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_050","query":"近五年工业机器人装配（Assembly）任务中有哪些值得关注的学习方法？","category":"industrial","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_051","query":"什么是机器人灵巧抓取（Dexterous Grasping）的核心挑战？有哪些方法？","category":"manipulation","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_052","query":"近五年有哪些机器人人机交互（HRI）领域的最新研究？","category":"hri","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_053","query":"Mobile Manipulation（移动操作）机器人近五年有哪些重要进展？","category":"mobile_manipulation","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_054","query":"请介绍机器人领域最近的多模态融合方法，如视觉-触觉-力觉融合。","category":"perception","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_055","query":"GRPO 与 PPO 在机器人策略优化中哪个效果更好？请结合论文分析。","category":"learning","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_056","query":"近五年有哪些工作解决了仿真到现实（Sim-to-Real）的视觉差距问题？","category":"sim2real","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_057","query":"什么是知识图谱（Knowledge Graph）在机器人任务理解中的应用？","category":"rag","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_058","query":"请对比近五年主流机器人仿真器：Gazebo、PyBullet、MuJoCo、Isaac Sim 的特点。","category":"simulation","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_059","query":"近五年有哪些工作将语言模型（LLM）直接用于机器人控制？效果如何？","category":"llm_agent","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_060","query":"请介绍机器人视觉中 6-DoF 抓取姿态估计的最新方法。","category":"vision","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_061","query":"什么是主动学习（Active Learning）在机器人数据收集中的应用？","category":"learning","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_062","query":"近五年有哪些工作探索了机器人的长时序任务规划与执行？","category":"planning","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_063","query":"请介绍近五年水下机器人（Underwater Robotics）的自主控制进展。","category":"underwater","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_064","query":"什么是技能链（Skill Chaining）在机器人操作中的应用？","category":"learning","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_065","query":"近五年有哪些工作关注机器人在非结构化环境中的操作？","category":"manipulation","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_066","query":"机器人领域的多任务学习（Multi-task Learning）有哪些最新进展？","category":"learning","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_067","query":"请对比近五年主流的机器人抓取检测方法：GraspNet、Contact-GraspNet、6-DoF GraspNet。","category":"vision","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_068","query":"近五年有哪些工作解决了机器人插入任务（Insertion Task）的难题？","category":"manipulation","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_069","query":"什么是零样本域适应（Zero-shot Domain Adaptation）在机器人中的应用？","category":"sim2real","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_070","query":"请介绍近五年机器人领域的多模态指令跟随（Multi-modal Instruction Following）进展。","category":"foundation_models","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_071","query":"近五年有哪些工作将强化学习成功应用于真实的机器人操作？","category":"learning","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_072","query":"请对比模仿学习中的 DAgger 方法与其近五年的改进版本。","category":"learning","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_073","query":"什么是少样本学习（Few-shot Learning）在机器人操作中的最新应用？","category":"learning","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_074","query":"近五年有哪些人形机器人步态控制方法取得了显著进展？","category":"humanoid","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_075","query":"请介绍机器人实时感知与控制协同（Perception-Action Loop）的最新方法。","category":"perception","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_076","query":"近五年有哪些工作探索了 LLMs 作为机器人工具调用的规划器？","category":"llm_agent","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_077","query":"机器人路径规划中 RRT、RRT* 和 PRM 方法各有什么优缺点？","category":"navigation","type":"compare","year_scope":"2021-2026","need_citation":false}
+{"id":"rag_078","query":"请介绍近五年的触觉强化学习（Touch-based RL）研究进展。","category":"perception","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_079","query":"什么是持续学习（Continual Learning）在机器人中的最新应用？","category":"learning","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_080","query":"近五年有哪些工作将扩散模型用于机器人动作生成？","category":"learning","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_081","query":"请介绍近五年 ROS 2 在机器人领域的生态发展与关键改进。","category":"simulation","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_082","query":"什么是主动探索（Active Exploration）在机器人自主学习中的作用？","category":"learning","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_083","query":"近五年有哪些工作探索了机器人的物体重排（Object Rearrangement）任务？","category":"manipulation","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_084","query":"请对比近五年主流的机器人操作模仿学习方法：BC、BC-RNN、Diffusion Policy。","category":"learning","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_085","query":"什么是基于视觉的语言条件机器人操作？请介绍相关方法。","category":"foundation_models","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_086","query":"近五年有哪些工作关注机器人协作中的通信与协调机制？","category":"multi-agent","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_087","query":"请介绍近五年机器人安全领域的形式化验证（Formal Verification）方法。","category":"safety","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_088","query":"什么是分层强化学习（Hierarchical RL）在机器人任务分解中的应用？","category":"learning","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_089","query":"近五年有哪些工作实现了机器人的开放词汇表目标操作（Open-vocabulary Object Manipulation）？","category":"vision","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_090","query":"请介绍近五年的自适应机器人控制系统研究进展。","category":"control","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_091","query":"什么是基于互联网视频学习的机器人操作（Learning from Internet Videos）？","category":"learning","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_092","query":"近五年有哪些工作探索了机器人的长期记忆与经验复用？","category":"llm_agent","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_093","query":"请介绍机器人操作任务中基于几何深度学习的物体表示方法。","category":"vision","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_094","query":"近五年有哪些工作将模型预测控制（MPC）与学习结合用于机器人控制？","category":"control","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_095","query":"什么是机器人示教中的运动重映射（Motion Retargeting）问题？有哪些方法？","category":"learning","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_096","query":"请介绍近五年来自特斯拉、波士顿动力、Figure 等公司的机器人技术路线对比。","category":"application","type":"compare","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_097","query":"近五年有哪些工作探索了多模态大模型作为机器人感知骨干的效果？","category":"foundation_models","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_098","query":"什么是机器人任务规划中的偏好学习（Preference Learning）？有哪些应用？","category":"learning","type":"fact","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_099","query":"近五年有哪些工作关注机器人在家庭环境中的日常操作任务？","category":"application","type":"survey","year_scope":"2021-2026","need_citation":true}
+{"id":"rag_100","query":"请对比近五年主流的机器人安全学习算法：CPO、LCPO、Armoro 的核心思想与效果。","category":"safety","type":"compare","year_scope":"2021-2026","need_citation":true}
