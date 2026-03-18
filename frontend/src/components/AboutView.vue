@@ -5,13 +5,13 @@
       <h1>多 Agent + 仿真闭环的机器人任务平台</h1>
       <p class="lead">
         RobotAgent 将大模型任务编排、数据分析、仿真控制和前端可视化合并为一个工作流。
-        用户可以在同一界面中发起任务、查看执行计划、追踪时间轴，并获得仿真回传画面。
+        三个代理（主代理、仿真代理、分析代理）均通过 OMLX 本地部署推理，用户可在同一界面中发起任务、查看执行计划、追踪时间轴，并获得仿真回传画面。
       </p>
       <div class="hero-tags">
-        <span>LangGraph / DeepAgents</span>
-        <span>FastAPI + SSE Streaming</span>
+        <span>LangChain / ReAct</span>
+        <span>OMLX 本地推理</span>
         <span>PyBullet + Gazebo MCP</span>
-        <span>Vue 3 + Vite</span>
+        <span>Vue 3 + FastAPI</span>
       </div>
     </section>
 
@@ -20,8 +20,9 @@
         <h2>核心能力</h2>
         <ul>
           <li>主代理负责任务理解、路由和结果归纳，不直接做底层仿真。</li>
-          <li>分析子代理处理数据解读与指标分析任务。</li>
-          <li>仿真子代理通过 MCP 调用 PyBullet / Gazebo 工具执行场景操作。</li>
+          <li>分析代理处理数据解读与指标分析任务。</li>
+          <li>仿真代理通过 MCP 调用 PyBullet / Gazebo 工具执行场景操作。</li>
+          <li>三个代理均使用本地 OMLX 推理服务（MLX-Qwen3.5-4B），无需外部 API。</li>
           <li>前端实时展示 token 输出、planning 更新、timeline 和仿真画面。</li>
         </ul>
       </article>
@@ -49,7 +50,7 @@
 
       <article class="card">
         <h3>代理与工具</h3>
-        <p><code>tools/SubAgentTool.py</code> 初始化 data-analyzer 与 simulator 子代理。</p>
+        <p><code>tools/SubAgentTool.py</code> 初始化分析代理与仿真代理，统一使用本地 OMLX 推理。</p>
         <p><code>tools/AnalysisTool.py</code> 提供数据分析工具集。</p>
         <p><code>mcp/mcp_server.py</code> 是 PyBullet MCP 服务。</p>
         <p><code>mcp/gazebo_mcp_server.py</code> 是 Gazebo MCP 服务。</p>
@@ -69,7 +70,7 @@
       <div class="flow">
         <div class="flow-step"><span>1</span><p>用户提出任务（例如机械臂抓取或轨迹分析）。</p></div>
         <div class="flow-step"><span>2</span><p>主代理拆解任务并生成简明计划，逐步更新状态。</p></div>
-        <div class="flow-step"><span>3</span><p>根据意图调用 simulator 或 data-analyzer 子代理。</p></div>
+        <div class="flow-step"><span>3</span><p>根据意图调用仿真代理或分析代理执行具体任务。</p></div>
         <div class="flow-step"><span>4</span><p>前端实时接收推理、计划、时间轴和仿真回传帧。</p></div>
         <div class="flow-step"><span>5</span><p>主代理整合结果，输出简洁结论与下一步建议。</p></div>
       </div>

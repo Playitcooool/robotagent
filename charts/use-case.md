@@ -5,7 +5,7 @@ flowchart LR
   user[用户]:::actor
   admin[管理员/开发者]:::actor
   mcp[MCP 服务]:::actor
-  model[模型服务]:::actor
+  model[本地模型服务<br/>OMLX/LM Studio]:::actor
 
   uc_register((注册))
   uc_login((登录))

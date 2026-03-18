@@ -8,8 +8,8 @@ flowchart LR
   mcp[MCP PyBullet 服务]:::proc
 
   subgraph 模型服务
-    main_agent[主代理<br/>GLM4.7-flash<br/>智谱AI API]
-    sub_agent[子代理<br/>Qwen3.5 4B<br/>本地部署]
+    main_agent[主代理<br/>MLX-Qwen3.5-4B<br/>OMLX本地部署]
+    sub_agent[子代理<br/>同主代理模型<br/>OMLX本地部署]
   end
 
   redis_chat[(Redis DB1
