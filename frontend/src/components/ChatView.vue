@@ -1,7 +1,7 @@
 <template>
   <div :class="['chatview', landingMode ? 'landing-mode' : '']">
     <Transition name="landing-fade" mode="out-in">
-      <div v-if="!landingMode" class="messages" ref="messagesRef">
+      <div v-if="!landingMode" class="messages" ref="messagesRef" role="log" aria-live="polite" aria-label="对话消息" aria-relevant="additions">
         <div
           v-for="m in conversation"
           :key="m.id"
@@ -9,29 +9,57 @@
         >
           <!-- typing indicator -->
           <div v-if="m.loading" :class="['bubble', 'typing-card', isSubagent(m) ? 'subagent-bubble' : '']">
-            <div class="typing-head">
-              <span class="typing-label">
-                {{ m.loadingKind === 'search' ? '搜索中' : '正在思考并调用工具' }}
-              </span>
-              <span v-if="m.loadingKind === 'search'" class="search-spinner" aria-hidden="true">🔍</span>
-              <span v-else class="typing-dots" aria-hidden="true">
-                <span class="dot"></span>
-                <span class="dot"></span>
-                <span class="dot"></span>
-              </span>
-            </div>
-            <div class="typing-skeleton">
-              <span class="sk-line w-90" aria-hidden="true"></span>
-              <span class="sk-line w-72" aria-hidden="true"></span>
-              <span class="sk-line w-56" aria-hidden="true"></span>
-            </div>
+            <!-- Search skeleton -->
+            <template v-if="m.loadingKind === 'search'">
+              <div class="search-skeleton-header">
+                <span class="search-spinner" aria-hidden="true">🔍</span>
+                <span class="typing-label">{{ m.text || '搜索中...' }}</span>
+              </div>
+              <div class="search-skeleton-list">
+                <div v-for="i in 3" :key="i" class="search-skeleton-card">
+                  <div class="sk-card-title"></div>
+                  <div class="sk-card-line w-90"></div>
+                  <div class="sk-card-line w-72"></div>
+                  <div class="sk-card-line w-56"></div>
+                </div>
+              </div>
+            </template>
+            <!-- Default thinking indicator -->
+            <template v-else>
+              <div class="typing-head">
+                <span class="typing-label">正在思考并调用工具</span>
+                <span class="typing-dots" aria-hidden="true">
+                  <span class="dot"></span>
+                  <span class="dot"></span>
+                  <span class="dot"></span>
+                </span>
+              </div>
+              <div class="typing-skeleton">
+                <span class="sk-line w-90" aria-hidden="true"></span>
+                <span class="sk-line w-72" aria-hidden="true"></span>
+                <span class="sk-line w-56" aria-hidden="true"></span>
+              </div>
+            </template>
           </div>
 
           <!-- markdown-rendered message -->
           <div v-else :class="['bubble', isSubagent(m) ? 'subagent-bubble' : '']">
+            <!-- Message copy button (assistant only, appears on hover) -->
+            <button
+              v-if="m.role === 'assistant' && m.text"
+              class="msg-copy-btn"
+              :aria-label="t('copyMessage')"
+              @click="copyMessage(m, $event)"
+              title="复制消息"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            </button>
             <template v-if="isSubagent(m)">
               <details class="subagent-details">
-                <summary class="subagent-summary">
+                <summary class="subagent-summary" tabindex="0" @keydown.enter="toggleSubagent($event)">
                   <div :class="['agent-chip', `agent-${agentKey(m.agent)}`]">
                     <span class="agent-icon">{{ agentIcon(m.agent) }}</span>
                     <span class="agent-name">{{ agentName(m.agent) }}</span>
@@ -43,16 +71,41 @@
                     v-if="m.role === 'assistant' && m.thinking"
                     :done="Boolean(m.thinkingDone)"
                   />
+                  <!-- Message copy button for subagent -->
+                  <button
+                    v-if="m.role === 'assistant' && m.text"
+                    class="msg-copy-btn"
+                    :aria-label="t('copyMessage')"
+                    @click="copyMessage(m, $event)"
+                    title="复制消息"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                  </button>
                   <div
                     class="markdown answer"
                     v-html="renderMarkdown(m.text)"
+                    @click="handleMarkdownClick"
+                    role="presentation"
                   ></div>
+                  <!-- Search results with collapse -->
                   <div v-if="m.role === 'assistant' && Array.isArray(m.webSearchResults) && m.webSearchResults.length" class="web-sources">
                     <div class="web-sources-title">
                       {{ m.webSearchResults[0]?.source === 'arxiv' || m.webSearchResults[0]?.source === 'openalex' ? '学术论文' : '搜索结果与出处' }}
+                      <button
+                        v-if="m.webSearchResults.length > 5"
+                        class="collapse-toggle-btn"
+                        @click="toggleSearchCollapse(m.id)"
+                        :aria-expanded="!collapsedSearchIds.has(m.id)"
+                        :aria-label="collapsedSearchIds.has(m.id) ? '展开' : '收起'"
+                      >
+                        {{ collapsedSearchIds.has(m.id) ? `展开 ${m.webSearchResults.length - 5} 条` : '收起' }}
+                      </button>
                     </div>
                     <ul>
-                      <li v-for="(r, idx) in m.webSearchResults" :key="`${m.id}-src-${idx}`">
+                      <li v-for="(r, idx) in getDisplayedSearchResults(m)" :key="`${m.id}-src-${idx}`">
                         <!-- 学术论文显示 -->
                         <template v-if="r.source === 'arxiv' || r.source === 'openalex'">
                           <div class="paper-item">
@@ -98,16 +151,41 @@
                 v-if="m.role === 'assistant' && m.thinking"
                 :done="Boolean(m.thinkingDone)"
               />
+              <!-- Message copy button -->
+              <button
+                v-if="m.role === 'assistant' && m.text"
+                class="msg-copy-btn"
+                :aria-label="t('copyMessage')"
+                @click="copyMessage(m, $event)"
+                title="复制消息"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
               <div
                 class="markdown answer"
                 v-html="renderMarkdown(m.text)"
+                @click="handleMarkdownClick"
+                role="presentation"
               ></div>
+              <!-- Search results with collapse -->
               <div v-if="m.role === 'assistant' && Array.isArray(m.webSearchResults) && m.webSearchResults.length" class="web-sources">
                 <div class="web-sources-title">
                   {{ m.webSearchResults[0]?.source === 'arxiv' || m.webSearchResults[0]?.source === 'openalex' ? '学术论文' : '搜索结果与出处' }}
+                  <button
+                    v-if="m.webSearchResults.length > 5"
+                    class="collapse-toggle-btn"
+                    @click="toggleSearchCollapse(m.id)"
+                    :aria-expanded="!collapsedSearchIds.has(m.id)"
+                    :aria-label="collapsedSearchIds.has(m.id) ? '展开' : '收起'"
+                  >
+                    {{ collapsedSearchIds.has(m.id) ? `展开 ${m.webSearchResults.length - 5} 条` : '收起' }}
+                  </button>
                 </div>
                 <ul>
-                  <li v-for="(r, idx) in m.webSearchResults" :key="`${m.id}-src-${idx}`">
+                  <li v-for="(r, idx) in getDisplayedSearchResults(m)" :key="`${m.id}-src-${idx}`">
                     <!-- 学术论文显示 -->
                     <template v-if="r.source === 'arxiv' || r.source === 'openalex'">
                       <div class="paper-item">
@@ -152,6 +230,19 @@
 
     <PlanningPanel v-if="!landingMode" :planning="planning" />
 
+    <!-- Image lightbox -->
+    <Teleport to="body">
+      <div v-if="lightboxUrl" class="lightbox-overlay" @click="closeLightbox" @keydown.escape="closeLightbox" role="dialog" aria-modal="true" tabindex="-1">
+        <img :src="lightboxUrl" class="lightbox-img" @click.stop alt="放大图片" />
+        <button class="lightbox-close" @click="closeLightbox" aria-label="关闭">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+    </Teleport>
+
     <form :class="['composer', landingMode ? 'composer-landing' : '']" @submit.prevent="send">
       <div class="tool-picker" ref="toolPickerRef">
         <button
@@ -176,6 +267,9 @@
         @compositionend="onCompositionEnd"
         @input="onInput"
         rows="2"
+        aria-label="输入消息"
+        aria-multiline="true"
+        :aria-disabled="!canSend"
       ></textarea>
       <button type="submit" class="send-btn" :disabled="!canSend">发送</button>
     </form>
@@ -219,6 +313,20 @@ md.renderer.rules.link_open = function (tokens, idx, options, env, self) {
   return defaultLinkRender(tokens, idx, options, env, self)
 }
 
+// Inject copy button into fenced code blocks
+const defaultFenceRender = md.renderer.rules.fence || function (tokens, idx, options, env, self) {
+  return self.renderToken(tokens, idx, options)
+}
+md.renderer.rules.fence = function (tokens, idx, options, env, self) {
+  const token = tokens[idx]
+  const lang = token.info.trim()
+  const langLabel = lang ? `<span class="code-lang-label">${lang}</span>` : ''
+  const raw = defaultFenceRender.call(this, tokens, idx, options, env, self)
+  // Inject copy button before </pre>
+  const copyBtn = `<button class="code-copy-btn" data-code="${encodeURIComponent(token.content)}" title="复制代码">复制</button>`
+  return raw.replace('</pre>', `${langLabel}${copyBtn}</pre>`)
+}
+
 export default {
   name: 'ChatView',
   components: { ThinkingTrace, PlanningPanel },
@@ -240,6 +348,8 @@ export default {
   setup (props, { emit }) {
     const markdownCache = new Map()
     const text = ref('')
+    const collapsedSearchIds = ref(new Set())
+    const lightboxUrl = ref('')
     const messagesRef = ref(null)
     const textareaRef = ref(null)
     const toolPickerRef = ref(null)
@@ -248,6 +358,28 @@ export default {
     const landingGreeting = ref('你好，我是 RobotAgent。有什么可以帮你？')
     const toolMenuOpen = ref(false)
     const enabledTools = ref([])
+
+    const translations = {
+      zh: {
+        copyMessage: '复制消息',
+        copied: '已复制!',
+        copyFailed: '复制失败',
+        expand: '展开',
+        collapse: '收起'
+      },
+      en: {
+        copyMessage: 'Copy message',
+        copied: 'Copied!',
+        copyFailed: 'Copy failed',
+        expand: 'Expand',
+        collapse: 'Collapse'
+      }
+    }
+
+    const lang = ref(localStorage.getItem('robotagent_lang') || 'zh')
+    function t (key) {
+      return translations[lang.value]?.[key] || translations['zh'][key] || key
+    }
 
     function send () {
       const payload = text.value.trim()
@@ -266,7 +398,7 @@ export default {
       if (markdownCache.has(raw)) return markdownCache.get(raw)
       const rendered = md.render(preprocessMarkdown(raw))
       markdownCache.set(raw, rendered)
-      if (markdownCache.size > 200) {
+      while (markdownCache.size > 200) {
         const oldestKey = markdownCache.keys().next().value
         markdownCache.delete(oldestKey)
       }
@@ -332,6 +464,9 @@ export default {
     function handleGlobalKeydown (evt) {
       if (evt.key === 'Escape') {
         toolMenuOpen.value = false
+        if (lightboxUrl.value) {
+          closeLightbox()
+        }
       }
     }
 
@@ -359,6 +494,84 @@ export default {
     function isSubagent (msg) {
       if (!msg || msg.role !== 'assistant') return false
       return agentKey(msg.agent) !== 'main'
+    }
+
+    function copyMessage (m, e) {
+      const text = String(m.text || '')
+      if (!text) return
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = e.currentTarget
+        btn.classList.add('copied')
+        const origHTML = btn.innerHTML
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>'
+        setTimeout(() => {
+          btn.innerHTML = origHTML
+          btn.classList.remove('copied')
+        }, 2000)
+      }).catch(() => {})
+    }
+
+    function toggleSearchCollapse (msgId) {
+      const s = new Set(collapsedSearchIds.value)
+      if (s.has(msgId)) {
+        s.delete(msgId)
+      } else {
+        s.add(msgId)
+      }
+      collapsedSearchIds.value = s
+    }
+
+    function isSearchCollapsed (m) {
+      return collapsedSearchIds.value.has(m.id) && m.webSearchResults.length > 5
+    }
+
+    function getDisplayedSearchResults (m) {
+      if (!m.webSearchResults || !m.webSearchResults.length) return []
+      // If collapsed (has id in set) and more than 5 results, show only first 5
+      if (collapsedSearchIds.value.has(m.id) && m.webSearchResults.length > 5) {
+        return m.webSearchResults.slice(0, 5)
+      }
+      return m.webSearchResults
+    }
+
+    function handleMarkdownClick (e) {
+      const img = e.target.closest('img')
+      if (img) {
+        e.preventDefault()
+        lightboxUrl.value = img.src
+        nextTick(() => {
+          document.body.style.overflow = 'hidden'
+        })
+      }
+    }
+
+    function closeLightbox () {
+      lightboxUrl.value = ''
+      document.body.style.overflow = ''
+    }
+
+    function toggleSubagent (e) {
+      // Let the native <details>/<summary> handle it
+    }
+
+    function handleCodeCopy (e) {
+      const btn = e.target.closest('.code-copy-btn')
+      if (!btn) return
+      const code = decodeURIComponent(btn.getAttribute('data-code') || '')
+      if (!code) return
+      navigator.clipboard.writeText(code).then(() => {
+        btn.textContent = '已复制!'
+        btn.classList.add('copied')
+        setTimeout(() => {
+          btn.textContent = '复制'
+          btn.classList.remove('copied')
+        }, 2000)
+      }).catch(() => {
+        btn.textContent = '失败'
+        setTimeout(() => {
+          btn.textContent = '复制'
+        }, 1500)
+      })
     }
 
     function autoResizeTextarea () {
@@ -407,12 +620,14 @@ export default {
       scrollToBottom()
       document.addEventListener('click', handleGlobalClick)
       document.addEventListener('keydown', handleGlobalKeydown)
+      document.addEventListener('click', handleCodeCopy)
     })
 
     onBeforeUnmount(() => {
       if (scrollRaf) cancelAnimationFrame(scrollRaf)
       document.removeEventListener('click', handleGlobalClick)
       document.removeEventListener('keydown', handleGlobalKeydown)
+      document.removeEventListener('click', handleCodeCopy)
     })
 
     watch(
@@ -445,7 +660,16 @@ export default {
       isSubagent,
       messagesRef,
       textareaRef,
-      toolPickerRef
+      toolPickerRef,
+      copyMessage,
+      toggleSearchCollapse,
+      isSearchCollapsed,
+      getDisplayedSearchResults,
+      handleMarkdownClick,
+      closeLightbox,
+      lightboxUrl,
+      collapsedSearchIds,
+      t
     }
   }
 }

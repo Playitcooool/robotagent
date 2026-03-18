@@ -7,3 +7,12 @@ import 'katex/dist/katex.min.css'
 import 'highlight.js/styles/github-dark.css'
 
 createApp(App).mount('#app')
+
+// Register service worker for PWA / offline support
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // SW registration failed — app works without it
+    })
+  })
+}

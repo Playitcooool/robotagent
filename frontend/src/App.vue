@@ -157,6 +157,9 @@ export default {
 
     const assistantStreams = {}
     const assistantMessageIds = {}
+    const assistantTypewriters = {} // msgId -> { interval, displayed, total, done }
+    // msgId -> { textDisplayed, textTotal, thinkingDisplayed, thinkingTotal }
+    const typewriterAccum = {}
     const liveFrame = ref(null)
     const planningState = ref({ steps: [], updatedAt: 0 })
     let liveFrameEventSource = null
@@ -291,6 +294,54 @@ export default {
       }
 
       liveFrameEventSource = eventSource
+    }
+
+    function startTypewriter (msgId, idx, fullText, field = 'text') {
+      if (fullText.length < 100) {
+        conversation.value[idx][field] = fullText
+        return
+      }
+      const ta = typewriterAccum[msgId] || { textDisplayed: 0, textTotal: 0, thinkingDisplayed: 0, thinkingTotal: 0 }
+      typewriterAccum[msgId] = ta
+      if (field === 'text') {
+        ta.textTotal = fullText.length
+        ta.textDisplayed = 0
+      } else {
+        ta.thinkingTotal = fullText.length
+        ta.thinkingDisplayed = 0
+      }
+
+      if (assistantTypewriters[msgId]) {
+        clearInterval(assistantTypewriters[msgId].interval)
+      }
+
+      const charsPerFrame = 50
+      const frameDelay = 20
+      const interval = setInterval(() => {
+        const i = conversation.value.findIndex(m => m.id === msgId)
+        if (i === -1) {
+          clearInterval(interval)
+          delete assistantTypewriters[msgId]
+          delete typewriterAccum[msgId]
+          return
+        }
+        if (field === 'text') {
+          ta.textDisplayed = Math.min(ta.textDisplayed + charsPerFrame, ta.textTotal)
+          conversation.value[i].text = fullText.slice(0, ta.textDisplayed)
+          if (ta.textDisplayed >= ta.textTotal) {
+            clearInterval(interval)
+            delete assistantTypewriters[msgId]
+          }
+        } else {
+          ta.thinkingDisplayed = Math.min(ta.thinkingDisplayed + charsPerFrame, ta.thinkingTotal)
+          conversation.value[i].thinking = fullText.slice(0, ta.thinkingDisplayed)
+          if (ta.thinkingDisplayed >= ta.thinkingTotal) {
+            clearInterval(interval)
+            delete assistantTypewriters[msgId]
+          }
+        }
+      }, frameDelay)
+      assistantTypewriters[msgId] = { interval }
     }
 
     function stopLiveFrameStream () {
@@ -477,15 +528,22 @@ export default {
                 st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [], ragReferences: [] }
               }
 
+              st.text += chunk
+
+              // Stop any existing typewriter — will be restarted on 'done' if needed
+              if (assistantTypewriters[msgId]) {
+                clearInterval(assistantTypewriters[msgId].interval)
+                delete assistantTypewriters[msgId]
+                delete typewriterAccum[msgId]
+              }
+
               if (idx !== -1) {
                 if (conversation.value[idx].loading) {
                   conversation.value[idx].loading = false
                 }
                 conversation.value[idx].loadingKind = st.loadingKind || 'thinking'
-                st.text += chunk
                 conversation.value[idx].text = st.text
               } else {
-                st.text += chunk
                 conversation.value.push({ id: msgId, role: 'assistant', agent: normalizeSource(obj.source), text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated), loadingKind: st.loadingKind || 'thinking', webSearchResults: st.webSearchResults || [], ragReferences: st.ragReferences || [] })
               }
             } else if (obj.type === 'thinking') {
@@ -499,6 +557,14 @@ export default {
                 st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [], ragReferences: [] }
               }
               st.thinking += chunk
+
+              // Stop any existing typewriter for this message
+              if (assistantTypewriters[msgId]) {
+                clearInterval(assistantTypewriters[msgId].interval)
+                delete assistantTypewriters[msgId]
+                delete typewriterAccum[msgId]
+              }
+
               if (idx !== -1) {
                 if (conversation.value[idx].loading) {
                   conversation.value[idx].loading = false
@@ -642,14 +708,40 @@ export default {
                 conversation.value[idxDone].loading = false
                 const stDone = assistantStreams[msgId]
                 if (stDone) {
-                  conversation.value[idxDone].text = stDone.text || conversation.value[idxDone].text
-                  conversation.value[idxDone].thinking = stDone.thinking || conversation.value[idxDone].thinking || ''
-                  conversation.value[idxDone].thinkingDone = true
+                  const finalText = stDone.text || conversation.value[idxDone].text || ''
+                  const finalThinking = stDone.thinking || conversation.value[idxDone].thinking || ''
                   conversation.value[idxDone].thinkingTruncated = Boolean(stDone.thinkingTruncated || conversation.value[idxDone].thinkingTruncated)
                   conversation.value[idxDone].loadingKind = stDone.loadingKind || 'thinking'
                   conversation.value[idxDone].webSearchResults = stDone.webSearchResults || conversation.value[idxDone].webSearchResults || []
                   conversation.value[idxDone].ragReferences = stDone.ragReferences || conversation.value[idxDone].ragReferences || []
                   delete assistantStreams[msgId]
+
+                  // Thinking typewriter: animate thinking if >= 50 chars
+                  if (finalThinking.length >= 50) {
+                    conversation.value[idxDone].thinkingDone = false
+                    conversation.value[idxDone].thinking = ''
+                    startTypewriter(msgId, idxDone, finalThinking, 'thinking')
+                    // Mark thinking done when typewriter completes
+                    const checkThinkDone = setInterval(() => {
+                      const i = conversation.value.findIndex(m => m.id === msgId)
+                      if (i === -1) { clearInterval(checkThinkDone); return }
+                      if (!assistantTypewriters[msgId]) {
+                        conversation.value[i].thinkingDone = true
+                        clearInterval(checkThinkDone)
+                      }
+                    }, 50)
+                  } else {
+                    conversation.value[idxDone].thinking = finalThinking
+                    conversation.value[idxDone].thinkingDone = true
+                  }
+
+                  // Text typewriter: animate text if >= 100 chars
+                  if (finalText.length >= 100) {
+                    conversation.value[idxDone].text = ''
+                    startTypewriter(msgId, idxDone, finalText, 'text')
+                  } else {
+                    conversation.value[idxDone].text = finalText
+                  }
                 }
               }
               delete assistantMessageIds[assistantId]
@@ -669,6 +761,11 @@ export default {
                 st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, webSearchResults: [], ragReferences: [] }
               }
               st.text += chunk
+              if (assistantTypewriters[msgId]) {
+                clearInterval(assistantTypewriters[msgId].interval)
+                delete assistantTypewriters[msgId]
+                delete typewriterAccum[msgId]
+              }
               if (idxRem !== -1) {
                 conversation.value[idxRem].loading = false
                 conversation.value[idxRem].text = st.text
@@ -699,6 +796,15 @@ export default {
     onBeforeUnmount(() => {
       stopLiveFrameStream()
       if (sessionLoadController) sessionLoadController.abort()
+      for (const tw of Object.values(assistantTypewriters)) {
+        clearInterval(tw.interval)
+      }
+      for (const msgId in assistantTypewriters) {
+        delete assistantTypewriters[msgId]
+      }
+      for (const msgId in typewriterAccum) {
+        delete typewriterAccum[msgId]
+      }
     })
 
     return {
