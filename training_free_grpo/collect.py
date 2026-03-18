@@ -168,31 +168,62 @@ def load_finished_keys(path: str) -> Set[Tuple[int, int]]:
 
 
 def extract_messages(agent_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """提取消息，并识别每个消息来自哪个 agent"""
     messages: List[Dict[str, Any]] = []
+    current_agent = "main"  # 默认是主 agent
+
     for msg in agent_result.get("messages", []):
         cls_name = msg.__class__.__name__
+
+        # 检查是否是子 agent 的响应
+        if cls_name == "AIMessage":
+            # 检查消息是否有 subagent 标识
+            msg_dict = msg if isinstance(msg, dict) else vars(msg) if hasattr(msg, '__dict__') else {}
+            # 通过 tool_calls 或 content 判断是否是调用子 agent
+            # 子 agent 响应通常包含 agent 名称
+
         if cls_name not in {"HumanMessage", "AIMessage", "ToolMessage"}:
             if isinstance(msg, dict):
                 role = msg.get("role")
                 content = msg.get("content", "")
                 if role in {"user", "assistant", "tool"}:
-                    messages.append({"role": role, "content": content})
+                    messages.append({"role": role, "content": content, "agent": current_agent})
             continue
 
         if cls_name == "HumanMessage":
             role = "user"
         elif cls_name == "AIMessage":
             role = "assistant"
+            # 检查是否是调用子 agent
+            msg_dict = msg if isinstance(msg, dict) else {}
+            # 尝试从 tool_calls 中识别子 agent
+            tool_calls = msg_dict.get("tool_calls", []) or getattr(msg, "tool_calls", [])
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    tc_func = tc.get("function", {})
+                    func_name = tc_func.get("name", "") if isinstance(tc_func, dict) else ""
+                    # 根据工具名判断是哪个 agent
+                    if func_name == "data_analyzer":
+                        current_agent = "data-analyzer"
+                    elif func_name == "simulator":
+                        current_agent = "simulator"
         else:
             role = "tool"
 
-        item: Dict[str, Any] = {"role": role, "content": msg.content}
+        item: Dict[str, Any] = {"role": role, "content": msg.content, "agent": current_agent}
 
         if cls_name == "ToolMessage":
             name = getattr(msg, "name", None)
             tool_call_id = getattr(msg, "tool_call_id", None)
             if name:
                 item["name"] = name
+                # 根据工具所属判断 agent
+                if name in {"analyze_trajectory", "analyze_code", "analyze_experiment"}:
+                    item["agent"] = "data-analyzer"
+                elif name in {"initialize_simulation", "step_simulation", "reset_simulation", "get_observation"}:
+                    item["agent"] = "simulator"
+                else:
+                    item["agent"] = "main"
             if tool_call_id:
                 item["tool_call_id"] = tool_call_id
 
