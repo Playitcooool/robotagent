@@ -2,10 +2,8 @@ import argparse
 import asyncio
 import json
 import os
-import re
 import sys
 import time
-from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 import yaml
@@ -13,11 +11,13 @@ import yaml
 current_file = os.path.abspath(__file__)
 current_dir = os.path.dirname(current_file)
 root_dir = os.path.dirname(current_dir)
-if root_dir not in sys.path:
-    sys.path.insert(0, root_dir)
+sys.path.insert(0, root_dir)
 
-_cached_subagents: List[Any] | None = None
-_subagent_lock = asyncio.Lock()
+from training_free_grpo.experience_tools import (
+    JUDGE_EXPERIENCE_TOOLS,
+    build_judge_agent,
+    score_and_update_memory,
+)
 
 # Collection runtime behavior (intended for single-trajectory isolation)
 REBUILD_AGENT_EVERY = 1
@@ -25,56 +25,6 @@ CLEANUP_SIMULATION_PER_ATTEMPT = True
 DEFAULT_REQUEST_TIMEOUT_S = 300.0
 DEFAULT_ATTEMPT_TIMEOUT_S = 600.0
 DEFAULT_CLEANUP_TIMEOUT_S = 30.0
-
-
-@dataclass
-class DeepAgentClient:
-    base_url: str
-    model: str
-    api_key: str
-    max_retries: int
-    backoff_factor: float
-    initial_delay: float
-    temperature: float
-    max_tokens: int
-    request_timeout_s: Optional[float]
-
-    async def chat(self, system_prompt: str, user_content: str) -> str:
-        from deepagents import create_deep_agent
-        from langchain.agents.middleware import ToolRetryMiddleware
-        from langchain_openai import ChatOpenAI
-
-        chat = ChatOpenAI(
-            base_url=self.base_url,
-            model=self.model,
-            api_key=self.api_key,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            request_timeout=self.request_timeout_s,
-        )
-        agent = create_deep_agent(
-            model=chat,
-            tools=[],
-            system_prompt=system_prompt,
-            middleware=[
-                ToolRetryMiddleware(
-                    max_retries=self.max_retries,
-                    backoff_factor=self.backoff_factor,
-                    initial_delay=self.initial_delay,
-                )
-            ],
-        )
-        result = await maybe_wait_for(
-            agent.ainvoke({"messages": [{"role": "user", "content": user_content}]}),
-            self.request_timeout_s,
-        )
-        for msg in reversed(result.get("messages", [])):
-            cls_name = msg.__class__.__name__
-            if cls_name == "AIMessage":
-                return str(msg.content).strip()
-            if isinstance(msg, dict) and msg.get("role") == "assistant":
-                return str(msg.get("content", "")).strip()
-        raise RuntimeError("No assistant response in deepagent result")
 
 
 def ensure_dir(path: str) -> None:
@@ -95,12 +45,6 @@ def normalize_timeout(value: Optional[float]) -> Optional[float]:
     except Exception:
         return None
     return v if v > 0 else None
-
-
-async def reset_subagents() -> None:
-    async with _subagent_lock:
-        global _cached_subagents
-        _cached_subagents = None
 
 
 def is_stream_error(err: Exception) -> bool:
@@ -231,19 +175,6 @@ def extract_messages(agent_result: Dict[str, Any]) -> List[Dict[str, Any]]:
     return messages
 
 
-def extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
-    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if not match:
-        return None
-    try:
-        parsed = json.loads(match.group(0))
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        return None
-    return None
-
-
 def load_memory_bank(path: str) -> Dict[str, Any]:
     if not os.path.exists(path):
         return {"meta": {}, "experiences": []}
@@ -264,26 +195,32 @@ def save_memory_bank(path: str, memory_bank: Dict[str, Any]) -> None:
 
 
 def render_memory_markdown(memory_bank: Dict[str, Any]) -> str:
+    """Render memory bank as markdown (legacy format, for backward compat)."""
     lines: List[str] = ["# Training-Free GRPO Online Memory", ""]
     experiences = memory_bank.get("experiences", [])
     for idx, item in enumerate(experiences, start=1):
-        score = item.get("score", {})
-        overall = score.get("overall_score", 0.0)
+        score = item.get("score", 0.0)
         lines.extend(
             [
                 f"## Experience {idx}",
+                f"- id: {item.get('id', 'N/A')}",
                 f"- prompt_id: {item.get('prompt_id')}",
-                f"- attempt_id: {item.get('attempt_id')}",
-                f"- overall_score: {overall}",
+                f"- overall_score: {score}",
                 "",
                 "### Summary",
-                str(item.get("summary", {}).get("one_paragraph_summary", "")),
+                str(item.get("summary", "")),
                 "",
-                "### Checklist",
+                "### Principles",
             ]
         )
-        for c in item.get("summary", {}).get("checklist", []):
-            lines.append(f"- {c}")
+        for p in item.get("principles", []):
+            lines.append(f"- {p}")
+        lines.extend(["", "### Dos"])
+        for d in item.get("dos", []):
+            lines.append(f"- {d}")
+        lines.extend(["", "### Donts"])
+        for d in item.get("donts", []):
+            lines.append(f"- {d}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -296,172 +233,20 @@ def build_online_system_prompt(
     if not experiences or max_experiences_in_prompt <= 0:
         return base_prompt
     tail = experiences[-max_experiences_in_prompt:]
-    lines = [base_prompt.strip(), "", "【Online 经验库（按时间更新）】"]
+    lines = [base_prompt.strip()]
     for idx, item in enumerate(tail, start=1):
-        score = item.get("score", {})
-        summary = item.get("summary", {})
+        score = item.get("score", 0.0)
         lines.append(
-            f"{idx}. prompt_id={item.get('prompt_id')}, attempt_id={item.get('attempt_id')}, overall_score={score.get('overall_score', 0.0)}"
+            f"{idx}. prompt_id={item.get('prompt_id')}, id={item.get('id', 'N/A')}, score={score}"
         )
-        text = str(summary.get("one_paragraph_summary", "")).strip()
-        if text:
-            lines.append(f"   - 总结: {text}")
-        checklist = summary.get("checklist", [])
-        if isinstance(checklist, list):
-            for c in checklist[:5]:
-                lines.append(f"   - 检查项: {c}")
+        summary = str(item.get("summary", "")).strip()
+        if summary:
+            lines.append(f"   - 总结: {summary}")
+        for p in item.get("principles", [])[:5]:
+            lines.append(f"   - 原则: {p}")
     lines.append("请优先遵守上述经验，避免重复失败模式。")
     return "\n".join(lines).strip()
 
-
-def build_score_prompt(traj: Dict[str, Any]) -> Dict[str, str]:
-    rubric = (
-        "你是严格评审。请根据任务完成度、正确性、清晰度、鲁棒性、冗余度对轨迹评分。"
-        "返回严格 JSON，不要额外文本。"
-    )
-    user_content = {
-        "instruction": "请评分并解释。",
-        "trajectory": traj.get("messages", []),
-        "output_schema": {
-            "overall_score": "0-10 float",
-            "task_completion": "0-10 float",
-            "correctness": "0-10 float",
-            "clarity": "0-10 float",
-            "robustness": "0-10 float",
-            "conciseness": "0-10 float",
-            "pros": ["string"],
-            "cons": ["string"],
-            "brief_reason": "string",
-        },
-    }
-    return {"system": rubric, "user": json.dumps(user_content, ensure_ascii=False)}
-
-
-def build_single_experience_prompt(
-    trajectory: Dict[str, Any], score: Dict[str, Any]
-) -> Dict[str, str]:
-    system = (
-        "你是经验提炼器。基于单条轨迹及其评分，提炼下一轮可执行经验。"
-        "仅返回严格 JSON，不要额外文本。"
-    )
-    payload = {
-        "task": "提炼单条经验并用于下一轮 system prompt",
-        "trajectory": {
-            "prompt": trajectory.get("prompt", ""),
-            "response": trajectory.get("response", ""),
-            "messages": trajectory.get("messages", []),
-        },
-        "score": score,
-        "output_schema": {
-            "principles": ["string"],
-            "dos": ["string"],
-            "donts": ["string"],
-            "failure_patterns": ["string"],
-            "checklist": ["string"],
-            "one_paragraph_summary": "string",
-        },
-    }
-    return {"system": system, "user": json.dumps(payload, ensure_ascii=False)}
-
-
-def build_batch_experience_prompt(
-    prompt_id: int,
-    prompt: str,
-    trajectories: List[Dict[str, Any]],
-) -> Dict[str, str]:
-    system = (
-        "你是经验提炼器。基于同一 prompt 的多条轨迹及其评分，提炼一次可执行经验。"
-        "仅返回严格 JSON，不要额外文本。"
-    )
-    payload = {
-        "task": "提炼该 prompt 的合并经验并用于下一轮 system prompt",
-        "prompt_id": prompt_id,
-        "prompt": prompt,
-        "trajectories": [
-            {
-                "attempt_id": t.get("attempt_id"),
-                "response": t.get("response", ""),
-                "messages": t.get("messages", []),
-                "score": t.get("score", {}),
-            }
-            for t in trajectories
-        ],
-        "output_schema": {
-            "principles": ["string"],
-            "dos": ["string"],
-            "donts": ["string"],
-            "failure_patterns": ["string"],
-            "checklist": ["string"],
-            "one_paragraph_summary": "string",
-        },
-    }
-    return {"system": system, "user": json.dumps(payload, ensure_ascii=False)}
-
-
-async def score_trajectory(
-    judge_client: DeepAgentClient, trajectory: Dict[str, Any]
-) -> Dict[str, Any]:
-    prompt = build_score_prompt(trajectory)
-    raw = await judge_client.chat(prompt["system"], prompt["user"])
-    parsed = extract_first_json_object(raw)
-    if parsed is None:
-        parsed = {
-            "overall_score": 0.0,
-            "task_completion": 0.0,
-            "correctness": 0.0,
-            "clarity": 0.0,
-            "robustness": 0.0,
-            "conciseness": 0.0,
-            "pros": [],
-            "cons": ["judge_output_not_json"],
-            "brief_reason": raw[:300],
-        }
-    return parsed
-
-
-async def summarize_single_experience(
-    summary_client: DeepAgentClient,
-    trajectory: Dict[str, Any],
-    score: Dict[str, Any],
-) -> Dict[str, Any]:
-    prompt = build_single_experience_prompt(trajectory=trajectory, score=score)
-    raw = await summary_client.chat(prompt["system"], prompt["user"])
-    parsed = extract_first_json_object(raw)
-    if parsed is None:
-        parsed = {
-            "principles": [],
-            "dos": [],
-            "donts": [],
-            "failure_patterns": ["summary_output_not_json"],
-            "checklist": [],
-            "one_paragraph_summary": raw[:800],
-        }
-    return parsed
-
-
-async def summarize_batch_experience(
-    summary_client: DeepAgentClient,
-    prompt_id: int,
-    prompt: str,
-    scored_trajectories: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    prompt_pack = build_batch_experience_prompt(
-        prompt_id=prompt_id,
-        prompt=prompt,
-        trajectories=scored_trajectories,
-    )
-    raw = await summary_client.chat(prompt_pack["system"], prompt_pack["user"])
-    parsed = extract_first_json_object(raw)
-    if parsed is None:
-        parsed = {
-            "principles": [],
-            "dos": [],
-            "donts": [],
-            "failure_patterns": ["summary_output_not_json"],
-            "checklist": [],
-            "one_paragraph_summary": raw[:800],
-        }
-    return parsed
 
 
 def resolve_base_system_prompt(system_prompt: str) -> str:
@@ -483,8 +268,7 @@ async def collect_trajectories_online(
     samples_per_prompt: int,
     rebuild_agent_every: int,
     base_system_prompt: str,
-    judge_client: DeepAgentClient,
-    summary_client: DeepAgentClient,
+    judge_agent: Any,
     max_experiences_in_prompt: int,
     attempt_timeout_s: Optional[float],
     cleanup_timeout_s: Optional[float],
@@ -525,7 +309,6 @@ async def collect_trajectories_online(
             result = None
             retry_delay = max(0.0, attempt_retry_delay_s)
             for retry_idx in range(max(0, attempt_retries) + 1):
-                # Initialize simulation before each attempt
                 if init_before_attempt is not None:
                     try:
                         await maybe_wait_for(init_before_attempt(), cleanup_timeout_s)
@@ -538,7 +321,10 @@ async def collect_trajectories_online(
                         or rebuild_agent_every > 0
                         and attempt_since_rebuild >= rebuild_agent_every
                     ):
-                        agent = await agent_builder(current_system_prompt)
+                        agent = await agent_builder(
+                            system_prompt=current_system_prompt,
+                            experiences=memory_bank["experiences"],
+                        )
                         attempt_since_rebuild = 0
                     result = await maybe_wait_for(
                         agent.ainvoke(
@@ -557,7 +343,8 @@ async def collect_trajectories_online(
                         f"[collect] failed prompt={prompt_id} attempt={attempt_id} retry={retry_idx}: {e}"
                     )
                     if is_stream_error(e):
-                        await reset_subagents()
+                        from tools.SubAgentTool import reset_cached_mcp_tools
+                        reset_cached_mcp_tools()
                     agent = None
                 finally:
                     if cleanup_after_attempt is not None:
@@ -605,14 +392,20 @@ async def collect_trajectories_online(
         if not pending_for_prompt:
             continue
 
-        scored_for_prompt: List[Dict[str, Any]] = []
+        # Score each trajectory with the judge agent (which also updates memory)
         for trajectory in pending_for_prompt:
             key = (trajectory["prompt_id"], trajectory["attempt_id"])
             if key in scored_keys:
                 continue
 
-            score = await score_trajectory(
-                judge_client=judge_client, trajectory=trajectory
+            score = await score_and_update_memory(
+                agent=judge_agent,
+                prompt_id=trajectory["prompt_id"],
+                attempt_id=trajectory["attempt_id"],
+                prompt=trajectory["prompt"],
+                messages=trajectory["messages"],
+                memory_json_path=memory_json_path,
+                request_timeout_s=attempt_timeout_s,
             )
             score_record: Dict[str, Any] = {
                 "prompt_id": trajectory["prompt_id"],
@@ -622,10 +415,8 @@ async def collect_trajectories_online(
                 "response": trajectory["response"],
                 "score": score,
                 "meta": {
-                    "model": judge_client.model,
                     "created_at": int(time.time()),
-                    "method": "deep_agent_online_memory_judge",
-                    "judge_temperature": judge_client.temperature,
+                    "method": "judge_agent_with_experience_tools",
                 },
             }
             append_jsonl(score_path, score_record)
@@ -633,47 +424,17 @@ async def collect_trajectories_online(
             print(
                 f"[score] saved prompt={trajectory['prompt_id']} attempt={trajectory['attempt_id']}"
             )
-            scored_item = dict(trajectory)
-            scored_item["score"] = score
-            scored_for_prompt.append(scored_item)
 
-        if scored_for_prompt:
-            summary = await summarize_batch_experience(
-                summary_client=summary_client,
-                prompt_id=prompt_id,
-                prompt=prompt,
-                scored_trajectories=scored_for_prompt,
-            )
-            overall_scores = [
-                float(t.get("score", {}).get("overall_score", 0.0))
-                for t in scored_for_prompt
-            ]
-            avg_overall = (
-                sum(overall_scores) / len(overall_scores)
-                if overall_scores
-                else 0.0
-            )
-            experience_item = {
-                "prompt_id": prompt_id,
-                "attempt_id": -1,
-                "score": {"overall_score": avg_overall},
-                "summary": summary,
-                "created_at": int(time.time()),
-                "meta": {"aggregate_of_attempts": [t.get("attempt_id") for t in scored_for_prompt]},
-            }
-            memory_bank["meta"] = {
-                "method": "training_free_grpo_online_memory",
-                "updated_at": int(time.time()),
-                "source_trajectory_file": output_path,
-                "source_score_file": score_path,
-            }
-            memory_bank["experiences"].append(experience_item)
-            save_memory_bank(memory_json_path, memory_bank)
-            with open(memory_md_path, "w", encoding="utf-8") as f:
-                f.write(render_memory_markdown(memory_bank))
-            print(
-                f"[memory] appended experience prompt={prompt_id} attempts={experience_item['meta']['aggregate_of_attempts']}; total={len(memory_bank['experiences'])}"
-            )
+            # Reload memory immediately so subsequent attempts of the SAME prompt
+            # can see the newly learned experiences
+            memory_bank = load_memory_bank(memory_json_path)
+
+        # Persist updated memory as markdown
+        with open(memory_md_path, "w", encoding="utf-8") as f:
+            f.write(render_memory_markdown(memory_bank))
+        print(
+            f"[memory] updated after prompt={prompt_id}; total={len(memory_bank['experiences'])}"
+        )
 
 
 async def build_agent(
@@ -685,17 +446,14 @@ async def build_agent(
     backoff_factor: float,
     initial_delay: float,
     request_timeout_s: Optional[float],
+    experiences: List[Dict[str, Any]] | None = None,
 ) -> Any:
     from deepagents import create_deep_agent
     from langchain.agents.middleware import ToolRetryMiddleware
     from langchain_openai import ChatOpenAI
     from tools.SubAgentTool import init_subagents
 
-    async with _subagent_lock:
-        global _cached_subagents
-        if _cached_subagents is None:
-            _cached_subagents = list(await init_subagents())
-    subagents = _cached_subagents
+    subagents = list(await init_subagents(experiences=experiences or []))
 
     chat = ChatOpenAI(
         base_url=base_url,
@@ -769,11 +527,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backoff_factor", type=float, default=2.0)
     parser.add_argument("--initial_delay", type=float, default=1.0)
     parser.add_argument("--judge_model", type=str, default="")
-    parser.add_argument("--summary_model", type=str, default="")
     parser.add_argument("--judge_temperature", type=float, default=0.0)
-    parser.add_argument("--summary_temperature", type=float, default=0.2)
     parser.add_argument("--judge_max_tokens", type=int, default=1024)
-    parser.add_argument("--summary_max_tokens", type=int, default=1024)
     parser.add_argument("--max_experiences_in_prompt", type=int, default=20)
     parser.add_argument(
         "--request_timeout_s",
@@ -846,7 +601,10 @@ async def async_main() -> None:
     prompts = load_prompts(args.prompts, args.max_prompts)
     base_system_prompt = resolve_base_system_prompt(args.system_prompt)
 
-    async def agent_builder(system_prompt: str) -> Any:
+    async def agent_builder(
+        system_prompt: str,
+        experiences: list | None = None,
+    ) -> Any:
         return await build_agent(
             base_url=args.base_url,
             model=args.model,
@@ -856,31 +614,31 @@ async def async_main() -> None:
             backoff_factor=args.backoff_factor,
             initial_delay=args.initial_delay,
             request_timeout_s=request_timeout_s,
+            experiences=experiences,
         )
 
     judge_model = args.judge_model.strip() or args.model
-    summary_model = args.summary_model.strip() or args.model
-    judge_client = DeepAgentClient(
+    from langchain.agents.middleware import ToolRetryMiddleware
+    from langchain_openai import ChatOpenAI
+
+    judge_chat = ChatOpenAI(
         base_url=args.base_url,
         model=judge_model,
         api_key=args.api_key,
-        max_retries=args.max_retries,
-        backoff_factor=args.backoff_factor,
-        initial_delay=args.initial_delay,
         temperature=args.judge_temperature,
         max_tokens=args.judge_max_tokens,
-        request_timeout_s=request_timeout_s,
+        request_timeout=request_timeout_s,
     )
-    summary_client = DeepAgentClient(
-        base_url=args.base_url,
-        model=summary_model,
-        api_key=args.api_key,
-        max_retries=args.max_retries,
-        backoff_factor=args.backoff_factor,
-        initial_delay=args.initial_delay,
-        temperature=args.summary_temperature,
-        max_tokens=args.summary_max_tokens,
-        request_timeout_s=request_timeout_s,
+    judge_agent = await build_judge_agent(
+        model=judge_chat,
+        tools=JUDGE_EXPERIENCE_TOOLS,
+        middleware=[
+            ToolRetryMiddleware(
+                max_retries=args.max_retries,
+                backoff_factor=args.backoff_factor,
+                initial_delay=args.initial_delay,
+            )
+        ],
     )
 
     cleanup_hook = None
@@ -908,8 +666,7 @@ async def async_main() -> None:
                 samples_per_prompt=args.samples_per_prompt,
                 rebuild_agent_every=REBUILD_AGENT_EVERY,
                 base_system_prompt=base_system_prompt,
-                judge_client=judge_client,
-                summary_client=summary_client,
+                judge_agent=judge_agent,
                 max_experiences_in_prompt=args.max_experiences_in_prompt,
                 attempt_timeout_s=attempt_timeout_s,
                 cleanup_timeout_s=cleanup_timeout_s,
@@ -931,8 +688,7 @@ async def async_main() -> None:
             samples_per_prompt=args.samples_per_prompt,
             rebuild_agent_every=REBUILD_AGENT_EVERY,
             base_system_prompt=base_system_prompt,
-            judge_client=judge_client,
-            summary_client=summary_client,
+            judge_agent=judge_agent,
             max_experiences_in_prompt=args.max_experiences_in_prompt,
             attempt_timeout_s=attempt_timeout_s,
             cleanup_timeout_s=cleanup_timeout_s,

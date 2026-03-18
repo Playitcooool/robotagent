@@ -30,6 +30,16 @@ with open(
 ) as f:
     config = yaml.load(f.read(), yaml.FullLoader)
 
+# ---------------------------------------------------------------------------
+# Cached MCP tools and model clients (expensive to initialize)
+# ---------------------------------------------------------------------------
+
+_cached_mcp_tools: list | None = None
+_cached_analysis_tools: list | None = None
+_cached_analysis_chat: "ChatOpenAI | None" = None
+_cached_simulation_chat: "ChatOpenAI | None" = None
+_mcp_tools_lock = asyncio.Lock()
+
 
 def _resolve_mcp_service_urls() -> dict[str, str]:
     """Resolve MCP endpoints from config with backward compatibility."""
@@ -73,24 +83,65 @@ def _resolve_mcp_service_urls() -> dict[str, str]:
     return urls
 
 
-async def init_subagents():
+def reset_cached_mcp_tools() -> None:
+    """Reset cached MCP tools and simulation chat. Call on stream errors to force reconnect."""
+    global _cached_mcp_tools, _cached_simulation_chat
+    _cached_mcp_tools = None
+    _cached_simulation_chat = None
+
+
+async def init_subagents(
+    experiences: list | None = None,
+    max_experiences_in_subagent: int = 10,
+):
+    """
+    Initialize subagents with optional experience injection.
+
+    MCP tools and model clients are cached globally (expensive to reconnect).
+    Agent graphs are rebuilt every call with the current experiences (cheap).
+
+    Args:
+        experiences: List of experience dicts to inject into subagent system prompts.
+        max_experiences_in_subagent: Max experiences to inject per subagent.
+    """
     subagents = []
+    experiences = experiences or []
 
-    analysis_chat = ChatOpenAI(
-        base_url=config.get("analysis_model_url", config["model_url"]),
-        model=config.get("analysis_llm", config["llm"]),
-        api_key=config.get("analysis_api_key", config.get("api_key", "no_need")),
-    )
-    analysis_tool = []
-    for func_name in AnalysisTool.__all__:
-        function = getattr(AnalysisTool, func_name)
-        analysis_tool.append(function)
+    # Build experience context for subagents
+    def _build_exp_context(exps: list) -> str:
+        if not exps:
+            return ""
+        lines = ["", "【历史经验（请遵守）】"]
+        for exp in exps[-max_experiences_in_subagent:]:
+            lines.append(f"- prompt_id={exp.get('prompt_id')}, score={exp.get('score', 0.0)}")
+            s = str(exp.get("summary", "")).strip()
+            if s:
+                lines.append(f"  总结: {s}")
+            for p in exp.get("principles", [])[:3]:
+                lines.append(f"  原则: {p}")
+        return "\n".join(lines)
+
+    # Use cached analysis tools/client if available
+    global _cached_analysis_tools, _cached_analysis_chat
+    if _cached_analysis_tools is None:
+        _cached_analysis_tools = []
+        for func_name in AnalysisTool.__all__:
+            function = getattr(AnalysisTool, func_name)
+            _cached_analysis_tools.append(function)
+    if _cached_analysis_chat is None:
+        _cached_analysis_chat = ChatOpenAI(
+            base_url=config.get("analysis_model_url", config["model_url"]),
+            model=config.get("analysis_llm", config["llm"]),
+            api_key=config.get("analysis_api_key", config.get("api_key", "no_need")),
+        )
+
+    # Rebuild analysis agent graph with current experiences
+    analysis_system = AnalysisAgentPrompt.SYSTEM_PROMPT + _build_exp_context(experiences)
     analysis_graph = create_agent(
-        model=analysis_chat,
-        tools=analysis_tool,
-        system_prompt=AnalysisAgentPrompt.SYSTEM_PROMPT,
+        model=_cached_analysis_chat,
+        tools=_cached_analysis_tools,
+        system_prompt=analysis_system,
     )
-
     analysis_agent = CompiledSubAgent(
         name="data-analyzer",
         description="Specialized agent for complex data analysis tasks",
@@ -107,12 +158,14 @@ async def init_subagents():
         logger.info("Simulation subagent disabled by DISABLE_SIM_SUBAGENT")
         return tuple(subagents)
 
-    try:
+    # Cache MCP tools (expensive, loaded once)
+    global _cached_mcp_tools, _cached_simulation_chat
+    if _cached_mcp_tools is None:
         max_retries = int(os.environ.get("SIM_MCP_MAX_RETRIES", "8"))
         retry_delay_s = float(os.environ.get("SIM_MCP_RETRY_DELAY_SECONDS", "1.0"))
         service_urls = _resolve_mcp_service_urls()
         logger.info(f"MCP service endpoints: {service_urls}")
-        simulation_tools = []
+        _cached_mcp_tools = []
         loaded_services = []
         errors = {}
 
@@ -140,37 +193,36 @@ async def init_subagents():
                         await asyncio.sleep(retry_delay_s)
 
             if service_tools:
-                simulation_tools.extend(service_tools)
+                _cached_mcp_tools.extend(service_tools)
                 loaded_services.append(service_name)
             else:
                 errors[service_name] = str(last_error)
 
-        if not simulation_tools:
-            raise RuntimeError(
-                f"Simulation MCP unavailable: {errors}"
-            )
-
+        if not _cached_mcp_tools:
+            raise RuntimeError(f"Simulation MCP unavailable: {errors}")
         logger.info(
-            f"Simulation tools loaded from services={loaded_services}, total={len(simulation_tools)}"
+            f"MCP tools loaded from services={loaded_services}, total={len(_cached_mcp_tools)}"
         )
 
-        simulation_chat = ChatOpenAI(
+    if _cached_simulation_chat is None:
+        _cached_simulation_chat = ChatOpenAI(
             base_url=config.get("simulation_model_url", config["model_url"]),
             model=config.get("simulation_llm", config["llm"]),
             api_key=config.get("simulation_api_key", config.get("api_key", "no_need")),
         )
-        simulation_graph = create_agent(
-            model=simulation_chat,
-            tools=simulation_tools,
-            system_prompt=SimulationAgentPrompt.SYSTEM_PROMPT,
-        )
-        simulation_agent = CompiledSubAgent(
-            name="simulator",
-            description="Specialized agent for executing PyBullet and Gazebo simulations",
-            runnable=simulation_graph,
-        )
-        subagents.append(simulation_agent)
-    except Exception as e:
-        logger.warning(f"Simulation subagent unavailable, continue without it: {str(e)}")
+
+    # Rebuild simulation agent graph with current experiences
+    sim_system = SimulationAgentPrompt.SYSTEM_PROMPT + _build_exp_context(experiences)
+    simulation_graph = create_agent(
+        model=_cached_simulation_chat,
+        tools=_cached_mcp_tools,
+        system_prompt=sim_system,
+    )
+    simulation_agent = CompiledSubAgent(
+        name="simulator",
+        description="Specialized agent for executing PyBullet and Gazebo simulations",
+        runnable=simulation_graph,
+    )
+    subagents.append(simulation_agent)
 
     return tuple(subagents)
