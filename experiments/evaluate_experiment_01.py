@@ -364,12 +364,11 @@ def main():
 
     # 加载完整配置（包含模型配置）
     full_config = load_config_full()
-    model_config = full_config.get("model", {})
 
-    # 初始化 Agent LLM
-    agent_base_url = model_config.get("url", "https://api.deepseek.com")
-    agent_model = model_config.get("llm", "deepseek-chat")
-    agent_api_key = model_config.get("api_key", "")
+    # 初始化 Agent LLM (从根级别读取)
+    agent_base_url = full_config.get("model_url", "https://api.deepseek.com")
+    agent_model = full_config.get("llm", "deepseek-chat")
+    agent_api_key = full_config.get("api_key", "")
 
     # 创建 Agent
     print(f"Creating agent with model: {agent_model} @ {agent_base_url}")
