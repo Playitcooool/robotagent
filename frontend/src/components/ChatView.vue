@@ -43,7 +43,7 @@
           </div>
 
           <!-- markdown-rendered message -->
-          <div v-else :class="['bubble', isSubagent(m) ? 'subagent-bubble' : '']">
+          <div v-else :class="['bubble', isSubagent(m) ? 'subagent-bubble' : '', isErrorMessage(m) ? 'error-msg' : '']">
             <!-- Message copy button (assistant only, appears on hover) -->
             <button
               v-if="m.role === 'assistant' && m.text"
@@ -71,6 +71,9 @@
                     v-if="m.role === 'assistant' && m.thinking"
                     :done="Boolean(m.thinkingDone)"
                   />
+                  <div v-if="m.role === 'assistant' && m.thinking" class="thinking-content">
+                    {{ truncateThinking(m.thinking) }}
+                  </div>
                   <!-- Message copy button for subagent -->
                   <button
                     v-if="m.role === 'assistant' && m.text"
@@ -86,7 +89,7 @@
                   </button>
                   <div
                     class="markdown answer"
-                    v-html="renderMarkdown(m.text)"
+                    v-html="getCachedRender(m.id, m.text)"
                     @click="handleMarkdownClick"
                     role="presentation"
                   ></div>
@@ -151,6 +154,9 @@
                 v-if="m.role === 'assistant' && m.thinking"
                 :done="Boolean(m.thinkingDone)"
               />
+              <div v-if="m.role === 'assistant' && m.thinking" class="thinking-content">
+                {{ truncateThinking(m.thinking) }}
+              </div>
               <!-- Message copy button -->
               <button
                 v-if="m.role === 'assistant' && m.text"
@@ -166,7 +172,7 @@
               </button>
               <div
                 class="markdown answer"
-                v-html="renderMarkdown(m.text)"
+                v-html="getCachedRender(m.id, m.text)"
                 @click="handleMarkdownClick"
                 role="presentation"
               ></div>
@@ -347,6 +353,8 @@ export default {
   emits: ['sendMessage'],
   setup (props, { emit }) {
     const markdownCache = new Map()
+    // Per-message rendered HTML cache: msgId -> { version, html }
+    const renderedCache = new Map()
     const text = ref('')
     const collapsedSearchIds = ref(new Set())
     const lightboxUrl = ref('')
@@ -403,6 +411,41 @@ export default {
         markdownCache.delete(oldestKey)
       }
       return rendered
+    }
+
+    // Per-message cached rendering with streaming debounce
+    // Caches rendered HTML per msgId; during active streaming debounces re-renders to 300ms
+    const pendingRenders = {} // msgId -> timer
+
+    function getCachedRender (msgId, text) {
+      const raw = String(text || '')
+      if (!raw) return ''
+      // Cache hit
+      if (renderedCache.has(msgId) && renderedCache.get(msgId).raw === raw) {
+        return renderedCache.get(msgId).html
+      }
+      // Debounce re-renders during streaming (when cache exists but text changed)
+      if (renderedCache.has(msgId)) {
+        if (pendingRenders[msgId]) return renderedCache.get(msgId).html
+        pendingRenders[msgId] = setTimeout(() => {
+          const cached = renderedCache.get(msgId)
+          if (cached) {
+            const freshHtml = renderMarkdown(cached.raw)
+            cached.html = freshHtml
+          }
+          delete pendingRenders[msgId]
+        }, 300)
+        // Return stale HTML while debouncing
+        return renderedCache.get(msgId).html
+      }
+      // No cache — render immediately
+      const html = renderMarkdown(raw)
+      renderedCache.set(msgId, { raw, html })
+      if (renderedCache.size > 100) {
+        const firstKey = renderedCache.keys().next().value
+        renderedCache.delete(firstKey)
+      }
+      return html
     }
 
     function preprocessMarkdown (raw) {
@@ -491,6 +534,11 @@ export default {
       return '🧠'
     }
 
+    function isErrorMessage (msg) {
+      const text = String(msg?.text || '')
+      return text.startsWith('[后端错误]') || text.startsWith('[网络错误]') || text.startsWith('[错误]')
+    }
+
     function isSubagent (msg) {
       if (!msg || msg.role !== 'assistant') return false
       return agentKey(msg.agent) !== 'main'
@@ -543,6 +591,14 @@ export default {
           document.body.style.overflow = 'hidden'
         })
       }
+    }
+
+    function truncateThinking (text) {
+      const s = String(text || '')
+      // Show up to 3 lines, with ellipsis if longer
+      const lines = s.split('\n').filter(l => l.trim())
+      if (lines.length <= 3) return lines.join('\n')
+      return lines.slice(0, 3).join('\n') + '\n…'
     }
 
     function closeLightbox () {
@@ -628,18 +684,23 @@ export default {
       document.removeEventListener('click', handleGlobalClick)
       document.removeEventListener('keydown', handleGlobalKeydown)
       document.removeEventListener('click', handleCodeCopy)
+      for (const tid of Object.values(pendingRenders)) {
+        clearTimeout(tid)
+      }
+      for (const k in pendingRenders) {
+        delete pendingRenders[k]
+      }
     })
 
     watch(
-      () => props.conversation,
+      () => props.conversation.map(item => `${item.id}:${item.role}:${String(item.text || '').slice(0, 40)}`).join('|'),
       (next) => {
-        if (!Array.isArray(next)) return
-        const firstAssistant = next.find(item => String(item?.role || '') === 'assistant' && String(item?.text || '').trim())
+        const firstAssistant = props.conversation.find(item => String(item?.role || '') === 'assistant' && String(item?.text || '').trim())
         if (firstAssistant) {
           landingGreeting.value = String(firstAssistant.text)
         }
       },
-      { immediate: true, deep: true }
+      { immediate: true }
     )
 
     return {
@@ -649,6 +710,7 @@ export default {
       landingGreeting,
       send,
       renderMarkdown,
+      getCachedRender,
       onKeydown,
       onCompositionStart,
       onCompositionEnd,
@@ -658,6 +720,7 @@ export default {
       agentName,
       agentIcon,
       isSubagent,
+      isErrorMessage,
       messagesRef,
       textareaRef,
       toolPickerRef,
@@ -667,6 +730,7 @@ export default {
       getDisplayedSearchResults,
       handleMarkdownClick,
       closeLightbox,
+      truncateThinking,
       lightboxUrl,
       collapsedSearchIds,
       t

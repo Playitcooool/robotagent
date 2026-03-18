@@ -297,7 +297,8 @@ export default {
     }
 
     function startTypewriter (msgId, idx, fullText, field = 'text') {
-      if (fullText.length < 100) {
+      const threshold = field === 'thinking' ? 50 : 100
+      if (fullText.length < threshold) {
         conversation.value[idx][field] = fullText
         return
       }
