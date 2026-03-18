@@ -49,12 +49,12 @@
                   ></div>
                   <div v-if="m.role === 'assistant' && Array.isArray(m.webSearchResults) && m.webSearchResults.length" class="web-sources">
                     <div class="web-sources-title">
-                      {{ m.webSearchResults[0]?.source === 'arxiv' ? '学术论文' : '搜索结果与出处' }}
+                      {{ m.webSearchResults[0]?.source === 'arxiv' || m.webSearchResults[0]?.source === 'openalex' ? '学术论文' : '搜索结果与出处' }}
                     </div>
                     <ul>
                       <li v-for="(r, idx) in m.webSearchResults" :key="`${m.id}-src-${idx}`">
                         <!-- 学术论文显示 -->
-                        <template v-if="r.source === 'arxiv'">
+                        <template v-if="r.source === 'arxiv' || r.source === 'openalex'">
                           <div class="paper-item">
                             <a :href="r.url" target="_blank" rel="noopener noreferrer" class="paper-title">{{ r.title }}</a>
                             <div class="paper-meta">
@@ -104,12 +104,12 @@
               ></div>
               <div v-if="m.role === 'assistant' && Array.isArray(m.webSearchResults) && m.webSearchResults.length" class="web-sources">
                 <div class="web-sources-title">
-                  {{ m.webSearchResults[0]?.source === 'arxiv' ? '学术论文' : '搜索结果与出处' }}
+                  {{ m.webSearchResults[0]?.source === 'arxiv' || m.webSearchResults[0]?.source === 'openalex' ? '学术论文' : '搜索结果与出处' }}
                 </div>
                 <ul>
                   <li v-for="(r, idx) in m.webSearchResults" :key="`${m.id}-src-${idx}`">
                     <!-- 学术论文显示 -->
-                    <template v-if="r.source === 'arxiv'">
+                    <template v-if="r.source === 'arxiv' || r.source === 'openalex'">
                       <div class="paper-item">
                         <a :href="r.url" target="_blank" rel="noopener noreferrer" class="paper-title">{{ r.title }}</a>
                         <div class="paper-meta">

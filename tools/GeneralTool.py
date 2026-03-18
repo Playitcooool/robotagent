@@ -815,7 +815,7 @@ def web_search(query: str, max_results: int = 5, timeout: float = 8.0) -> str:
 @tool(response_format="content")
 def academic_search(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
     """
-    Search academic papers from arXiv.
+    Search academic papers from OpenAlex and arXiv.
     Returns structured results with paper title, authors, year, abstract, and PDF links.
     Supports citation in final answers.
     """
@@ -826,64 +826,144 @@ def academic_search(query: str, max_results: int = 5, timeout: float = 15.0) -> 
     limit = max(1, min(max_results, 10))
     all_results = []
 
-    # Search arXiv API
-    arxiv_endpoint = "http://export.arxiv.org/api/query"
-    arxiv_params = {
-        "search_query": f"all:{q}",
-        "start": 0,
-        "max_results": limit,
-        "sortBy": "relevance",
+    # 1. Search OpenAlex API (published papers)
+    openalex_endpoint = "https://api.openalex.org/works"
+    openalex_params = {
+        "search": q,
+        "per_page": limit,
+        "sort": "relevance_score:desc",
+        "filter": "type:paper",
     }
 
     try:
-        resp = requests.get(arxiv_endpoint, params=arxiv_params, timeout=timeout)
+        resp = requests.get(openalex_endpoint, params=openalex_params, timeout=timeout)
         resp.raise_for_status()
+        openalex_data = resp.json()
 
-        # Parse XML response
-        import xml.etree.ElementTree as ET
-        root = ET.fromstring(resp.text)
+        for work in openalex_data.get("results", []):
+            # Extract authors
+            authors = work.get("authorships", [])[:3]
+            author_names = ", ".join([a.get("author", {}).get("display_name", "Unknown") for a in authors])
 
-        # Define namespace
-        ns = {'atom': 'http://www.w3.org/2005/Atom'}
+            # Get publication year
+            year = work.get("publication_year", "N/A")
 
-        for entry in root.findall('atom:entry', ns)[:limit]:
-            title = entry.find('atom:title', ns).text or "Unknown"
-            summary = entry.find('atom:summary', ns).text or ""
-            authors = [a.find('atom:name', ns).text for a in entry.findall('atom:author', ns)]
-            author_names = ", ".join(authors[:3])
+            # Get venue
+            venue_data = work.get("host_venue", {})
+            venue = venue_data.get("display_name", "") or venue_data.get("publisher", "")
 
-            # Get arXiv ID and PDF
-            arxiv_id = ""
+            # Get DOI and URL
+            doi = work.get("doi", "")
+            url = work.get("doi", "")
+            if not url:
+                url = work.get("id", "")
+
+            # Get abstract
+            abstract = work.get("abstract", "") or ""
+            if abstract:
+                abstract = abstract[:500] + ("..." if len(abstract) > 500 else "")
+
+            # Get citation count
+            cited_by_count = work.get("cited_by_count", 0)
+
+            # Try to get PDF URL from open access
             pdf_url = ""
-            for link in entry.findall('atom:link', ns):
-                if link.get('title') == 'pdf':
-                    pdf_url = link.get('href', '')
-                    arxiv_id = pdf_url.split('/')[-1].replace('.pdf', '')
-                    break
+            oa = work.get("open_access", {})
+            if oa.get("is_oa", False):
+                pdf_url = oa.get("pdf_url", "")
 
-            # Extract year from published date
-            published = entry.find('atom:published', ns).text or ""
-            year = published[:4] if published else "N/A"
+            # Check if also on arXiv
+            arxiv_id = ""
+            ids = work.get("ids", {})
+            if "arxiv" in ids:
+                arxiv_id = ids.get("arxiv", "")
+                if not pdf_url:
+                    pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
 
             all_results.append({
                 "type": "paper",
-                "title": title.strip(),
+                "title": work.get("title", "Unknown Title"),
                 "authors": author_names,
                 "year": year,
-                "venue": "arXiv",
-                "abstract": summary[:500] + ("..." if len(summary) > 500 else ""),
-                "url": f"https://arxiv.org/abs/{arxiv_id}",
+                "venue": venue,
+                "abstract": abstract,
+                "url": url,
                 "pdf_url": pdf_url,
-                "citations": 0,
+                "citations": cited_by_count,
                 "arxiv_id": arxiv_id,
-                "source": "arxiv",
+                "source": "openalex",
             })
     except Exception as e:
         all_results.append({
             "type": "error",
-            "source": "arxiv",
-            "error": f"arXiv search failed: {e}"
+            "source": "openalex",
+            "error": f"OpenAlex search failed: {e}"
         })
+
+    # 2. Search arXiv API as supplement
+    if len(all_results) < limit:
+        arxiv_limit = limit - len(all_results)
+        arxiv_endpoint = "http://export.arxiv.org/api/query"
+        arxiv_params = {
+            "search_query": f"all:{q}",
+            "start": 0,
+            "max_results": arxiv_limit,
+            "sortBy": "relevance",
+        }
+
+        try:
+            resp = requests.get(arxiv_endpoint, params=arxiv_params, timeout=timeout)
+            resp.raise_for_status()
+
+            # Parse XML response
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(resp.text)
+
+            # Define namespace
+            ns = {'atom': 'http://www.w3.org/2005/Atom'}
+
+            for entry in root.findall('atom:entry', ns)[:arxiv_limit]:
+                title = entry.find('atom:title', ns).text or "Unknown"
+                summary = entry.find('atom:summary', ns).text or ""
+                authors = [a.find('atom:name', ns).text for a in entry.findall('atom:author', ns)]
+                author_names = ", ".join(authors[:3])
+
+                # Get arXiv ID and PDF
+                arxiv_id = ""
+                pdf_url = ""
+                for link in entry.findall('atom:link', ns):
+                    if link.get('title') == 'pdf':
+                        pdf_url = link.get('href', '')
+                        arxiv_id = pdf_url.split('/')[-1].replace('.pdf', '')
+                        break
+
+                # Extract year from published date
+                published = entry.find('atom:published', ns).text or ""
+                year = published[:4] if published else "N/A"
+
+                # Check if already added (avoid duplicates)
+                is_dup = any(r.get('title', '').lower() == title.lower() for r in all_results)
+
+                if not is_dup:
+                    all_results.append({
+                        "type": "paper",
+                        "title": title.strip(),
+                        "authors": author_names,
+                        "year": year,
+                        "venue": "arXiv",
+                        "abstract": summary[:500] + ("..." if len(summary) > 500 else ""),
+                        "url": f"https://arxiv.org/abs/{arxiv_id}",
+                        "pdf_url": pdf_url,
+                        "citations": 0,
+                        "arxiv_id": arxiv_id,
+                        "source": "arxiv",
+                    })
+        except Exception as e:
+            all_results.append({
+                "type": "error",
+                "source": "arxiv",
+                "error": f"arXiv search failed: {e}"
+            })
 
     # Build citations for traceability
     citations = []
