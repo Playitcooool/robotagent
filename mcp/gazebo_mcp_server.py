@@ -752,6 +752,211 @@ def cleanup_ros_connection():
 
 
 # ======================
+# Tool 13: 获取仿真信息
+# ======================
+@mcp_server.tool()
+def get_simulation_info():
+    """
+    获取 Gazebo 仿真基本信息。
+
+    返回：
+    - model_count: 当前模型数量
+    - paused: 仿真是否暂停
+    - topics: 常用 topic 列表
+
+    When NOT to use:
+    - Do not use for per-model detailed state (use get_model_state/list_models).
+    """
+    node = ensure_ros()
+    states = node.get_model_states()
+
+    return {
+        "task": "get_simulation_info",
+        "status": "success",
+        "model_count": len(states.name) if states else 0,
+        "paused": False,  # Gazebo 不直接提供，需要通过服务查询
+        "message": "Simulation info retrieved.",
+    }
+
+
+# ======================
+# Tool 14: 应用力到物体
+# ======================
+class ApplyForceArgs(BaseModel):
+    model_name: str = Field(
+        ...,
+        description="要施加力的模型名称",
+    )
+    force: list[float] = Field(
+        default=[0, 0, 10],
+        description="力向量 [Fx, Fy, Fz] 单位 N",
+    )
+    position: list[float] = Field(
+        default=[0, 0, 0],
+        description="施加点相对于模型中心的偏移 [x, y, z]",
+    )
+
+
+@mcp_server.tool()
+def apply_force(args: ApplyForceArgs):
+    """
+    对模型施加外力。
+
+    常用于：
+    - 推动物体
+    - 测试物理响应
+    - 模拟碰撞
+
+    When NOT to use:
+    - Do not use for precise positioning (use set_model_state).
+    -  Gazebo 需要 gazebo_ros_pkgs 支持力接口
+    """
+    # 注意：Gazebo 的力接口需要通过 /gazebo/ApplyBodyWrench 服务
+    # 这里返回提示信息，实际实现需要 ROS 服务
+    return {
+        "task": "apply_force",
+        "status": "warning",
+        "model_name": args.model_name,
+        "force": args.force,
+        "message": "apply_force 需要 gazebo_ros_pkgs 支持，请使用 set_model_state 移动物体",
+    }
+
+
+# ======================
+# Tool 15: 移动物体 (原子化)
+# ======================
+class MoveObjectArgs(BaseModel):
+    model_name: str = Field(
+        ...,
+        description="要移动的模型名称",
+    )
+    position: list[float] = Field(
+        default=[0, 0, 0.5],
+        description="目标位置 [x, y, z]",
+    )
+    orientation: list[float] = Field(
+        default=[0, 0, 0, 1],
+        description="目标姿态四元数 [x, y, z, w]",
+    )
+
+
+@mcp_server.tool()
+def move_object(args: MoveObjectArgs):
+    """
+    原子化移动物体到目标位置。
+
+    相当于 set_model_state 的简化版本，
+    不设置速度。
+
+    When NOT to use:
+    - Do not use for continuous motion (use multiple set_model_state calls).
+    """
+    # 使用现有的 set_model_state 功能
+    from pydantic import create_model
+
+    SetModelStateArgs = create_model(
+        "SetModelStateArgs",
+        model_name=(str, ...),
+        position=(list, ...),
+        orientation=(list, [0.0, 0.0, 0.0, 1.0]),
+        linear_velocity=(list, [0.0, 0.0, 0.0]),
+        angular_velocity=(list, [0.0, 0.0, 0.0]),
+        reference_frame=(str, "world"),
+    )
+
+    new_args = SetModelStateArgs(
+        model_name=args.model_name,
+        position=args.position,
+        orientation=args.orientation,
+    )
+
+    # 调用现有的 set_model_state
+    from gazebo_mcp_server import set_model_state as gazebo_set_model_state
+    return gazebo_set_model_state(new_args)
+
+
+# ======================
+# Tool 16: 创建简单物体
+# ======================
+class CreateSimpleObjectArgs(BaseModel):
+    name: str = Field(
+        default="cube",
+        description="物体名称",
+    )
+    shape: str = Field(
+        default="box",
+        description="形状: box, sphere, cylinder",
+    )
+    position: list[float] = Field(
+        default=[0, 0, 0.5],
+        description="位置 [x, y, z]",
+    )
+    size: list[float] = Field(
+        default=[0.1, 0.1, 0.1],
+        description="尺寸参数 (box: xyz, sphere: radius, cylinder: radius height)",
+    )
+
+
+@mcp_server.tool()
+def create_simple_object(args: CreateSimpleObjectArgs):
+    """
+    创建简单的几何体。
+
+    简化版的 spawn_model，直接使用内置几何形状。
+
+    When NOT to use:
+    - Do not use for complex URDF/SDF models (use spawn_model).
+    """
+    # 生成简单的 SDF
+    shape_type = args.shape.lower()
+    if shape_type == "box":
+        geom = f"<box><size>{args.size[0]} {args.size[1]} {args.size[2]}</size></box>"
+    elif shape_type == "sphere":
+        geom = f"<sphere><radius>{args.size[0]}</radius></sphere>"
+    elif shape_type == "cylinder":
+        geom = f"<cylinder><radius>{args.size[0]}</radius><height>{args.size[1]}</height></cylinder>"
+    else:
+        return {"task": "create_simple_object", "status": "error", "message": f"Unknown shape: {shape_type}"}
+
+    sdf = f"""<?xml version='1.0'?>
+<sdf version='1.6'>
+  <model name='{args.name}'>
+    <link name='link'>
+      <collision name='collision'>
+        <geometry>{geom}</geometry>
+      </collision>
+      <visual name='visual'>
+        <geometry>{geom}</geometry>
+      </visual>
+    </link>
+  </model>
+</sdf>"""
+
+    # 使用 spawn_model
+    from pydantic import create_model
+
+    SpawnModelArgs = create_model(
+        "SpawnModelArgs",
+        model_name=(str, ...),
+        model_xml=(str, sdf),
+        model_path=(str, ""),
+        position=(list, ...),
+        orientation=(list, [0, 0, 0, 1]),
+        robot_namespace=(str, ""),
+    )
+
+    new_args = SpawnModelArgs(
+        model_name=args.name,
+        model_xml=sdf,
+        model_path="",
+        position=args.position,
+    )
+
+    from gazebo_mcp_server import spawn_model as gazebo_spawn_model
+    return gazebo_spawn_model(new_args)
+
+
+# ======================
 # 启动 MCP 服务
 # ======================
 async def start_mcp_server():

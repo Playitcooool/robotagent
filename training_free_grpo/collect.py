@@ -461,6 +461,7 @@ async def collect_trajectories_online(
     attempt_retry_delay_s: float,
     attempt_retry_backoff: float,
     cleanup_after_attempt: Callable[[], Awaitable[None]] | None = None,
+    init_before_attempt: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     finished_keys = load_finished_keys(output_path)
     scored_keys = load_finished_keys(score_path)
@@ -493,6 +494,13 @@ async def collect_trajectories_online(
             result = None
             retry_delay = max(0.0, attempt_retry_delay_s)
             for retry_idx in range(max(0, attempt_retries) + 1):
+                # Initialize simulation before each attempt
+                if init_before_attempt is not None:
+                    try:
+                        await maybe_wait_for(init_before_attempt(), cleanup_timeout_s)
+                    except Exception as e:
+                        print(f"[collect] init_before_attempt failed: {e}")
+
                 try:
                     if (
                         agent is None
@@ -845,6 +853,7 @@ async def async_main() -> None:
     )
 
     cleanup_hook = None
+    init_hook = None
     if CLEANUP_SIMULATION_PER_ATTEMPT:
         from fastmcp import Client
 
@@ -852,6 +861,9 @@ async def async_main() -> None:
 
         async def cleanup_hook() -> None:
             await mcp_client.call_tool("cleanup_simulation_tool")
+
+        async def init_hook() -> None:
+            await mcp_client.call_tool("initialize_simulation")
 
         async with mcp_client:
             await collect_trajectories_online(
@@ -874,6 +886,7 @@ async def async_main() -> None:
                 attempt_retry_delay_s=args.attempt_retry_delay_s,
                 attempt_retry_backoff=args.attempt_retry_backoff,
                 cleanup_after_attempt=cleanup_hook,
+                init_before_attempt=init_hook,
             )
     else:
         await collect_trajectories_online(
@@ -896,6 +909,7 @@ async def async_main() -> None:
             attempt_retry_delay_s=args.attempt_retry_delay_s,
             attempt_retry_backoff=args.attempt_retry_backoff,
             cleanup_after_attempt=cleanup_hook,
+            init_before_attempt=init_hook,
         )
 
 

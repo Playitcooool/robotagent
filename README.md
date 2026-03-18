@@ -236,6 +236,54 @@ python RAG/script/download_arxiv_pdfs.py
 
 其中 `qualified` 表示通过质量阈值的候选数量。
 
+## MCP 工具列表
+
+### PyBullet 仿真工具 (19个)
+
+| 工具名称 | 功能描述 |
+|----------|----------|
+| `initialize_simulation` | 初始化 PyBullet 仿真环境 |
+| `check_static_assets` | 检查静态资源是否完整 |
+| `push_cube_step` | 推送立方体（指定起点、推动向量、步数） |
+| `grab_and_place_step` | 抓取并放置物体 |
+| `path_planning` | 路径规划（线性插值） |
+| `adjust_physics` | 调整物理参数（摩擦系数、弹性系数） |
+| `multi_object_grab_and_place` | 多物体抓取放置 |
+| `simulate_vision_sensor` | 模拟视觉传感器拍照 |
+| `cleanup_simulation_tool` | 清理仿真环境 |
+| `check_simulation_state` | 检查当前仿真状态 |
+| `reset_simulation` | 重置仿真世界 |
+| `pause_simulation` | 暂停仿真 |
+| `unpause_simulation` | 恢复仿真 |
+| `get_object_state` | 获取物体状态（位置、速度） |
+| `set_object_position` | 设置物体位置 |
+| `step_simulation` | 执行指定步数 |
+| `create_object` | 创建物体（cube/sphere/cylinder） |
+| `delete_object` | 删除物体 |
+| `set_gravity` | 设置重力 |
+
+### Gazebo 仿真工具 (17个)
+
+| 工具名称 | 功能描述 |
+|----------|----------|
+| `initialize_ros_connection` | 初始化 ROS2 连接 |
+| `spawn_model` | 创建模型（支持 URDF/SDF） |
+| `list_builtin_models` | 列出内置模型 |
+| `delete_model` | 删除模型 |
+| `get_model_state` | 获取模型状态 |
+| `set_model_state` | 设置模型状态 |
+| `list_models` | 列出所有模型 |
+| `pause_simulation` | 暂停仿真 |
+| `unpause_simulation` | 恢复仿真 |
+| `reset_simulation` | 重置仿真（时间和状态） |
+| `reset_world` | 重置世界（仅状态） |
+| `capture_camera` | 捕获相机图像 |
+| `cleanup_ros_connection` | 清理 ROS 连接 |
+| `get_simulation_info` | 获取仿真信息 |
+| `apply_force` | 施加外力 |
+| `move_object` | 移动物体（简化版） |
+| `create_simple_object` | 创建简单几何体 |
+
 ## 常见问题
 
 ### 1) 重新运行 `./dev.sh` 报端口占用

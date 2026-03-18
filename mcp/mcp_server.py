@@ -25,6 +25,7 @@ mcp_server = FastMCP("pybullet_simulator")
 # ======================
 # 模拟环境实例
 simulation_instance = None
+_simulation_paused = False  # 暂停标志
 
 # 实时帧共享目录（默认放在当前 mcp 目录内，便于 Docker 挂载共享）
 DEFAULT_STREAM_DIR = Path(__file__).resolve().parent / ".sim_stream"
@@ -732,6 +733,411 @@ def check_simulation_state():
         "status": "success",
         "state_data": state_data,
         "message": "Simulation environment state checked.",
+    }
+
+
+# ======================
+# Tool: Reset Simulation
+# ======================
+class ResetSimulationArgs(BaseModel):
+    keep_objects: bool = Field(
+        default=True,
+        description="是否保留现有物体。True 保留物体但重置位置/速度，False 完全重置。",
+    )
+
+
+@mcp_server.tool()
+def reset_simulation(args: ResetSimulationArgs):
+    """
+    重置仿真世界。
+
+    可以选择完全重置或只重置物体位置和速度。
+
+    Returns:
+    - status: 操作结果
+    - message: 描述信息
+    """
+    ensure_simulation()
+
+    if args.keep_objects:
+        # 只重置位置和速度，保留物体
+        num_bodies = p.getNumBodies()
+        for body_id in range(num_bodies):
+            if body_id == 0:
+                continue  # skip plane
+            # 重置到初始位置（需要记录）或者静止
+            p.resetBasePositionAndOrientation(body_id, [0, 0, 0.5], [0, 0, 0, 1])
+            p.resetBaseVelocity(body_id, [0, 0, 0], [0, 0, 0])
+    else:
+        # 完全重置 - 删除所有非地面物体
+        num_bodies = p.getNumBodies()
+        for body_id in range(num_bodies - 1, 0, -1):
+            try:
+                p.removeBody(body_id)
+            except:
+                pass
+
+    _publish_snapshot("reset_simulation", done=True, extra={"keep_objects": args.keep_objects})
+
+    return {
+        "task": "reset_simulation",
+        "status": "success",
+        "message": "Simulation reset completed.",
+    }
+
+
+# ======================
+# Tool: Pause Simulation
+# ======================
+@mcp_server.tool()
+def pause_simulation():
+    """
+    暂停仿真。
+
+    暂停后物理不再更新，常用于：
+    - 执行检查操作
+    - 批量设置状态
+    - 调试和控制执行节奏
+
+    注意：PyBullet DIRECT模式下使用全局标志实现。
+    """
+    global _simulation_paused
+    ensure_simulation()
+    _simulation_paused = True
+
+    return {
+        "task": "pause_simulation",
+        "status": "success",
+        "message": "Simulation paused.",
+    }
+
+
+# ======================
+# Tool: Unpause Simulation
+# ======================
+@mcp_server.tool()
+def unpause_simulation():
+    """
+    恢复仿真。
+
+    与 pause_simulation 配合使用，控制仿真节奏。
+    """
+    global _simulation_paused
+    ensure_simulation()
+    _simulation_paused = False
+
+    return {
+        "task": "unpause_simulation",
+        "status": "success",
+        "message": "Simulation resumed.",
+    }
+
+
+# ======================
+# Tool: Get Object State
+# ======================
+class GetObjectStateArgs(BaseModel):
+    object_id: int = Field(
+        default=1,
+        description="物体 ID，从 check_simulation_state 获取",
+    )
+
+
+@mcp_server.tool()
+def get_object_state(args: GetObjectStateArgs):
+    """
+    获取指定物体的详细状态。
+
+    返回物体的位置、姿态、线速度和角速度。
+    常用于：
+    - 检查目标是否到达
+    - 计算偏差
+    - 验证任务完成
+
+    Returns:
+    - position: [x, y, z]
+    - orientation: [x, y, z, w] (quaternion)
+    - linear_velocity: [x, y, z]
+    - angular_velocity: [x, y, z]
+    """
+    ensure_simulation()
+
+    try:
+        pos, ori = p.getBasePositionAndOrientation(args.object_id)
+        lin_vel, ang_vel = p.getBaseVelocity(args.object_id)
+
+        return {
+            "task": "get_object_state",
+            "status": "success",
+            "object_id": args.object_id,
+            "position": list(pos),
+            "orientation": list(ori),
+            "linear_velocity": list(lin_vel),
+            "angular_velocity": list(ang_vel),
+            "message": f"Object {args.object_id} state retrieved.",
+        }
+    except Exception as e:
+        return {
+            "task": "get_object_state",
+            "status": "error",
+            "message": f"Failed to get object state: {str(e)}",
+        }
+
+
+# ======================
+# Tool: Set Object Position
+# ======================
+class SetObjectPositionArgs(BaseModel):
+    object_id: int = Field(
+        default=1,
+        description="物体 ID",
+    )
+    position: list[float] = Field(
+        default=[0.5, 0, 0.5],
+        description="目标位置 [x, y, z]",
+    )
+    orientation: list[float] = Field(
+        default=[0, 0, 0, 1],
+        description="目标姿态四元数 [x, y, z, w]，默认朝上",
+    )
+
+
+@mcp_server.tool()
+def set_object_position(args: SetObjectPositionArgs):
+    """
+    设置物体位置和姿态。
+
+    原子化操作，用于：
+    - 手动定位物体
+    - 纠正位置偏差
+    - 快速移动到目标点
+    不需要物理仿真，直接设置。
+
+    Returns:
+    - position: 设置后的位置
+    - orientation: 设置后的姿态
+    """
+    ensure_simulation()
+
+    try:
+        p.resetBasePositionAndOrientation(args.object_id, args.position, args.orientation)
+        p.resetBaseVelocity(args.object_id, [0, 0, 0], [0, 0, 0])
+
+        _publish_snapshot("set_object_position", done=False, extra={"object_id": args.object_id})
+
+        return {
+            "task": "set_object_position",
+            "status": "success",
+            "object_id": args.object_id,
+            "position": args.position,
+            "orientation": args.orientation,
+            "message": f"Object {args.object_id} moved to {args.position}",
+        }
+    except Exception as e:
+        return {
+            "task": "set_object_position",
+            "status": "error",
+            "message": f"Failed to set object position: {str(e)}",
+        }
+
+
+# ======================
+# Tool: Step Simulation (原子化步进)
+# ======================
+class StepSimulationArgs(BaseModel):
+    steps: int = Field(
+        default=1,
+        description="执行的仿真步数",
+    )
+
+
+@mcp_server.tool()
+def step_simulation(args: StepSimulationArgs):
+    """
+    执行指定步数的仿真。
+
+    原子化操作，常用于：
+    - 手动控制仿真进度
+    - 每步检查状态
+    - 实现闭环控制
+    """
+    ensure_simulation()
+
+    for _ in range(args.steps):
+        p.stepSimulation()
+
+    return {
+        "task": "step_simulation",
+        "status": "success",
+        "steps": args.steps,
+        "message": f"Executed {args.steps} simulation steps.",
+    }
+
+
+# ======================
+# Tool: Create Object
+# ======================
+class CreateObjectArgs(BaseModel):
+    object_type: str = Field(
+        default="cube",
+        description="物体类型: cube, sphere, cylinder",
+    )
+    position: list[float] = Field(
+        default=[0, 0, 0.5],
+        description="物体位置 [x, y, z]",
+    )
+    size: list[float] = Field(
+        default=[0.05, 0.05, 0.05],
+        description="物体尺寸 [x, y, z] 或半径",
+    )
+    mass: float = Field(
+        default=1.0,
+        description="物体质量 (kg)",
+    )
+    color: list[float] = Field(
+        default=[1, 0, 0, 1],
+        description="RGBA 颜色",
+    )
+
+
+@mcp_server.tool()
+def create_object(args: CreateObjectArgs):
+    """
+    创建单个物体。
+
+    可创建 cube/sphere/cylinder，常用于：
+    - 添加新物体
+    - 创建不同形状的测试对象
+    - 多物体场景搭建
+
+    Returns:
+    - object_id: 创建的物体 ID
+    - position: 初始位置
+    """
+    ensure_simulation()
+
+    size = args.size
+    col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[s/2 for s in size])
+    vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[s/2 for s in size], rgbaColor=args.color)
+
+    object_id = p.createMultiBody(
+        baseMass=args.mass,
+        baseCollisionShapeIndex=col,
+        baseVisualShapeIndex=vis,
+        basePosition=args.position,
+    )
+
+    _publish_snapshot("create_object", done=False, extra={"object_id": object_id})
+
+    return {
+        "task": "create_object",
+        "status": "success",
+        "object_id": object_id,
+        "object_type": args.object_type,
+        "position": args.position,
+        "message": f"Created {args.object_type} at {args.position} with ID {object_id}",
+    }
+
+
+# ======================
+# Tool: Delete Object
+# ======================
+class DeleteObjectArgs(BaseModel):
+    object_id: int = Field(
+        description="要删除的物体 ID",
+    )
+
+
+@mcp_server.tool()
+def delete_object(args: DeleteObjectArgs):
+    """
+    删除指定物体。
+
+    常用于：
+    - 清理不需要的物体
+    - 重置场景
+
+    Returns:
+    - deleted_id: 被删除的物体 ID
+    """
+    ensure_simulation()
+
+    try:
+        p.removeBody(args.object_id)
+        return {
+            "task": "delete_object",
+            "status": "success",
+            "deleted_id": args.object_id,
+            "message": f"Deleted object {args.object_id}",
+        }
+    except Exception as e:
+        return {
+            "task": "delete_object",
+            "status": "error",
+            "message": f"Failed to delete object: {str(e)}",
+        }
+
+
+# ======================
+# Tool: Get Simulation Info
+# ======================
+@mcp_server.tool()
+def get_simulation_info():
+    """
+    获取仿真基本信息。
+
+    返回：
+    - timestep: 当前时间步
+    - num_bodies: 物体数量
+    - gravity: 重力设置
+    - time_elapsed: 已用仿真时间
+    """
+    ensure_simulation()
+
+    params = p.getPhysicsEngineParameters()
+    return {
+        "task": "get_simulation_info",
+        "status": "success",
+        "timestep": params['fixedTimeStep'],
+        "num_bodies": p.getNumBodies(),
+        "gravity": [
+            params['gravityAccelerationX'],
+            params['gravityAccelerationY'],
+            params['gravityAccelerationZ']
+        ],
+        "message": "Simulation info retrieved.",
+    }
+
+
+# ======================
+# Tool: Set Gravity
+# ======================
+class SetGravityArgs(BaseModel):
+    gravity: list[float] = Field(
+        default=[0, 0, -9.8],
+        description="重力向量 [x, y, z]",
+    )
+
+
+@mcp_server.tool()
+def set_gravity(args: SetGravityArgs):
+    """
+    设置重力。
+
+    常用于：
+    - 模拟不同重力环境
+    - 零重力实验
+    - 月球/火星重力模拟
+    """
+    ensure_simulation()
+
+    p.setGravity(*args.gravity)
+
+    return {
+        "task": "set_gravity",
+        "status": "success",
+        "gravity": args.gravity,
+        "message": f"Gravity set to {args.gravity}",
     }
 
 
