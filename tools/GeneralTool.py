@@ -12,6 +12,11 @@ import requests
 from langchain_core.tools import tool
 
 try:
+    from tavily import TavilyClient
+except Exception:
+    TavilyClient = None
+
+try:
     from langchain_huggingface import HuggingFaceEmbeddings
 except Exception:
     HuggingFaceEmbeddings = None
@@ -43,6 +48,22 @@ QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "markdown_chunks")
 QDRANT_EMBED_MODEL = os.environ.get(
     "QDRANT_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
 )
+
+TAVILY_API_KEY = os.environ.get(
+    "TAVILY_API_KEY",
+    "",
+)
+# Load from config.yml if not set in environment
+if not TAVILY_API_KEY:
+    try:
+        import yaml
+        _cfg_path = REPO_ROOT / "config" / "config.yml"
+        with open(_cfg_path, "r", encoding="utf-8") as _f:
+            _cfg = yaml.load(_f.read(), Loader=yaml.FullLoader) or {}
+        TAVILY_API_KEY = _cfg.get("tavily", {}).get("api_key", "")
+    except Exception:
+        pass
+_tavily_client = None
 
 _qdrant_client = None
 _embedder = None
@@ -717,98 +738,70 @@ def http_get(url: str, max_chars: int = 3000, timeout: float = 8.0) -> str:
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-@tool(response_format="content")
+def _get_tavily_client():
+    """Lazy init Tavily client."""
+    global _tavily_client
+    if _tavily_client is None:
+        if not TAVILY_API_KEY:
+            raise RuntimeError("TAVILY_API_KEY not set in environment")
+        _tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
+    return _tavily_client
+
+
 def web_search(query: str, max_results: int = 5, timeout: float = 8.0) -> str:
     """
-    Search the web for recent/general information and return concise structured results.
+    Search the web for recent/general information using Tavily.
     Returns title/url/snippet to support citation in final answers.
     """
     q = " ".join((query or "").split())
     if not q:
-        return "Error: query is required."
+        return json.dumps({"query": "", "results": [], "error": "query is required"}, ensure_ascii=False, indent=2)
     limit = max(1, min(max_results, 10))
-    endpoint = "https://api.duckduckgo.com/"
-    params = {
-        "q": q,
-        "format": "json",
-        "no_html": "1",
-        "skip_disambig": "1",
-    }
+
     try:
-        resp = requests.get(endpoint, params=params, timeout=timeout)
-        resp.raise_for_status()
-        data = resp.json()
+        client = _get_tavily_client()
+        results_raw = client.search(
+            query=q,
+            max_results=limit,
+            timeout_seconds=timeout,
+            include_answer=True,
+            include_raw_content=False,
+        )
     except Exception as e:
         return json.dumps(
-            {"query": q, "results": [], "error": f"web search failed: {e}"},
+            {"query": q, "results": [], "error": f"Tavily search failed: {e}"},
             ensure_ascii=False,
             indent=2,
         )
 
     results = []
-    abstract = (data.get("AbstractText") or "").strip()
-    abstract_url = (data.get("AbstractURL") or "").strip()
-    heading = (data.get("Heading") or "").strip()
-    if abstract and abstract_url:
-        results.append(
-            {
-                "title": heading or "DuckDuckGo Abstract",
-                "url": abstract_url,
-                "snippet": abstract,
-                "source": "duckduckgo_abstract",
-            }
-        )
+    for item in (results_raw.get("results") or [])[:limit]:
+        results.append({
+            "title": item.get("title", "Unknown"),
+            "url": item.get("url", ""),
+            "snippet": item.get("content", ""),
+            "source": "tavily",
+        })
 
-    def _collect_topics(items):
-        for item in items or []:
-            if not isinstance(item, dict):
-                continue
-            if "Topics" in item and isinstance(item["Topics"], list):
-                _collect_topics(item["Topics"])
-                continue
-            text = str(item.get("Text") or "").strip()
-            url = str(item.get("FirstURL") or "").strip()
-            if not text or not url:
-                continue
-            title = text.split(" - ")[0].strip() or "Search Result"
-            results.append(
-                {
-                    "title": _clean_label(title, max_len=120),
-                    "url": url,
-                    "snippet": text,
-                    "source": "duckduckgo_related",
-                }
-            )
-
-    _collect_topics(data.get("RelatedTopics") or [])
-
-    dedup = []
-    seen = set()
-    for r in results:
-        url = r.get("url", "")
-        if not url or url in seen:
-            continue
-        seen.add(url)
-        dedup.append(r)
-        if len(dedup) >= limit:
-            break
-
-    # Build citations for better traceability
+    # Build citations
     citations = []
-    for i, r in enumerate(dedup, 1):
+    for i, r in enumerate(results, 1):
         citations.append(f"[{i}] {r.get('title', 'Unknown')}")
         citations.append(f"    URL: {r.get('url', 'N/A')}")
-        citations.append(f"    来源: {r.get('source', 'unknown')}")
+        citations.append(f"    来源: {r.get('source', 'tavily')}")
+
+    answer = results_raw.get("answer", "")
 
     payload = {
         "query": q,
-        "engine": "duckduckgo_instant_answer",
-        "returned": len(dedup),
-        "results": dedup,
+        "engine": "tavily",
+        "returned": len(results),
+        "results": results,
+        "answer": answer,
         "citations": "\n".join(citations),
     }
-    if not dedup:
-        payload["warning"] = "no results from instant answer index"
+    if not results:
+        payload["warning"] = "no results from Tavily"
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
@@ -986,6 +979,134 @@ def academic_search(query: str, max_results: int = 5, timeout: float = 15.0) -> 
         "results": all_results,
         "citations": "\n".join(citations) if citations else "No results found",
     }
+
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+# Academic keywords - queries containing these are routed to academic_search
+_ACADEMIC_KEYWORDS = {
+    "paper", "arxiv", "publication", "conference", "journal", "doi",
+    "cite", "citation", "research", "thesis", "dissertation",
+    "author", "author:", "by ", "icra", "iros", "rss", "coRL",
+    "ieee", "acm", "springer", "elsevier", "arxiv.org",
+    "proposed method", "we propose", "this paper", "our work",
+    "methodology", "experiments show", "we show",
+    "year:", "vol.", "volume", "proceedings",
+}
+
+_WEB_KEYWORDS = {
+    "news", "event", "release", "announce", "2024", "2025", "2026",
+    "latest", "recent", "today", "yesterday", "breaking",
+    "price", "buy", "amazon", "shop", "product",
+    "weather", "stock", "currency", "exchange rate",
+}
+
+
+def _should_use_academic(query: str) -> bool:
+    """Route query to academic or web search based on keywords."""
+    q = query.lower()
+    academic_score = sum(1 for kw in _ACADEMIC_KEYWORDS if kw in q)
+    web_score = sum(1 for kw in _WEB_KEYWORDS if kw in q)
+    # Explicit academic markers
+    if any(m in q for m in ["arxiv:", "doi:", "paper on", "paper about", "论文", "发表", "学术"]):
+        return True
+    return academic_score > web_score
+
+
+@tool(response_format="content")
+def search(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
+    """
+    Unified search tool that automatically routes queries to the most appropriate engine:
+    - Academic search (OpenAlex + arXiv) for research papers, publications, methodologies
+    - Web search (Tavily) for news, products, current events, general knowledge
+
+    Returns structured results with title, authors, year, URL, snippet, and source.
+    """
+    q = " ".join((query or "").split())
+    if not q:
+        return json.dumps({"query": "", "results": [], "error": "query is required"}, ensure_ascii=False, indent=2)
+
+    limit = max(1, min(max_results, 10))
+
+    if _should_use_academic(q):
+        engine = "academic (openalex + arxiv)"
+        raw = academic_search(query=q, max_results=limit, timeout=timeout)
+        try:
+            data = json.loads(raw)
+            results = []
+            for item in data.get("results", []):
+                if item.get("type") == "error":
+                    continue
+                results.append({
+                    "type": item.get("type", "paper"),
+                    "title": item.get("title", "Unknown"),
+                    "authors": item.get("authors", ""),
+                    "year": item.get("year", ""),
+                    "venue": item.get("venue", ""),
+                    "abstract": item.get("abstract", ""),
+                    "url": item.get("url", ""),
+                    "pdf_url": item.get("pdf_url", ""),
+                    "citations": item.get("citations", 0),
+                    "arxiv_id": item.get("arxiv_id", ""),
+                    "source": item.get("source", "academic"),
+                })
+        except Exception:
+            results = []
+    else:
+        engine = "web (tavily)"
+        raw = web_search(query=q, max_results=limit, timeout=timeout)
+        try:
+            data = json.loads(raw)
+            if data.get("error"):
+                return json.dumps(
+                    {"query": q, "results": [], "error": data["error"], "engine": engine},
+                    ensure_ascii=False, indent=2
+                )
+            results = []
+            for item in data.get("results", []):
+                results.append({
+                    "type": "web",
+                    "title": item.get("title", "Unknown"),
+                    "authors": "",
+                    "year": "",
+                    "venue": item.get("source", ""),
+                    "abstract": item.get("snippet", ""),
+                    "url": item.get("url", ""),
+                    "pdf_url": "",
+                    "citations": 0,
+                    "arxiv_id": "",
+                    "source": "tavily",
+                })
+        except Exception:
+            results = []
+
+    # Build citations
+    citations = []
+    for i, r in enumerate(results[:limit], 1):
+        title = r.get("title", "Unknown")[:80]
+        year = r.get("year", "N/A")
+        src = r.get("source", "unknown")
+        if r.get("type") == "paper":
+            citations.append(f"[{i}] {title} ({year})")
+            if r.get("authors"):
+                citations.append(f"    作者: {r.get('authors')}")
+        else:
+            citations.append(f"[{i}] {title}")
+        if r.get("url"):
+            citations.append(f"    URL: {r.get('url')}")
+        if r.get("pdf_url"):
+            citations.append(f"    PDF: {r.get('pdf_url')}")
+        citations.append(f"    来源: {src}")
+
+    payload = {
+        "query": q,
+        "engine": engine,
+        "returned": len(results),
+        "results": results[:limit],
+        "citations": "\n".join(citations) if citations else "No results found",
+    }
+    if not results:
+        payload["warning"] = "no results found"
 
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -1206,6 +1327,7 @@ __all__ = [
     "list_workspace_files",
     "qdrant_retrieve_context",
     "read_workspace_file",
+    "search",
     "search_workspace_text",
     "web_search",
 ]

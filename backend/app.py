@@ -1053,6 +1053,55 @@ async def chat_send(
                     return refs
                 return []
 
+            def _extract_search_refs(raw_text: str):
+                """提取 unified search 结果（包含 web 和 paper 类型）"""
+                text = _normalize_text(raw_text).strip()
+                if not text:
+                    return []
+                for parser in (json.loads, ast.literal_eval):
+                    try:
+                        parsed = parser(text)
+                    except Exception:
+                        continue
+                    if not isinstance(parsed, dict):
+                        continue
+                    results = parsed.get("results")
+                    if not isinstance(results, list):
+                        continue
+                    refs = []
+                    for item in results[:8]:
+                        if not isinstance(item, dict):
+                            continue
+                        title = _normalize_text(item.get("title") or "Search Result")
+                        url = _normalize_text(item.get("url") or "")
+                        if not url:
+                            continue
+                        # Paper type: has abstract/authors
+                        if item.get("type") == "paper":
+                            abstract = _normalize_text(item.get("abstract") or "")
+                            authors = _normalize_text(item.get("authors") or "")
+                            year = item.get("year", "")
+                            source = item.get("source", "")
+                            refs.append({
+                                "title": _truncate_text(title, max_len=120),
+                                "url": url,
+                                "snippet": _truncate_text(abstract, max_len=220),
+                                "authors": authors,
+                                "year": str(year),
+                                "source": source,
+                            })
+                        else:
+                            # Web type: has snippet
+                            snippet = _normalize_text(item.get("snippet") or "")
+                            src = item.get("source", "")
+                            refs.append({
+                                "title": _truncate_text(title, max_len=120),
+                                "url": url,
+                                "snippet": _truncate_text(snippet, max_len=220),
+                            })
+                    return refs
+                return []
+
             def _extract_rag_refs(raw_text: str):
                 text = _normalize_text(raw_text).strip()
                 if not text:
@@ -1118,9 +1167,9 @@ async def chat_send(
                 return True
 
             runtime_tool_note = (
-                "本轮可用工具：academic_search（学术论文搜索）。若问题需要搜索学术论文，请自主判断并调用 academic_search。"
+                "本轮可用工具：search（智能搜索，同时支持学术论文和网页）。请自主判断并调用 search。"
                 if academic_search_enabled
-                else "本轮禁用工具：academic_search。"
+                else "本轮禁用工具：search。"
             )
             input_messages = [
                 {"role": "system", "content": runtime_tool_note},
@@ -1399,9 +1448,12 @@ async def chat_send(
                         tool_source = _resolve_tool_source(name_msg)
                         is_web_search_tool = name_msg == "web_search"
                         is_academic_search_tool = name_msg == "academic_search"
+                        is_unified_search_tool = name_msg == "search"
                         is_rag_tool = name_msg == "qdrant_retrieve_context"
                         tool_status_text = (
-                            "学术论文搜索中..."
+                            "智能搜索中..."
+                            if is_unified_search_tool
+                            else "学术论文搜索中..."
                             if is_academic_search_tool
                             else "联网搜索中..."
                             if is_web_search_tool
@@ -1415,7 +1467,7 @@ async def chat_send(
                                     "type": "status",
                                     "text": tool_status_text,
                                     "source": tool_source,
-                                    "status_kind": "search" if (is_web_search_tool or is_academic_search_tool) else "tool",
+                                    "status_kind": "search" if (is_web_search_tool or is_academic_search_tool or is_unified_search_tool) else "tool",
                                 },
                                 ensure_ascii=False,
                             ) + "\n"
@@ -1433,6 +1485,17 @@ async def chat_send(
                                 ) + "\n"
                         if is_academic_search_tool and tool_text:
                             refs = _extract_academic_search_refs(tool_text)
+                            if refs:
+                                yield json.dumps(
+                                    {
+                                        "type": "web_search_results",
+                                        "source": "main",
+                                        "results": refs,
+                                    },
+                                    ensure_ascii=False,
+                                ) + "\n"
+                        if is_unified_search_tool and tool_text:
+                            refs = _extract_search_refs(tool_text)
                             if refs:
                                 yield json.dumps(
                                     {

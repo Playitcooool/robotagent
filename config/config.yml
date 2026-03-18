@@ -13,3 +13,6 @@ simulation_api_key: "no_need"
 mcp:
   ip: "http://localhost"
   port: "18001"
+
+tavily:
+  api_key: "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"

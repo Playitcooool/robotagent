@@ -3,7 +3,7 @@
 实验1评估脚本: Agentic 学术搜索问答系统质量评估
 
 评估使用 Agent + Academic Search 回答机器人领域问题的质量。
-创建带有 academic_search 工具的 agent，使用外部LLM Judge (DeepSeek) 进行评估。
+创建带有 search 工具的 agent，使用外部LLM Judge (DeepSeek) 进行评估。
 
 使用方式:
     python evaluate_experiment_01.py \
@@ -32,7 +32,7 @@ import seaborn as sns
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from deepagents import create_deep_agent
-from tools.GeneralTool import academic_search
+from tools.GeneralTool import search
 
 # 设置中文字体
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial Unicode MS', 'SimHei']
@@ -56,19 +56,19 @@ def load_config(config_path: str = None) -> dict:
 # ============ 配置 ============
 
 # Agent 系统提示词
-AGENT_SYSTEM_PROMPT = """你是一个专业的学术问答助手，专门回答机器人领域的学术问题。
+AGENT_SYSTEM_PROMPT = """你是一个专业的问答助手，专门回答机器人领域的问题。
 
-你可以通过调用 academic_search 工具搜索学术论文来回答问题。
-该工具会从 OpenAlex 和 arXiv 搜索相关论文。
+你可以通过调用 search 工具搜索信息来回答问题。
+该工具同时搜索网页（Tavily）和学术论文（OpenAlex + arXiv），并自动去重合并结果。
 
 请按照以下步骤回答问题：
 1. 分析用户问题，确定需要搜索的关键词
-2. 调用 academic_search 工具搜索相关论文
+2. 调用 search 工具搜索相关信息
 3. 根据搜索结果整理并回答用户问题
-4. 在回答中引用相关论文（标题、年份、作者等）
+4. 在回答中引用来源（论文标题、年份、作者或网页标题、URL）
 
 注意：
-- 请尽可能提供准确的论文信息
+- 请尽可能提供准确的信息
 - 如果搜索结果与问题不相关，请调整关键词重新搜索
 - 回答要清晰、有条理"""
 
@@ -113,7 +113,7 @@ def load_queries(path: Path):
 
 
 def create_academic_agent(base_url: str, model: str, api_key: str):
-    """创建带有 academic_search 工具的 agent"""
+    """创建带有 search 工具的 agent"""
     # 创建 LLM
     chat = ChatOpenAI(
         base_url=base_url,
@@ -123,10 +123,10 @@ def create_academic_agent(base_url: str, model: str, api_key: str):
         request_timeout=120,
     )
 
-    # 创建 agent，带有 academic_search 工具
+    # 创建 agent，带有 search 工具
     agent = create_deep_agent(
         model=chat,
-        tools=[academic_search],
+        tools=[search],
         system_prompt=AGENT_SYSTEM_PROMPT,
     )
 

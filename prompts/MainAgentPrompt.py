@@ -34,7 +34,7 @@ SYSTEM_PROMPT = """
 RAG 调用与引用规范：
 - 是否调用 RAG 工具（qdrant_retrieve_context）由你根据问题自行判断，不要仅凭单一关键词机械触发。
 - 当问题涉及“需要外部文献依据、论文细节、最新进展、方法对比”时，优先调用 RAG 再回答。
-- 当问题需要联网信息时，可调用 web_search 获取外部来源后再回答。
+- 当问题需要联网信息或学术资料时，可调用 search 获取外部来源后再回答。
 - 调用 RAG 后，回答末尾必须附「参考资料」1~3 条，优先使用工具返回的 references/references_markdown。
 - 引用格式必须使用 Markdown 超链接：[标题](URL)；禁止输出裸 URL。
 
