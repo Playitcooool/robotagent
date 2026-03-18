@@ -14,6 +14,89 @@
   --shadow-sm: 0 10px 22px rgba(0, 0, 0, 0.25);
 }
 
+/* Light theme */
+:root.light {
+  --bg: #f5f7fa;
+  --panel: #ffffff;
+  --panel-2: #f8f9fb;
+  --line: rgba(0, 0, 0, 0.08);
+  --text: #1a1a2e;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --danger: #dc2626;
+  --shadow-lg: 0 24px 50px rgba(0, 0, 0, 0.12);
+  --shadow-sm: 0 10px 22px rgba(0, 0, 0, 0.08);
+}
+
+/* Light theme overrides */
+:root.light body {
+  background:
+    radial-gradient(1200px 480px at 10% -10%, rgba(37, 99, 235, 0.08), transparent 55%),
+    radial-gradient(900px 420px at 100% 0%, rgba(16, 185, 129, 0.06), transparent 52%),
+    var(--bg);
+}
+
+:root.light .app-topbar,
+:root.light .left,
+:root.light .right {
+  background: var(--panel);
+}
+
+:root.light .center {
+  background: var(--panel-2);
+}
+
+:root.light .sidebar .item {
+  background: linear-gradient(180deg, rgba(240, 242, 247, 0.96), rgba(235, 238, 243, 0.96));
+  border-color: rgba(0, 0, 0, 0.06);
+}
+
+:root.light .sidebar .item:hover {
+  border-color: rgba(37, 99, 235, 0.3);
+}
+
+:root.light .sidebar .item.active {
+  border-color: rgba(37, 99, 235, 0.5);
+  background: #f0f4ff;
+}
+
+:root.light .bubble,
+:root.light .message.assistant .bubble {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+  color: var(--text);
+}
+
+:root.light .message.user .bubble {
+  background: #eff6ff;
+  border-color: rgba(37, 99, 235, 0.3);
+}
+
+:root.light .composer textarea {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+  color: var(--text);
+}
+
+:root.light .tool-results .body {
+  background: linear-gradient(180deg, #f8f9fb, #f1f3f5);
+}
+
+:root.light .markdown pre {
+  background: #f6f8fa;
+  color: #24292e;
+}
+
+:root.light .auth-card {
+  background: var(--panel);
+}
+
+:root.light .auth-card input {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+  color: var(--text);
+}
+
 * { box-sizing: border-box; }
 
 html,
@@ -93,6 +176,31 @@ body {
 .whoami {
   color: var(--muted);
   font-size: 12px;
+}
+
+.theme-toggle,
+.lang-toggle {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+  margin-right: 8px;
+}
+
+.theme-toggle:hover,
+.lang-toggle:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+:root.light .theme-toggle:hover,
+:root.light .lang-toggle:hover {
+  border-color: rgba(0, 0, 0, 0.18);
+  background: rgba(0, 0, 0, 0.05);
 }
 
 .logout {

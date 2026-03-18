@@ -15,18 +15,26 @@
           :class="['top-nav-btn', activeTopTab === 'about' ? 'active' : '']"
           @click="activeTopTab = 'about'"
         >
-          项目介绍
+          {{ t('about') }}
         </button>
         <button
           :class="['top-nav-btn', activeTopTab === 'chat' ? 'active' : '']"
           @click="activeTopTab = 'chat'"
         >
-          对话
+          {{ t('chat') }}
         </button>
       </div>
       <div class="topbar-right">
-        <span class="whoami">当前用户：{{ authUser.username }}</span>
-        <button class="logout" @click="onLogout">退出登录</button>
+        <!-- Language toggle -->
+        <button class="lang-toggle" @click="toggleLang" :title="t('switchLang')">
+          {{ lang === 'zh' ? 'EN' : '中' }}
+        </button>
+        <!-- Theme toggle -->
+        <button class="theme-toggle" @click="toggleTheme" :title="t('switchTheme')">
+          {{ isDark ? '☀️' : '🌙' }}
+        </button>
+        <span class="whoami">{{ t('currentUser') }}：{{ authUser.username }}</span>
+        <button class="logout" @click="onLogout">{{ t('logout') }}</button>
       </div>
     </header>
 
@@ -74,15 +82,74 @@ import AuthView from './components/AuthView.vue'
 import AboutView from './components/AboutView.vue'
 
 const WELCOME_TEXT = '欢迎使用 RobotAgent！请选择左侧会话或发起新对话。'
+const WELCOME_TEXT_EN = 'Welcome to RobotAgent! Select a session on the left or start a new conversation.'
 const AUTH_TOKEN_KEY = 'robotagent_auth_token'
+const THEME_KEY = 'robotagent_theme'
+const LANG_KEY = 'robotagent_lang'
+
+// Translations
+const translations = {
+  zh: {
+    about: '项目介绍',
+    chat: '对话',
+    logout: '退出登录',
+    currentUser: '当前用户',
+    switchTheme: '切换主题',
+    switchLang: '切换语言',
+    welcome: '欢迎使用 RobotAgent！请选择左侧会话或发起新对话。',
+  },
+  en: {
+    about: 'About',
+    chat: 'Chat',
+    logout: 'Logout',
+    currentUser: 'Current User',
+    switchTheme: 'Switch Theme',
+    switchLang: 'Switch Language',
+    welcome: 'Welcome to RobotAgent! Select a session on the left or start a new conversation.',
+  }
+}
 
 export default {
   name: 'App',
   components: { Sidebar, ChatView, ToolResults, AuthView, AboutView },
   setup () {
+    // Theme
+    const isDark = ref(localStorage.getItem(THEME_KEY) !== 'light')
+    const toggleTheme = () => {
+      isDark.value = !isDark.value
+      if (isDark.value) {
+        document.documentElement.classList.remove('light')
+        localStorage.setItem(THEME_KEY, 'dark')
+      } else {
+        document.documentElement.classList.add('light')
+        localStorage.setItem(THEME_KEY, 'light')
+      }
+    }
+
+    // Language
+    const lang = ref(localStorage.getItem(LANG_KEY) || 'zh')
+    const t = (key) => {
+      return translations[lang.value]?.[key] || translations['zh'][key] || key
+    }
+    const toggleLang = () => {
+      lang.value = lang.value === 'zh' ? 'en' : 'zh'
+      localStorage.setItem(LANG_KEY, lang.value)
+      // Update welcome text
+      const welcomeText = lang.value === 'zh' ? WELCOME_TEXT : WELCOME_TEXT_EN
+      if (conversation.value.length === 1 && conversation.value[0].id === 1) {
+        conversation.value[0].text = welcomeText
+      }
+    }
+
+    // Initialize theme
+    if (!isDark.value) {
+      document.documentElement.classList.add('light')
+    }
+
     const initialSessionId = `session_${Date.now()}`
+    const welcomeText = lang.value === 'zh' ? WELCOME_TEXT : WELCOME_TEXT_EN
     const conversation = ref([
-      { id: 1, role: 'assistant', text: WELCOME_TEXT }
+      { id: 1, role: 'assistant', text: welcomeText }
     ])
     const currentSessionId = ref(initialSessionId)
     const sidebarReloadToken = ref(0)
@@ -644,6 +711,11 @@ export default {
       currentSessionId,
       showToolPanel,
       sidebarReloadToken,
+      isDark,
+      lang,
+      t,
+      toggleTheme,
+      toggleLang,
       onAuthed,
       onLogout,
       onSelectSession,
