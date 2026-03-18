@@ -95,6 +95,30 @@ def generate_charts(results: list, out_dir: Path):
     print(f"Charts saved to {fig_dir}/")
 
 
+def load_existing_results(out_dir: Path) -> tuple[list, set]:
+    """加载已存在的结果，返回 (results列表, 已完成(prompt_id, attempt_id)集合)"""
+    details_file = out_dir / "details.jsonl"
+    if not details_file.exists():
+        return [], set()
+
+    completed_keys = set()
+    existing_results = []
+    with details_file.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+                existing_results.append(r)
+                key = (r.get("prompt_id"), r.get("attempt_id"))
+                completed_keys.add(key)
+            except Exception:
+                continue
+    print(f"Loaded {len(existing_results)} existing results from {details_file}")
+    return existing_results, completed_keys
+
+
 def load_config(config_path: str = None) -> dict:
     """加载配置文件"""
     if config_path is None:
@@ -238,8 +262,15 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    results = []
+    # 支持断点续跑
+    existing_results, completed_keys = load_existing_results(out_dir)
+
+    results = existing_results
     for i, traj in enumerate(trajectories):
+        key = (traj.get("prompt_id"), traj.get("attempt_id"))
+        if key in completed_keys:
+            print(f"[{i+1}/{len(trajectories)}] Skipping prompt_id={key[0]}, attempt={key[1]} (already completed)")
+            continue
         print(f"[{i+1}/{len(trajectories)}] Evaluating prompt_id={traj.get('prompt_id')}, attempt={traj.get('attempt_id')}")
         prompt = build_evaluation_prompt(traj)
         judgment = call_judge(llm, prompt)

@@ -26,6 +26,29 @@ plt.style.use('seaborn-v0_8-whitegrid')
 plt.rcParams['font.size'] = 11
 
 
+def load_existing_results(out_dir: Path) -> tuple[list, set]:
+    """加载已存在的结果，返回 (results列表, 已完成prompt_id集合)"""
+    details_file = out_dir / "details.jsonl"
+    if not details_file.exists():
+        return [], set()
+
+    completed_ids = set()
+    existing_results = []
+    with details_file.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+                existing_results.append(r)
+                completed_ids.add(r.get("prompt_id"))
+            except Exception:
+                continue
+    print(f"Loaded {len(existing_results)} existing results from {details_file}")
+    return existing_results, completed_ids
+
+
 def load_trajectories(path: Path):
     """加载轨迹数据"""
     rows = []
@@ -243,9 +266,14 @@ def main():
 
     print(f"Found {len(by_prompt)} unique prompts")
 
+    # 支持断点续跑
+    existing_results, completed_ids = load_existing_results(Path(args.out_dir))
+
     # 统计每个prompt的尝试次数
     prompt_stats = []
     for pid, trajs in by_prompt.items():
+        if pid in completed_ids:
+            continue
         sorted_trajs = sorted(trajs, key=lambda x: x.get("attempt_id", 0))
 
         attempts = []
@@ -314,13 +342,29 @@ def main():
     summary["recommended_max_attempts"] = best_n
     summary["improvement_at_best_n"] = best_improvement
 
-    # 保存结果
+    # 保存结果（追加新结果）
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    with (out_dir / "details.jsonl").open("w", encoding="utf-8") as f:
+    # 追加新结果到 details.jsonl
+    with (out_dir / "details.jsonl").open("a", encoding="utf-8") as f:
         for r in results:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    # 汇总统计（基于所有结果：existing + new）
+    all_results = existing_results + results
+    summary["total_prompts"] = len(all_results)
+    summary["avg_attempts_per_task"] = mean([r["total_attempts"] for r in all_results]) if all_results else 0
+
+    for n in [1, 2, 3, 4, 5]:
+        tasks_with_n_attempts = [r for r in all_results if r["total_attempts"] >= n]
+        if tasks_with_n_attempts:
+            success_count = sum(
+                1 for r in tasks_with_n_attempts
+                if r["cumulative"][n-1]["cumulative_success_rate"] > 0
+            )
+            summary[f"success_rate_after_{n}_attempts"] = success_count / len(tasks_with_n_attempts)
+            summary[f"tasks_with_{n}_attempts"] = len(tasks_with_n_attempts)
 
     with (out_dir / "summary.json").open("w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
@@ -329,7 +373,7 @@ def main():
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
     # 生成图表
-    generate_charts(results, summary, out_dir)
+    generate_charts(all_results, summary, out_dir)
 
 
 if __name__ == "__main__":

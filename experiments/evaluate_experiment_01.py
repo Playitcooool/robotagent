@@ -256,6 +256,29 @@ Agent回答：{answer}
     }
 
 
+def load_existing_results(out_dir: Path) -> tuple[list, set]:
+    """加载已存在的结果，返回 (results列表, 已完成query_id集合)"""
+    details_file = out_dir / "details.jsonl"
+    if not details_file.exists():
+        return [], set()
+
+    completed_ids = set()
+    existing_results = []
+    with details_file.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+                existing_results.append(r)
+                completed_ids.add(r.get("query_id", ""))
+            except Exception:
+                continue
+    print(f"Loaded {len(existing_results)} existing results from {details_file}")
+    return existing_results, completed_ids
+
+
 async def evaluate_academic_agent(
     queries: list,
     agent,
@@ -271,16 +294,21 @@ async def evaluate_academic_agent(
     """
     import asyncio
 
-    results = []
-    total = len(queries)
+    # 加载已存在的结果，支持断点续跑
+    results, completed_ids = load_existing_results(out_dir)
+    start_index = len(results)
 
-    print(f"Loaded {total} queries")
-    print(f"Using Agent model: {model_name}")
-    print(f"Using Judge: {llm.model_name}")
-    print(f"Delay between queries: {delay_between_queries}s")
+    total = len(queries)
+    print(f"Total queries: {total}, Already completed: {len(completed_ids)}, Remaining: {total - start_index}")
 
     for i, q in enumerate(queries, 1):
         query_id = q.get("id", f"query_{i}")
+
+        # 跳过已完成的query
+        if query_id in completed_ids:
+            print(f"[{i}/{total}] Skipping {query_id} (already completed)")
+            continue
+
         query_text = q.get("query", "")
 
         print(f"[{i}/{total}] Evaluating {query_id}: {query_text[:30]}...")
@@ -290,53 +318,39 @@ async def evaluate_academic_agent(
 
         if not answer:
             print(f"[WARN] No answer for {query_id}, skipping...")
-            results.append(
-                {
-                    "query_id": query_id,
-                    "query": query_text,
-                    "answer": "",
-                    "score": {
-                        "relevance": 0,
-                        "accuracy": 0,
-                        "completeness": 0,
-                        "citation": 0,
-                        "overall_score": 0,
-                    },
-                }
-            )
-            # 即使失败也等待，避免连续失败触发限制
-            if i < total:
-                print(f"  Waiting {delay_between_queries}s before next query...")
-                await asyncio.sleep(delay_between_queries)
-            continue
-
-        # 调用 Judge 评估
-        score = call_judge(llm, query_text, answer)
-
-        results.append(
-            {
+            record = {
+                "query_id": query_id,
+                "query": query_text,
+                "answer": "",
+                "score": {
+                    "relevance": 0,
+                    "accuracy": 0,
+                    "completeness": 0,
+                    "citation": 0,
+                    "overall_score": 0,
+                },
+            }
+        else:
+            # 调用 Judge 评估
+            score = call_judge(llm, query_text, answer)
+            record = {
                 "query_id": query_id,
                 "query": query_text,
                 "answer": answer,
                 "score": score,
             }
-        )
+
+        results.append(record)
+        completed_ids.add(query_id)
+
+        # 保存进度（追加模式，避免中断丢失）
+        with (out_dir / "details.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
         # 每次查询结束后等待，避免触发 API 限流
         if i < total:
             print(f"  Waiting {delay_between_queries}s before next query...")
             await asyncio.sleep(delay_between_queries)
-
-        # 保存进度
-        if i % 5 == 0:
-            with (out_dir / "details.jsonl").open("w", encoding="utf-8") as f:
-                for r in results:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
-
-    # 保存最终结果
-    with (out_dir / "details.jsonl").open("w", encoding="utf-8") as f:
-        for r in results:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
     return results
 
