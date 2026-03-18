@@ -536,6 +536,147 @@ register_sim_routes(
 
 
 # ========== 10. 接口定义 ==========
+
+# 健康检查端点
+@app.get("/api/health")
+async def health_check():
+    """后端健康检查"""
+    health_info = {
+        "status": "healthy",
+        "agent_ready": active_agent is not None,
+    }
+
+    # 检查 Redis 连接
+    redis_status = {"chat": False, "auth": False}
+    try:
+        if chat_redis:
+            await chat_redis.ping()
+            redis_status["chat"] = True
+    except Exception:
+        pass
+
+    try:
+        if auth_redis:
+            await auth_redis.ping()
+            redis_status["auth"] = True
+    except Exception:
+        pass
+
+    health_info["redis"] = redis_status
+
+    # 检查 MCP 服务（通过端口连接检测）
+    mcp_status = {}
+    try:
+        import socket
+        # PyBullet MCP (port 18001)
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            result = sock.connect_ex(('127.0.0.1', 18001))
+            sock.close()
+            mcp_status["pybullet"] = "online" if result == 0 else "offline"
+        except Exception:
+            mcp_status["pybullet"] = "offline"
+
+        # Gazebo MCP (port 8002)
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            result = sock.connect_ex(('127.0.0.1', 8002))
+            sock.close()
+            mcp_status["gazebo"] = "online" if result == 0 else "offline"
+        except Exception:
+            mcp_status["gazebo"] = "offline"
+    except Exception as e:
+        mcp_status["error"] = str(e)
+
+    health_info["mcp"] = mcp_status
+
+    # 模型配置信息
+    health_info["config"] = {
+        "llm_model": config.get("llm", "unknown"),
+        "llm_url": config.get("model_url", "unknown"),
+    }
+
+    return health_info
+
+
+# 工具列表端点
+@app.get("/api/tools")
+async def list_tools():
+    """返回所有可用的工具列表"""
+    from tools import GeneralTool
+
+    tools_info = []
+
+    # 获取 GeneralTool 中的工具
+    for func_name in GeneralTool.__all__:
+        try:
+            func = getattr(GeneralTool, func_name)
+            # 获取工具描述
+            tool_description = func.__doc__ or "无描述"
+            # 提取第一行作为简介
+            brief = tool_description.strip().split("\n")[0] if tool_description else "无描述"
+
+            # 获取参数信息
+            params = {}
+            if hasattr(func, "args_schema") and func.args_schema:
+                schema = func.args_schema.schema() if hasattr(func.args_schema, 'schema') else {}
+                params = schema.get("properties", {})
+
+            tools_info.append({
+                "name": func_name,
+                "brief": brief,
+                "description": tool_description.strip(),
+                "parameters": list(params.keys()),
+            })
+        except Exception as e:
+            logger.warning(f"获取工具 {func_name} 信息失败: {e}")
+
+    # 获取 MCP 服务工具（使用 fastmcp client）
+    mcp_tools = []
+    try:
+        from fastmcp import Client
+
+        # PyBullet MCP
+        try:
+            client = Client("http://localhost:18001/mcp")
+            async with client:
+                tools = await client.list_tools()
+                for t in tools:
+                    mcp_tools.append({
+                        "name": t.name,
+                        "source": "pybullet",
+                        "description": t.description or "",
+                    })
+        except Exception as e:
+            logger.warning(f"获取 PyBullet MCP 工具失败: {e}")
+
+        # Gazebo MCP
+        try:
+            client = Client("http://localhost:8002/mcp")
+            async with client:
+                tools = await client.list_tools()
+                for t in tools:
+                    mcp_tools.append({
+                        "name": t.name,
+                        "source": "gazebo",
+                        "description": t.description or "",
+                    })
+        except Exception as e:
+            logger.warning(f"获取 Gazebo MCP 工具失败: {e}")
+    except ImportError:
+        logger.warning("fastmcp client 未安装")
+    except Exception as e:
+        logger.warning(f"MCP 工具获取失败: {e}")
+
+    return {
+        "local_tools": tools_info,
+        "mcp_tools": mcp_tools,
+        "total": len(tools_info) + len(mcp_tools),
+    }
+
+
 @app.get("/api/ping")
 async def ping():
     return {
