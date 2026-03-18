@@ -224,14 +224,21 @@ Agent回答：{answer}
     }
 
 
-async def evaluate_academic_agent(queries: list, agent, llm, model_name: str, out_dir: Path):
-    """评估 Agent + 学术搜索系统"""
+async def evaluate_academic_agent(queries: list, agent, llm, model_name: str, out_dir: Path, delay_between_queries: float = 3.0):
+    """评估 Agent + 学术搜索系统
+
+    Args:
+        delay_between_queries: 每次查询之间的延迟（秒），用于避免 API 限流
+    """
+    import asyncio
+
     results = []
     total = len(queries)
 
     print(f"Loaded {total} queries")
     print(f"Using Agent model: {model_name}")
     print(f"Using Judge: {llm.model_name}")
+    print(f"Delay between queries: {delay_between_queries}s")
 
     for i, q in enumerate(queries, 1):
         query_id = q.get("id", f"query_{i}")
@@ -251,6 +258,10 @@ async def evaluate_academic_agent(queries: list, agent, llm, model_name: str, ou
                 "score": {"relevance": 0, "accuracy": 0, "completeness": 0,
                          "citation": 0, "overall_score": 0}
             })
+            # 即使失败也等待，避免连续失败触发限制
+            if i < total:
+                print(f"  Waiting {delay_between_queries}s before next query...")
+                await asyncio.sleep(delay_between_queries)
             continue
 
         # 调用 Judge 评估
@@ -262,6 +273,11 @@ async def evaluate_academic_agent(queries: list, agent, llm, model_name: str, ou
             "answer": answer,
             "score": score
         })
+
+        # 每次查询结束后等待，避免触发 API 限流
+        if i < total:
+            print(f"  Waiting {delay_between_queries}s before next query...")
+            await asyncio.sleep(delay_between_queries)
 
         # 保存进度
         if i % 5 == 0:
@@ -393,7 +409,7 @@ def main():
 
     # 评估
     model_name = agent_model
-    results = asyncio.run(evaluate_academic_agent(queries, agent, llm, model_name, out_dir))
+    results = asyncio.run(evaluate_academic_agent(queries, agent, llm, model_name, out_dir, delay_between_queries=3.0))
 
     # 生成统计
     scores = [r.get("score", {}) for r in results if r.get("score")]
