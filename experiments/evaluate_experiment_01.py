@@ -409,7 +409,7 @@ def main():
 
     # 评估
     model_name = agent_model
-    results = asyncio.run(evaluate_academic_agent(queries, agent, llm, model_name, out_dir, delay_between_queries=3.0))
+    results = asyncio.run(evaluate_academic_agent(queries, agent, llm, model_name, out_dir, delay_between_queries=0))
 
     # 生成统计
     scores = [r.get("score", {}) for r in results if r.get("score")]
