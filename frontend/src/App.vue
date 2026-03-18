@@ -48,6 +48,7 @@
           :currentSessionId="currentSessionId"
           :authUser="authUser"
           :authToken="authToken"
+          :lang="lang"
         />
       </aside>
 
