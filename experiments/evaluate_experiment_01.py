@@ -21,6 +21,7 @@ import asyncio
 from pathlib import Path
 from statistics import mean
 from collections import defaultdict
+from langchain.agents.middleware import ToolCallLimitMiddleware
 
 # 添加项目根目录到路径
 current_dir = Path(__file__).parent
@@ -35,8 +36,8 @@ from deepagents import create_deep_agent
 from tools.GeneralTool import search
 
 # 设置中文字体
-plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial Unicode MS', 'SimHei']
-plt.rcParams['axes.unicode_minus'] = False
+plt.rcParams["font.sans-serif"] = ["DejaVu Sans", "Arial Unicode MS", "SimHei"]
+plt.rcParams["axes.unicode_minus"] = False
 
 
 def load_config(config_path: str = None) -> dict:
@@ -68,9 +69,11 @@ AGENT_SYSTEM_PROMPT = """你是一个专业的问答助手，专门回答机器�
 4. 在回答中引用来源（论文标题、年份、作者或网页标题、URL）
 
 注意：
-- 请尽可能提供准确的信息
-- 如果搜索结果与问题不相关，请调整关键词重新搜索
-- 回答要清晰、有条理"""
+- 每个问题最多搜索 1~2 次，避免过度搜索
+- 搜索 1 次后已有足够信息就直接回答，不要反复搜索
+- 只在搜索结果明显不足或与问题不相关时才重新搜索
+- 回答要简洁，控制在 300 字以内
+- 引用时优先使用搜索结果中最相关的 1~2 条即可"""
 
 JUDGE_SYSTEM_PROMPT = """你是一个严格的学术问答评估专家。
 评估 Agent + 学术搜索系统回答机器人领域问题的质量。
@@ -119,8 +122,8 @@ def create_academic_agent(base_url: str, model: str, api_key: str):
         base_url=base_url,
         model=model,
         api_key=api_key,
-        temperature=0.0,
-        request_timeout=120,
+        temperature=0.8,
+        request_timeout=600,
     )
 
     # 创建 agent，带有 search 工具
@@ -128,6 +131,7 @@ def create_academic_agent(base_url: str, model: str, api_key: str):
         model=chat,
         tools=[search],
         system_prompt=AGENT_SYSTEM_PROMPT,
+        middleware=[ToolCallLimitMiddleware(tool_name="search", run_limit=3)],
     )
 
     return agent
@@ -159,6 +163,7 @@ async def call_agent(agent, query: str) -> str:
     except Exception as e:
         print(f"[WARN] Agent call failed: {e}")
         import traceback
+
         traceback.print_exc()
         return ""
 
@@ -182,19 +187,25 @@ Agent回答：{answer}
     last_error = None
     for attempt in range(max_retries):
         try:
-            response = llm.invoke([
-                {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt}
-            ])
+            response = llm.invoke(
+                [
+                    {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ]
+            )
             content = getattr(response, "content", "")
             if isinstance(content, list):
                 content = "".join(
-                    str(block.get("text", "")) if isinstance(block, dict) else str(block)
+                    (
+                        str(block.get("text", ""))
+                        if isinstance(block, dict)
+                        else str(block)
+                    )
                     for block in content
                 )
 
             # 提取JSON
-            json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
+            json_match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
                 # 确保有所有必要字段
@@ -210,21 +221,37 @@ Agent回答：{answer}
             return json.loads(content)
         except json.JSONDecodeError as e:
             last_error = f"JSON decode error: {e}"
-            print(f"[WARN] Judge JSON decode failed (attempt {attempt + 1}/{max_retries}): {last_error}")
+            print(
+                f"[WARN] Judge JSON decode failed (attempt {attempt + 1}/{max_retries}): {last_error}"
+            )
         except Exception as e:
             last_error = str(e)
-            print(f"[WARN] Judge API call failed (attempt {attempt + 1}/{max_retries}): {last_error}")
+            print(
+                f"[WARN] Judge API call failed (attempt {attempt + 1}/{max_retries}): {last_error}"
+            )
         time.sleep(1)
 
     print(f"[ERROR] Judge failed after {max_retries} retries: {last_error}")
     return {
-        "relevance": 0, "accuracy": 0, "completeness": 0,
-        "citation": 0, "overall_score": 0,
-        "pros": [], "cons": [], "brief_reason": f"Judge failed: {last_error}"
+        "relevance": 0,
+        "accuracy": 0,
+        "completeness": 0,
+        "citation": 0,
+        "overall_score": 0,
+        "pros": [],
+        "cons": [],
+        "brief_reason": f"Judge failed: {last_error}",
     }
 
 
-async def evaluate_academic_agent(queries: list, agent, llm, model_name: str, out_dir: Path, delay_between_queries: float = 3.0):
+async def evaluate_academic_agent(
+    queries: list,
+    agent,
+    llm,
+    model_name: str,
+    out_dir: Path,
+    delay_between_queries: float = 3.0,
+):
     """评估 Agent + 学术搜索系统
 
     Args:
@@ -251,13 +278,20 @@ async def evaluate_academic_agent(queries: list, agent, llm, model_name: str, ou
 
         if not answer:
             print(f"[WARN] No answer for {query_id}, skipping...")
-            results.append({
-                "query_id": query_id,
-                "query": query_text,
-                "answer": "",
-                "score": {"relevance": 0, "accuracy": 0, "completeness": 0,
-                         "citation": 0, "overall_score": 0}
-            })
+            results.append(
+                {
+                    "query_id": query_id,
+                    "query": query_text,
+                    "answer": "",
+                    "score": {
+                        "relevance": 0,
+                        "accuracy": 0,
+                        "completeness": 0,
+                        "citation": 0,
+                        "overall_score": 0,
+                    },
+                }
+            )
             # 即使失败也等待，避免连续失败触发限制
             if i < total:
                 print(f"  Waiting {delay_between_queries}s before next query...")
@@ -267,12 +301,14 @@ async def evaluate_academic_agent(queries: list, agent, llm, model_name: str, ou
         # 调用 Judge 评估
         score = call_judge(llm, query_text, answer)
 
-        results.append({
-            "query_id": query_id,
-            "query": query_text,
-            "answer": answer,
-            "score": score
-        })
+        results.append(
+            {
+                "query_id": query_id,
+                "query": query_text,
+                "answer": answer,
+                "score": score,
+            }
+        )
 
         # 每次查询结束后等待，避免触发 API 限流
         if i < total:
@@ -308,22 +344,33 @@ def generate_charts(results: list, out_dir: Path):
     avg_scores = {d: mean([s.get(d, 0) for s in scores]) for d in dimensions}
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    bars = ax.bar(avg_scores.keys(), avg_scores.values(), color=['#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#e74c3c'])
+    bars = ax.bar(
+        avg_scores.keys(),
+        avg_scores.values(),
+        color=["#3498db", "#2ecc71", "#f39c12", "#9b59b6", "#e74c3c"],
+    )
     ax.set_ylim(0, 5)
     ax.set_ylabel("Score (1-5)")
     ax.set_title("Agent + Academic Search Answer Quality by Dimension")
     for bar, val in zip(bars, avg_scores.values()):
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
-                f"{val:.2f}", ha='center', va='bottom')
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.1,
+            f"{val:.2f}",
+            ha="center",
+            va="bottom",
+        )
     plt.tight_layout()
     plt.savefig(figures_dir / "score_bars.png", dpi=150)
     plt.close()
 
     # 2. 得分分布直方图
-    overall_scores = [s.get("overall_score", 0) for s in scores if s.get("overall_score", 0) > 0]
+    overall_scores = [
+        s.get("overall_score", 0) for s in scores if s.get("overall_score", 0) > 0
+    ]
     if overall_scores:
         fig, ax = plt.subplots(figsize=(10, 6))
-        ax.hist(overall_scores, bins=5, edgecolor='black', alpha=0.7, color='#3498db')
+        ax.hist(overall_scores, bins=5, edgecolor="black", alpha=0.7, color="#3498db")
         ax.set_xlabel("Overall Score")
         ax.set_ylabel("Count")
         ax.set_title("Distribution of Overall Scores")
@@ -354,13 +401,19 @@ def generate_charts(results: list, out_dir: Path):
     if categories:
         cat_scores = {k: mean(v) for k, v in categories.items() if v}
         fig, ax = plt.subplots(figsize=(8, 5))
-        bars = ax.barh(list(cat_scores.keys()), list(cat_scores.values()), color='#2ecc71')
+        bars = ax.barh(
+            list(cat_scores.keys()), list(cat_scores.values()), color="#2ecc71"
+        )
         ax.set_xlim(0, 5)
         ax.set_xlabel("Average Score")
         ax.set_title("Score by Query Category")
         for bar, val in zip(bars, cat_scores.values()):
-            ax.text(bar.get_width() + 0.1, bar.get_y() + bar.get_height()/2,
-                    f"{val:.2f}", va='center')
+            ax.text(
+                bar.get_width() + 0.1,
+                bar.get_y() + bar.get_height() / 2,
+                f"{val:.2f}",
+                va="center",
+            )
         plt.tight_layout()
         plt.savefig(figures_dir / "category_scores.png", dpi=150)
         plt.close()
@@ -395,13 +448,15 @@ def main():
         model=judge_config.get("model", "deepseek-chat"),
         base_url=judge_config.get("api_base", "https://api.deepseek.com"),
         api_key=judge_config.get("api_key", ""),
-        timeout=judge_config.get("timeout", 120),
-        max_retries=judge_config.get("max_retries", 3)
+        timeout=judge_config.get("timeout", 300),
+        max_retries=judge_config.get("max_retries", 3),
     )
 
     # 加载查询
     queries = load_queries(Path(args.queries))
-    print(f"Using Judge: {judge_config.get('model', 'deepseek-chat')} @ {judge_config.get('api_base', 'https://api.deepseek.com')}")
+    print(
+        f"Using Judge: {judge_config.get('model', 'deepseek-chat')} @ {judge_config.get('api_base', 'https://api.deepseek.com')}"
+    )
 
     # 创建输出目录
     out_dir = Path(args.out_dir)
@@ -409,7 +464,11 @@ def main():
 
     # 评估
     model_name = agent_model
-    results = asyncio.run(evaluate_academic_agent(queries, agent, llm, model_name, out_dir, delay_between_queries=0))
+    results = asyncio.run(
+        evaluate_academic_agent(
+            queries, agent, llm, model_name, out_dir, delay_between_queries=0
+        )
+    )
 
     # 生成统计
     scores = [r.get("score", {}) for r in results if r.get("score")]
@@ -423,7 +482,9 @@ def main():
             "avg_accuracy": mean([s.get("accuracy", 0) for s in valid_scores]),
             "avg_completeness": mean([s.get("completeness", 0) for s in valid_scores]),
             "avg_citation": mean([s.get("citation", 0) for s in valid_scores]),
-            "avg_overall_score": mean([s.get("overall_score", 0) for s in valid_scores]),
+            "avg_overall_score": mean(
+                [s.get("overall_score", 0) for s in valid_scores]
+            ),
         }
     else:
         summary = {"total": len(queries), "evaluated": 0}

@@ -748,11 +748,8 @@ def _get_tavily_client():
     return _tavily_client
 
 
-def web_search(query: str, max_results: int = 5, timeout: float = 8.0) -> str:
-    """
-    Search the web for recent/general information using Tavily.
-    Returns title/url/snippet to support citation in final answers.
-    """
+def _web_search_impl(query: str, max_results: int = 5, timeout: float = 8.0) -> str:
+    """Core web search implementation (no decorator)."""
     q = " ".join((query or "").split())
     if not q:
         return json.dumps({"query": "", "results": [], "error": "query is required"}, ensure_ascii=False, indent=2)
@@ -806,12 +803,19 @@ def web_search(query: str, max_results: int = 5, timeout: float = 8.0) -> str:
 
 
 @tool(response_format="content")
+def web_search(query: str, max_results: int = 5, timeout: float = 8.0) -> str:
+    """Search the web for recent/general information using Tavily."""
+    return _web_search_impl(query=query, max_results=max_results, timeout=timeout)
+
+
+@tool(response_format="content")
 def academic_search(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
-    """
-    Search academic papers from OpenAlex and arXiv.
-    Returns structured results with paper title, authors, year, abstract, and PDF links.
-    Supports citation in final answers.
-    """
+    """Search academic papers from OpenAlex and arXiv."""
+    return _academic_search_impl(query=query, max_results=max_results, timeout=timeout)
+
+
+def _academic_search_impl(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
+    """Core academic search implementation (no decorator)."""
     q = " ".join((query or "").split())
     if not q:
         return "Error: query is required."
@@ -1030,7 +1034,7 @@ def search(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
 
     if _should_use_academic(q):
         engine = "academic (openalex + arxiv)"
-        raw = academic_search(query=q, max_results=limit, timeout=timeout)
+        raw = _academic_search_impl(query=q, max_results=limit, timeout=timeout)
         try:
             data = json.loads(raw)
             results = []
@@ -1054,7 +1058,7 @@ def search(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
             results = []
     else:
         engine = "web (tavily)"
-        raw = web_search(query=q, max_results=limit, timeout=timeout)
+        raw = _web_search_impl(query=q, max_results=limit, timeout=timeout)
         try:
             data = json.loads(raw)
             if data.get("error"):
