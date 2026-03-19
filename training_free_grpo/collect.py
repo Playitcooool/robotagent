@@ -398,15 +398,46 @@ async def collect_trajectories_online(
             if key in scored_keys:
                 continue
 
-            score = await score_and_update_memory(
-                agent=judge_agent,
-                prompt_id=trajectory["prompt_id"],
-                attempt_id=trajectory["attempt_id"],
-                prompt=trajectory["prompt"],
-                messages=trajectory["messages"],
-                memory_json_path=memory_json_path,
-                request_timeout_s=attempt_timeout_s,
-            )
+            score = None
+            retry_delay = max(0.0, attempt_retry_delay_s)
+            for retry_idx in range(max(0, attempt_retries) + 1):
+                try:
+                    score = await maybe_wait_for(
+                        score_and_update_memory(
+                            agent=judge_agent,
+                            prompt_id=trajectory["prompt_id"],
+                            attempt_id=trajectory["attempt_id"],
+                            prompt=trajectory["prompt"],
+                            messages=trajectory["messages"],
+                            memory_json_path=memory_json_path,
+                            request_timeout_s=attempt_timeout_s,
+                        ),
+                        attempt_timeout_s,
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    print(
+                        f"[score] timeout prompt={trajectory['prompt_id']} attempt={trajectory['attempt_id']} after {attempt_timeout_s}s"
+                    )
+                except Exception as e:
+                    print(
+                        f"[score] failed prompt={trajectory['prompt_id']} attempt={trajectory['attempt_id']} retry={retry_idx}: {e}"
+                    )
+                    if is_stream_error(e):
+                        from tools.SubAgentTool import reset_cached_mcp_tools
+                        reset_cached_mcp_tools()
+
+                if retry_idx < max(0, attempt_retries):
+                    if retry_delay > 0:
+                        await asyncio.sleep(retry_delay)
+                    retry_delay = retry_delay * attempt_retry_backoff if attempt_retry_backoff > 0 else retry_delay
+
+            if score is None:
+                print(
+                    f"[score] skipped prompt={trajectory['prompt_id']} attempt={trajectory['attempt_id']} after {attempt_retries} retries"
+                )
+                continue
+
             score_record: Dict[str, Any] = {
                 "prompt_id": trajectory["prompt_id"],
                 "attempt_id": trajectory["attempt_id"],
@@ -652,7 +683,7 @@ async def async_main() -> None:
             await mcp_client.call_tool("cleanup_simulation_tool")
 
         async def init_hook() -> None:
-            await mcp_client.call_tool("initialize_simulation")
+            await mcp_client.call_tool("initialize_simulation", {"args": {}})
 
         async with mcp_client:
             await collect_trajectories_online(
