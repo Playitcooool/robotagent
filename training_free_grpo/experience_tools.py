@@ -469,3 +469,162 @@ async def score_and_update_memory(
         "brief_reason": "",
     }
 
+
+# ---------------------------------------------------------------------------
+# GRPO: Score-Only (no memory update)
+# ---------------------------------------------------------------------------
+
+SCORE_ONLY_USER_PROMPT_TEMPLATE = """请对以下轨迹进行严格评分。
+
+**评分要求**：直接输出JSON评分结果，不要调用任何工具，不要输出任何额外解释。
+
+**Prompt ID**: {prompt_id}
+**Attempt ID**: {attempt_id}
+**Prompt**: {prompt}
+
+**轨迹消息**:
+{messages}
+
+**评分维度（0-10分）**：
+- overall_score: 综合分数
+- task_completion: 任务完成度
+- correctness: 正确性
+- clarity: 清晰度
+- robustness: 鲁棒性
+- conciseness: 简洁性
+- brief_reason: 简要评分理由（中文，1-2句话）
+
+直接返回JSON，格式如下，不要有任何其他文字：
+{{"overall_score": 0.0, "task_completion": 0.0, "correctness": 0.0, "clarity": 0.0, "robustness": 0.0, "conciseness": 0.0, "brief_reason": "..."}}"""
+
+
+def _extract_score_from_response(response_text: str) -> dict:
+    """Extract score dict from plain text response (no JSON parsing by agent)."""
+    raw = response_text.strip()
+    start = raw.find("{")
+    if start < 0:
+        return {
+            "overall_score": 0.0, "task_completion": 0.0, "correctness": 0.0,
+            "clarity": 0.0, "robustness": 0.0, "conciseness": 0.0,
+            "brief_reason": raw[:300],
+        }
+    depth = 0
+    end = start
+    for i, ch in enumerate(raw[start:], start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    candidate = raw[start:end + 1]
+    try:
+        parsed = json.loads(candidate)
+        if "overall_score" in parsed:
+            return parsed
+    except Exception:
+        pass
+    return {
+        "overall_score": 0.0, "task_completion": 0.0, "correctness": 0.0,
+        "clarity": 0.0, "robustness": 0.0, "conciseness": 0.0,
+        "brief_reason": raw[:300],
+    }
+
+
+async def score_only(
+    model: Any,
+    prompt_id: int,
+    attempt_id: int,
+    prompt: str,
+    messages: list,
+    request_timeout_s: float | None = None,
+) -> dict:
+    """
+    Score a single trajectory using the LLM directly (no agent, no memory update).
+
+    Returns the score dict with overall_score and other dimensions.
+    """
+    import asyncio
+    from langchain_core.messages import HumanMessage
+
+    user_content = SCORE_ONLY_USER_PROMPT_TEMPLATE.format(
+        prompt_id=prompt_id,
+        attempt_id=attempt_id,
+        prompt=prompt,
+        messages=json.dumps(messages, ensure_ascii=False),
+    )
+
+    async def _invoke():
+        result = await model.ainvoke([HumanMessage(content=user_content)])
+        msg = result if hasattr(result, 'content') else result
+        raw = str(msg.content) if hasattr(msg, 'content') else str(result)
+        return _extract_score_from_response(raw)
+
+    if request_timeout_s and request_timeout_s > 0:
+        return await asyncio.wait_for(_invoke(), timeout=request_timeout_s)
+    return await _invoke()
+
+
+# ---------------------------------------------------------------------------
+# GRPO: Compare Best vs Worst and Write One Experience
+# ---------------------------------------------------------------------------
+
+GRPO_COMPARE_USER_PROMPT_TEMPLATE = """## GRPO 经验提炼
+
+请对比以下两个轨迹，提炼出一条经验教训，写入经验库。
+
+**Prompt**: {prompt}
+
+**最高分轨迹 (overall_score={best_score}, attempt_id={best_attempt_id})**:
+{best_messages}
+
+**最低分轨迹 (overall_score={worst_score}, attempt_id={worst_attempt_id})**:
+{worst_messages}
+
+请分析两者的关键差异：
+1. 最高分轨迹做对了什么？
+2. 最低分轨迹做错了什么？
+3. 从对比中提炼出一条可执行的经验（summary）、3-5条核心原则（principles）、应该做的事（dos）和应该避免的事（donts）。
+
+请使用 write_experience 工具将经验写入经验库（只需写入一条，从最高分和最低分的对比中提炼）。
+"""
+
+
+async def grpo_summarize_and_update_memory(
+    agent: Any,
+    prompt: str,
+    best_trajectory: Dict[str, Any],
+    worst_trajectory: Dict[str, Any],
+    request_timeout_s: float | None = None,
+) -> dict:
+    """
+    Compare the best and worst trajectories and write one experience to memory.
+
+    This is the core GRPO step: after scoring all attempts for a prompt,
+    compare the best vs worst to extract actionable experience.
+    """
+    import asyncio
+    from langchain_core.messages import HumanMessage
+
+    best_score = best_trajectory.get("score", {})
+    worst_score = worst_trajectory.get("score", {})
+
+    user_content = GRPO_COMPARE_USER_PROMPT_TEMPLATE.format(
+        prompt=prompt,
+        best_score=best_score.get("overall_score", 0.0),
+        best_attempt_id=best_trajectory.get("attempt_id"),
+        best_messages=json.dumps(best_trajectory.get("messages", []), ensure_ascii=False),
+        worst_score=worst_score.get("overall_score", 0.0),
+        worst_attempt_id=worst_trajectory.get("attempt_id"),
+        worst_messages=json.dumps(worst_trajectory.get("messages", []), ensure_ascii=False),
+    )
+
+    async def _invoke():
+        return await agent.ainvoke({"messages": [HumanMessage(content=user_content)]})
+
+    if request_timeout_s and request_timeout_s > 0:
+        return await asyncio.wait_for(_invoke(), timeout=request_timeout_s)
+    return await _invoke()
+
+

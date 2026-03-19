@@ -16,7 +16,8 @@ sys.path.insert(0, root_dir)
 from training_free_grpo.experience_tools import (
     JUDGE_EXPERIENCE_TOOLS,
     build_judge_agent,
-    score_and_update_memory,
+    score_only,
+    grpo_summarize_and_update_memory,
 )
 
 # Collection runtime behavior (intended for single-trajectory isolation)
@@ -269,6 +270,7 @@ async def collect_trajectories_online(
     rebuild_agent_every: int,
     base_system_prompt: str,
     judge_agent: Any,
+    judge_model: Any,
     max_experiences_in_prompt: int,
     attempt_timeout_s: Optional[float],
     cleanup_timeout_s: Optional[float],
@@ -392,7 +394,8 @@ async def collect_trajectories_online(
         if not pending_for_prompt:
             continue
 
-        # Score each trajectory with the judge agent (which also updates memory)
+        # GRPO Step 1: Score all trajectories (no memory update yet)
+        scored_this_round: List[Tuple[Dict[str, Any], dict]] = []
         for trajectory in pending_for_prompt:
             key = (trajectory["prompt_id"], trajectory["attempt_id"])
             if key in scored_keys:
@@ -403,13 +406,12 @@ async def collect_trajectories_online(
             for retry_idx in range(max(0, attempt_retries) + 1):
                 try:
                     score = await maybe_wait_for(
-                        score_and_update_memory(
-                            agent=judge_agent,
+                        score_only(
+                            model=judge_chat,
                             prompt_id=trajectory["prompt_id"],
                             attempt_id=trajectory["attempt_id"],
                             prompt=trajectory["prompt"],
                             messages=trajectory["messages"],
-                            memory_json_path=memory_json_path,
                             request_timeout_s=attempt_timeout_s,
                         ),
                         attempt_timeout_s,
@@ -432,12 +434,65 @@ async def collect_trajectories_online(
                         await asyncio.sleep(retry_delay)
                     retry_delay = retry_delay * attempt_retry_backoff if attempt_retry_backoff > 0 else retry_delay
 
-            if score is None:
-                print(
-                    f"[score] skipped prompt={trajectory['prompt_id']} attempt={trajectory['attempt_id']} after {attempt_retries} retries"
-                )
-                continue
+            if score is not None:
+                trajectory["score"] = score
+                scored_this_round.append((trajectory, score))
 
+        if not scored_this_round:
+            print(f"[score] no valid scores for prompt={prompt_id}, skipping")
+            continue
+
+        # GRPO Step 2: Find best and worst by overall_score
+        best_trajectory, best_score = max(scored_this_round, key=lambda x: x[1].get("overall_score", 0.0))
+        worst_trajectory, worst_score = min(scored_this_round, key=lambda x: x[1].get("overall_score", 0.0))
+
+        print(
+            f"[grpo] prompt={prompt_id} best=attempt{best_trajectory['attempt_id']}({best_score.get('overall_score', 0.0)}) "
+            f"vs worst=attempt{worst_trajectory['attempt_id']}({worst_score.get('overall_score', 0.0)})"
+        )
+
+        # GRPO Step 3: Compare best vs worst and write ONE experience to memory
+        if len(scored_this_round) >= 2:
+            retry_delay = max(0.0, attempt_retry_delay_s)
+            grpo_success = False
+            for retry_idx in range(max(0, attempt_retries) + 1):
+                try:
+                    await maybe_wait_for(
+                        grpo_summarize_and_update_memory(
+                            agent=judge_agent,
+                            prompt=pending_for_prompt[0]["prompt"],
+                            best_trajectory=best_trajectory,
+                            worst_trajectory=worst_trajectory,
+                            request_timeout_s=attempt_timeout_s,
+                        ),
+                        attempt_timeout_s,
+                    )
+                    grpo_success = True
+                    print(f"[grpo] experience written for prompt={prompt_id}")
+                    break
+                except asyncio.TimeoutError:
+                    print(f"[grpo] timeout prompt={prompt_id} after {attempt_timeout_s}s")
+                except Exception as e:
+                    print(f"[grpo] failed prompt={prompt_id} retry={retry_idx}: {e}")
+                    if is_stream_error(e):
+                        from tools.SubAgentTool import reset_cached_mcp_tools
+                        reset_cached_mcp_tools()
+
+                if retry_idx < max(0, attempt_retries):
+                    if retry_delay > 0:
+                        await asyncio.sleep(retry_delay)
+                    retry_delay = retry_delay * attempt_retry_backoff if attempt_retry_backoff > 0 else retry_delay
+
+            if not grpo_success:
+                print(f"[grpo] skipped prompt={prompt_id} after {attempt_retries} retries")
+        else:
+            print(f"[grpo] only {len(scored_this_round)} attempt(s), need >=2, skipping experience extraction")
+
+        # GRPO Step 4: Save all score records
+        for trajectory, score in scored_this_round:
+            key = (trajectory["prompt_id"], trajectory["attempt_id"])
+            if key in scored_keys:
+                continue
             score_record: Dict[str, Any] = {
                 "prompt_id": trajectory["prompt_id"],
                 "attempt_id": trajectory["attempt_id"],
@@ -447,7 +502,7 @@ async def collect_trajectories_online(
                 "score": score,
                 "meta": {
                     "created_at": int(time.time()),
-                    "method": "judge_agent_with_experience_tools",
+                    "method": "grpo_judge_agent",
                 },
             }
             append_jsonl(score_path, score_record)
@@ -456,9 +511,8 @@ async def collect_trajectories_online(
                 f"[score] saved prompt={trajectory['prompt_id']} attempt={trajectory['attempt_id']}"
             )
 
-            # Reload memory immediately so subsequent attempts of the SAME prompt
-            # can see the newly learned experiences
-            memory_bank = load_memory_bank(memory_json_path)
+        # Reload memory so subsequent prompts can see the newly learned experiences
+        memory_bank = load_memory_bank(memory_json_path)
 
         # Persist updated memory as markdown
         with open(memory_md_path, "w", encoding="utf-8") as f:
@@ -557,7 +611,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_retries", type=int, default=3)
     parser.add_argument("--backoff_factor", type=float, default=2.0)
     parser.add_argument("--initial_delay", type=float, default=1.0)
-    parser.add_argument("--judge_model", type=str, default="")
+    parser.add_argument("--judge_model", type=str, default="deepseek-chat")
+    parser.add_argument("--judge_api_base", type=str, default="https://api.deepseek.com")
+    parser.add_argument("--judge_api_key", type=str, default="")
     parser.add_argument("--judge_temperature", type=float, default=0.0)
     parser.add_argument("--judge_max_tokens", type=int, default=1024)
     parser.add_argument("--max_experiences_in_prompt", type=int, default=20)
@@ -616,6 +672,15 @@ async def async_main() -> None:
         base = str(mcp_cfg.get("ip") or "http://localhost").rstrip("/")
         port = str(mcp_cfg.get("port") or "8001")
         mcp_cleanup_url = f"{base}:{port}/mcp"
+
+        # Load judge config for DeepSeek defaults
+        judge_cfg = cfg.get("judge") or {}
+        if not args.judge_api_base or args.judge_api_base == "https://api.deepseek.com":
+            args.judge_api_base = judge_cfg.get("api_base", "https://api.deepseek.com")
+        if not args.judge_api_key:
+            args.judge_api_key = judge_cfg.get("api_key", "")
+        if not args.judge_model or args.judge_model == "deepseek-chat":
+            args.judge_model = judge_cfg.get("model", "deepseek-chat")
     except Exception:
         mcp_cleanup_url = "http://localhost:8001/mcp"
 
@@ -648,14 +713,14 @@ async def async_main() -> None:
             experiences=experiences,
         )
 
-    judge_model = args.judge_model.strip() or args.model
+    judge_model_name = args.judge_model.strip() or "deepseek-chat"
     from langchain.agents.middleware import ToolRetryMiddleware
     from langchain_openai import ChatOpenAI
 
     judge_chat = ChatOpenAI(
-        base_url=args.base_url,
-        model=judge_model,
-        api_key=args.api_key,
+        base_url=args.judge_api_base,
+        model=judge_model_name,
+        api_key=args.judge_api_key,
         temperature=args.judge_temperature,
         max_tokens=args.judge_max_tokens,
         request_timeout=request_timeout_s,
@@ -698,6 +763,7 @@ async def async_main() -> None:
                 rebuild_agent_every=REBUILD_AGENT_EVERY,
                 base_system_prompt=base_system_prompt,
                 judge_agent=judge_agent,
+                judge_model=judge_chat,
                 max_experiences_in_prompt=args.max_experiences_in_prompt,
                 attempt_timeout_s=attempt_timeout_s,
                 cleanup_timeout_s=cleanup_timeout_s,
@@ -720,6 +786,7 @@ async def async_main() -> None:
             rebuild_agent_every=REBUILD_AGENT_EVERY,
             base_system_prompt=base_system_prompt,
             judge_agent=judge_agent,
+            judge_model=judge_chat,
             max_experiences_in_prompt=args.max_experiences_in_prompt,
             attempt_timeout_s=attempt_timeout_s,
             cleanup_timeout_s=cleanup_timeout_s,

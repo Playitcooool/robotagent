@@ -16,3 +16,8 @@ mcp:
 
 tavily:
   api_key: "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"
+
+judge:
+  api_base: "https://api.deepseek.com"
+  api_key: "sk-84b123d32362456fba92ceb8525516b8"
+  model: "deepseek-chat"
