@@ -407,7 +407,7 @@ async def collect_trajectories_online(
                 try:
                     score = await maybe_wait_for(
                         score_only(
-                            model=judge_chat,
+                            model=judge_model,
                             prompt_id=trajectory["prompt_id"],
                             attempt_id=trajectory["attempt_id"],
                             prompt=trajectory["prompt"],
