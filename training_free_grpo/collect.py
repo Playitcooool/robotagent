@@ -66,7 +66,7 @@ def load_prompts(path: str, max_prompts: int) -> List[str]:
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             text = line.strip()
-            if not text:
+            if not text or text.startswith("#"):
                 continue
             prompts.append(text)
             if max_prompts > 0 and len(prompts) >= max_prompts:
