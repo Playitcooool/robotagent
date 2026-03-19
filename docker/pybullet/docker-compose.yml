@@ -5,7 +5,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: robotagent-pybullet:latest
     volumes:
       - ../../mcp:/app/mcp
     working_dir: /app/mcp
