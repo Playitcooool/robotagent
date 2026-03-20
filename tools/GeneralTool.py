@@ -1342,7 +1342,7 @@ __all__ = [
     "format_json",
     "http_get",
     "list_workspace_files",
-    "qdrant_retrieve_context",
+    # "qdrant_retrieve_context",  # disabled: HuggingFace network timeout
     "read_workspace_file",
     "search",
     "search_workspace_text",

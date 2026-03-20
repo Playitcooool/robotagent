@@ -21,11 +21,11 @@ from training_free_grpo.experience_tools import (
 )
 
 # Collection runtime behavior (intended for single-trajectory isolation)
-REBUILD_AGENT_EVERY = 1
-CLEANUP_SIMULATION_PER_ATTEMPT = True
-DEFAULT_REQUEST_TIMEOUT_S = 300.0
-DEFAULT_ATTEMPT_TIMEOUT_S = 600.0
-DEFAULT_CLEANUP_TIMEOUT_S = 30.0
+REBUILD_AGENT_EVERY = 1  # 每N次attempt重建一次agent，确保每次attempt独立
+CLEANUP_SIMULATION_PER_ATTEMPT = False  # False = 保持仿真环境持久化，init一次后复用
+DEFAULT_REQUEST_TIMEOUT_S = 600.0
+DEFAULT_ATTEMPT_TIMEOUT_S = 1800.0
+DEFAULT_CLEANUP_TIMEOUT_S = 60.0
 
 
 def ensure_dir(path: str) -> None:
@@ -36,6 +36,19 @@ async def maybe_wait_for(awaitable: Awaitable[Any], timeout_s: Optional[float]) 
     if timeout_s is None or timeout_s <= 0:
         return await awaitable
     return await asyncio.wait_for(awaitable, timeout=timeout_s)
+
+
+async def stream_with_timeout(agent, input_dict, timeout_s, print_prefix="[agent]"):
+    """Run agent.astream with timeout, yielding chunks and printing progress."""
+    result = None
+    try:
+        async for chunk in asyncio.wait_for(agent.astream(input_dict), timeout=timeout_s):
+            print(f"{print_prefix} stream: {type(chunk).__name__}: {str(chunk)[:300]}")
+            result = chunk
+        return result
+    except asyncio.TimeoutError:
+        print(f"{print_prefix} TIMEOUT after {timeout_s}s")
+        raise
 
 
 def normalize_timeout(value: Optional[float]) -> Optional[float]:
@@ -313,7 +326,9 @@ async def collect_trajectories_online(
             for retry_idx in range(max(0, attempt_retries) + 1):
                 if init_before_attempt is not None:
                     try:
+                        print(f"[collect] init_hook start prompt={prompt_id} attempt={attempt_id}")
                         await maybe_wait_for(init_before_attempt(), cleanup_timeout_s)
+                        print(f"[collect] init_hook done prompt={prompt_id} attempt={attempt_id}")
                     except Exception as e:
                         print(f"[collect] init_before_attempt failed: {e}")
 
@@ -328,12 +343,18 @@ async def collect_trajectories_online(
                             experiences=memory_bank["experiences"],
                         )
                         attempt_since_rebuild = 0
-                    result = await maybe_wait_for(
-                        agent.ainvoke(
-                            {"messages": [{"role": "user", "content": prompt}]}
-                        ),
-                        attempt_timeout_s,
-                    )
+                    print(f"[collect] agent.ainvoke start prompt={prompt_id} attempt={attempt_id}")
+                    try:
+                        result = await maybe_wait_for(
+                            agent.ainvoke(
+                                {"messages": [{"role": "user", "content": prompt}]}
+                            ),
+                            attempt_timeout_s,
+                        )
+                    except asyncio.TimeoutError:
+                        print(f"[collect] timeout prompt={prompt_id} attempt={attempt_id}")
+                        raise
+                    print(f"[collect] agent.ainvoke done prompt={prompt_id} attempt={attempt_id}")
                     attempt_since_rebuild += 1
                     break
                 except asyncio.TimeoutError:
@@ -351,9 +372,11 @@ async def collect_trajectories_online(
                 finally:
                     if cleanup_after_attempt is not None:
                         try:
+                            print(f"[collect] cleanup_hook start prompt={prompt_id} attempt={attempt_id}")
                             await maybe_wait_for(
                                 cleanup_after_attempt(), cleanup_timeout_s
                             )
+                            print(f"[collect] cleanup_hook done prompt={prompt_id} attempt={attempt_id}")
                         except Exception as e:
                             print(f"[collect] cleanup_after_attempt failed: {e}")
 
@@ -405,6 +428,7 @@ async def collect_trajectories_online(
             retry_delay = max(0.0, attempt_retry_delay_s)
             for retry_idx in range(max(0, attempt_retries) + 1):
                 try:
+                    print(f"[score] score_only start prompt={trajectory['prompt_id']} attempt={trajectory['attempt_id']}")
                     score = await maybe_wait_for(
                         score_only(
                             model=judge_model,
@@ -416,6 +440,7 @@ async def collect_trajectories_online(
                         ),
                         attempt_timeout_s,
                     )
+                    print(f"[score] score_only done prompt={trajectory['prompt_id']} attempt={trajectory['attempt_id']} score={score.get('overall_score', 'N/A')}")
                     break
                 except asyncio.TimeoutError:
                     print(
@@ -457,6 +482,7 @@ async def collect_trajectories_online(
             grpo_success = False
             for retry_idx in range(max(0, attempt_retries) + 1):
                 try:
+                    print(f"[grpo] start prompt={prompt_id}")
                     await maybe_wait_for(
                         grpo_summarize_and_update_memory(
                             agent=judge_agent,
@@ -468,7 +494,7 @@ async def collect_trajectories_online(
                         attempt_timeout_s,
                     )
                     grpo_success = True
-                    print(f"[grpo] experience written for prompt={prompt_id}")
+                    print(f"[grpo] done prompt={prompt_id}")
                     break
                 except asyncio.TimeoutError:
                     print(f"[grpo] timeout prompt={prompt_id} after {attempt_timeout_s}s")
@@ -536,7 +562,12 @@ async def build_agent(
     from deepagents import create_deep_agent
     from langchain.agents.middleware import ToolRetryMiddleware
     from langchain_openai import ChatOpenAI
+    import tools.GeneralTool as GeneralToolModule
     from tools.SubAgentTool import init_subagents
+
+    general_tools = []
+    for func_name in GeneralToolModule.__all__:
+        general_tools.append(getattr(GeneralToolModule, func_name))
 
     subagents = list(await init_subagents(experiences=experiences or []))
 
@@ -549,7 +580,7 @@ async def build_agent(
 
     return create_deep_agent(
         model=chat,
-        tools=[],
+        tools=general_tools,
         system_prompt=system_prompt,
         subagents=subagents,
         middleware=[
@@ -615,7 +646,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--judge_api_base", type=str, default="https://api.deepseek.com")
     parser.add_argument("--judge_api_key", type=str, default="")
     parser.add_argument("--judge_temperature", type=float, default=0.0)
-    parser.add_argument("--judge_max_tokens", type=int, default=1024)
+    parser.add_argument("--judge_max_tokens", type=int, default=8192)  # DeepSeek max output
     parser.add_argument("--max_experiences_in_prompt", type=int, default=20)
     parser.add_argument(
         "--request_timeout_s",
