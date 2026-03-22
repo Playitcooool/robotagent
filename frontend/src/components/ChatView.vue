@@ -413,10 +413,8 @@ export default {
       return rendered
     }
 
-    // Per-message cached rendering with streaming debounce
-    // Caches rendered HTML per msgId; during active streaming debounces re-renders to 300ms
-    const pendingRenders = {} // msgId -> timer
-
+    // Per-message cached rendering with immediate re-render on text change
+    // Caches rendered HTML per msgId, re-renders immediately when text updates
     function getCachedRender (msgId, text) {
       const raw = String(text || '')
       if (!raw) return ''
@@ -676,12 +674,6 @@ export default {
       document.removeEventListener('click', handleGlobalClick)
       document.removeEventListener('keydown', handleGlobalKeydown)
       document.removeEventListener('click', handleCodeCopy)
-      for (const tid of Object.values(pendingRenders)) {
-        clearTimeout(tid)
-      }
-      for (const k in pendingRenders) {
-        delete pendingRenders[k]
-      }
     })
 
     watch(
