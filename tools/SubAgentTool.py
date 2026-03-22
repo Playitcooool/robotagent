@@ -182,7 +182,8 @@ async def init_subagents(
                             }
                         }
                     )
-                    service_tools = await client.get_tools()
+                    # 顺序加载每个服务的工具，避免并发gather导致的unhandled异常
+                    service_tools = await client.get_tools(server_name=service_name)
                     break
                 except Exception as e:
                     last_error = e
