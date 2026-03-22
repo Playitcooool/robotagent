@@ -27,7 +27,7 @@
             <!-- Default thinking indicator -->
             <template v-else>
               <div class="typing-head">
-                <span class="typing-label">正在思考并调用工具</span>
+                <span class="typing-label">加载中...</span>
                 <span class="typing-dots" aria-hidden="true">
                   <span class="dot"></span>
                   <span class="dot"></span>
@@ -420,23 +420,15 @@ export default {
     function getCachedRender (msgId, text) {
       const raw = String(text || '')
       if (!raw) return ''
-      // Cache hit
+      // Cache hit — return immediately
       if (renderedCache.has(msgId) && renderedCache.get(msgId).raw === raw) {
         return renderedCache.get(msgId).html
       }
-      // Debounce re-renders during streaming (when cache exists but text changed)
+      // Cache exists but text changed — re-render immediately (no stale return)
       if (renderedCache.has(msgId)) {
-        if (pendingRenders[msgId]) return renderedCache.get(msgId).html
-        pendingRenders[msgId] = setTimeout(() => {
-          const cached = renderedCache.get(msgId)
-          if (cached) {
-            const freshHtml = renderMarkdown(cached.raw)
-            cached.html = freshHtml
-          }
-          delete pendingRenders[msgId]
-        }, 300)
-        // Return stale HTML while debouncing
-        return renderedCache.get(msgId).html
+        const html = renderMarkdown(raw)
+        renderedCache.set(msgId, { raw, html })
+        return html
       }
       // No cache — render immediately
       const html = renderMarkdown(raw)

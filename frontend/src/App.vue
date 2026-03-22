@@ -460,6 +460,7 @@ export default {
       }
 
       try {
+        console.log('[SSE] sending fetch to /api/chat/send')
         const res = await apiFetch('/api/chat/send', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -470,8 +471,8 @@ export default {
         })
 
         if (!res.ok) {
+          console.log('[SSE] response not ok:', res.status, res.statusText)
           const idxErr = conversation.value.findIndex(m => m.id === mainMessageId)
-          const errText = '无法连接后端（http ' + res.status + '）'
           if (idxErr !== -1) {
             conversation.value[idxErr].loading = false
             conversation.value[idxErr].text = errText
@@ -483,6 +484,7 @@ export default {
         }
 
         if (!res.body || !res.body.getReader) {
+          console.log('[SSE] no body or no getReader, reading as text')
           const textBody = await res.text()
           const idxNoStream = conversation.value.findIndex(m => m.id === mainMessageId)
           const txt = textBody || '[后端返回空响应]'
@@ -499,11 +501,17 @@ export default {
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
         let buf = ''
+        console.log('[SSE] start reading stream')
 
         while (true) {
           const { done, value } = await reader.read()
-          if (done) break
+          if (done) {
+            console.log('[SSE] stream done')
+            break
+          }
+          console.log('[SSE] chunk received, size=', value ? value.length : 0, 'buf=', buf.length)
           buf += decoder.decode(value, { stream: true })
+          console.log('[SSE] buf after decode, len=', buf.length)
 
           const lines = buf.split('\n')
           buf = lines.pop()
@@ -512,11 +520,15 @@ export default {
             if (!line.trim()) continue
             let obj = null
             try {
+              console.log('[SSE] raw line:', JSON.stringify(line))
               obj = JSON.parse(line)
+              console.log('[SSE] parsed obj:', JSON.stringify(obj))
             } catch (err) {
+              console.log('[SSE] JSON parse error:', err.message, 'line:', line.slice(0, 100))
               continue
             }
 
+            console.log('[SSE]', obj.type, obj.text ? obj.text.slice(0, 50) : '', obj.source)
             if (obj.type === 'delta') {
               maybeStartSimStream(obj.source)
               const msgId = ensureAgentMessage(obj.source)
@@ -524,6 +536,7 @@ export default {
               const chunk = String(obj.text || '')
               if (!chunk) continue
 
+              console.log('[SSE] delta handling: msgId=', msgId, 'idx=', idx, 'chunk=', chunk)
               let st = assistantStreams[msgId]
               if (!st) {
                 st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [], ragReferences: [] }
@@ -539,12 +552,15 @@ export default {
               }
 
               if (idx !== -1) {
+                console.log('[SSE] updating existing msg at idx', idx, 'text=', conversation.value[idx].text)
                 if (conversation.value[idx].loading) {
                   conversation.value[idx].loading = false
                 }
                 conversation.value[idx].loadingKind = st.loadingKind || 'thinking'
                 conversation.value[idx].text = st.text
+                console.log('[SSE] after update text=', conversation.value[idx].text)
               } else {
+                console.log('[SSE] pushing new msg with text=', st.text)
                 conversation.value.push({ id: msgId, role: 'assistant', agent: normalizeSource(obj.source), text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated), loadingKind: st.loadingKind || 'thinking', webSearchResults: st.webSearchResults || [], ragReferences: st.ragReferences || [] })
               }
             } else if (obj.type === 'thinking') {

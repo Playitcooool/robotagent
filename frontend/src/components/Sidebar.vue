@@ -10,36 +10,14 @@
       <button class="logout-mini" @click="$emit('logout')">{{ t('logout') }}</button>
     </div>
 
-    <!-- Bulk action bar -->
-    <div v-if="selectedIds.size" class="bulk-bar">
-      <span class="bulk-count">{{ selectedIds.size }} 已选</span>
-      <button class="bulk-btn danger" @click="bulkDelete" :title="t('bulkDelete')">
-        🗑 {{ t('bulkDelete') }}
-      </button>
-      <button class="bulk-btn" @click="bulkExport" :title="t('bulkExport')">
-        📥 {{ t('bulkExport') }}
-      </button>
-      <button class="bulk-btn cancel" @click="clearSelection" :title="t('clearSelection')">
-        ✕
-      </button>
-    </div>
       <div
         v-for="s in sessions"
         :key="s.session_id"
-        :class="['item', { active: s.session_id === currentSessionId, selected: selectedIds.has(s.session_id) }]"
-        @click="handleItemClick(s, $event)"
+        :class="['item', { active: s.session_id === currentSessionId }]"
+        @click="select(s)"
       >
         <div class="item-row">
-          <!-- Bulk select checkbox -->
-          <label class="item-check" @click.stop>
-            <input
-              type="checkbox"
-              :checked="selectedIds.has(s.session_id)"
-              @change="toggleSelect(s.session_id)"
-              :aria-label="t('selectSession')"
-            />
-          </label>
-          <div class="meta" @click.stop="select(s)">
+          <div class="meta">
             <!-- Edit mode -->
             <input
               v-if="editingSessionId === s.session_id"
@@ -96,8 +74,8 @@
             </button>
           </div>
         </div>
-      </div>
     </div>
+
     <div class="footer">
       <button @click="startNew">+ {{ t('newChat') }}</button>
     </div>
@@ -122,7 +100,6 @@ export default {
   emits: ['selectSession', 'logout', 'sessionDeleted'],
   setup (props, { emit }) {
     const sessions = ref([])
-    const selectedIds = ref(new Set())
     const deletingSessionId = ref('')
     const editingSessionId = ref('')
     const editingTitle = ref('')
@@ -147,14 +124,7 @@ export default {
           exportSuccess: '会话已导出',
           shareSuccess: '链接已复制到剪贴板',
           renameSuccess: '会话已重命名',
-          confirmDelete: (title) => `确认删除会话「${title}」？`,
-          bulkDelete: '批量删除',
-          bulkExport: '批量导出',
-          clearSelection: '取消选择',
-          selectSession: '选择会话',
-          bulkDeleteConfirm: (n) => `确认删除选中的 ${n} 个会话？`,
-          bulkExportSuccess: '已导出多个会话',
-          bulkDeleteSuccess: (n) => `已删除 ${n} 个会话`
+          confirmDelete: (title) => `确认删除会话「${title}」？`
         },
         en: {
           history: 'History',
@@ -169,14 +139,7 @@ export default {
           exportSuccess: 'Session exported',
           shareSuccess: 'Link copied to clipboard',
           renameSuccess: 'Session renamed',
-          confirmDelete: (title) => `Delete session "${title}"?`,
-          bulkDelete: 'Bulk Delete',
-          bulkExport: 'Bulk Export',
-          clearSelection: 'Clear Selection',
-          selectSession: 'Select Session',
-          bulkDeleteConfirm: (n) => `Delete ${n} selected sessions?`,
-          bulkExportSuccess: 'Sessions exported',
-          bulkDeleteSuccess: (n) => `Deleted ${n} sessions`
+          confirmDelete: (title) => `Delete session "${title}"?`
         }
       }
       return translations[props.lang]?.[key] || translations['zh'][key] || key
@@ -312,93 +275,6 @@ export default {
       }
     }
 
-    // Toast
-    function handleItemClick (s, e) {
-      if (e.shiftKey && selectedIds.value.size > 0) {
-        // Range select
-        const ids = sessions.value.map(sess => sess.session_id)
-        const lastSelected = [...selectedIds.value].pop()
-        const lastIdx = ids.indexOf(lastSelected)
-        const currIdx = ids.indexOf(s.session_id)
-        const [from, to] = lastIdx < currIdx ? [lastIdx, currIdx] : [currIdx, lastIdx]
-        for (let i = from; i <= to; i++) {
-          selectedIds.value.add(ids[i])
-        }
-        selectedIds.value = new Set(selectedIds.value)
-      } else if (e.ctrlKey || e.metaKey || e.target.closest('.item-check')) {
-        toggleSelect(s.session_id)
-      } else {
-        clearSelection()
-        select(s)
-      }
-    }
-
-    function toggleSelect (sid) {
-      const s = new Set(selectedIds.value)
-      if (s.has(sid)) s.delete(sid)
-      else s.add(sid)
-      selectedIds.value = s
-    }
-
-    function clearSelection () {
-      selectedIds.value = new Set()
-    }
-
-    async function bulkDelete () {
-      const count = selectedIds.value.size
-      if (!count || !props.authToken) return
-      const ok = window.confirm(t('bulkDeleteConfirm')(count))
-      if (!ok) return
-      const toDelete = [...selectedIds.value]
-      try {
-        await Promise.all(toDelete.map(sid =>
-          fetch(`/api/sessions/${encodeURIComponent(sid)}`, {
-            method: 'DELETE',
-            headers: { Authorization: `Bearer ${props.authToken}` }
-          })
-        ))
-        sessions.value = sessions.value.filter(s => !selectedIds.value.has(s.session_id))
-        toDelete.forEach(sid => emit('sessionDeleted', sid))
-        showToast(t('bulkDeleteSuccess')(count))
-      } catch (_) {}
-      clearSelection()
-    }
-
-    async function bulkExport () {
-      const toExport = sessions.value.filter(s => selectedIds.value.has(s.session_id))
-      if (!toExport.length) return
-      try {
-        const allMessages = await Promise.all(
-          toExport.map(s =>
-            fetch(`/api/messages?session_id=${encodeURIComponent(s.session_id)}`, {
-              headers: { Authorization: `Bearer ${props.authToken}` }
-            }).then(r => r.json())
-          )
-        )
-        const exportData = {
-          exportedAt: new Date().toISOString(),
-          sessions: toExport.map((s, i) => ({
-            session_id: s.session_id,
-            title: s.title || s.preview || 'Session',
-            messages: (Array.isArray(allMessages[i]) ? allMessages[i] : []).map(m => ({
-              role: m.role,
-              content: m.text || m.content || ''
-            }))
-          }))
-        }
-        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = `robotagent-sessions-${Date.now()}.json`
-        a.click()
-        URL.revokeObjectURL(url)
-        showToast(t('bulkExportSuccess'))
-      } catch (e) {
-        console.error('Bulk export failed:', e)
-      }
-    }
-
     function showToast (msg) {
       toast.value = msg
       setTimeout(() => { toast.value = '' }, 2000)
@@ -449,12 +325,6 @@ export default {
       snippet,
       sessionTitle,
       formatTime,
-      selectedIds,
-      handleItemClick,
-      toggleSelect,
-      clearSelection,
-      bulkDelete,
-      bulkExport,
       t
     }
   }
@@ -679,76 +549,6 @@ export default {
   color: var(--text);
   font-weight: 600;
   cursor: pointer;
-}
-
-/* Bulk action bar */
-.bulk-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  margin-bottom: 8px;
-  border: 1px solid rgba(47, 125, 255, 0.4);
-  border-radius: var(--radius-md);
-  background: rgba(47, 125, 255, 0.1);
-  animation: fadeIn 0.2s ease;
-}
-
-.bulk-count {
-  font-size: 12px;
-  color: #9aa4b2;
-  flex: 1;
-}
-
-.bulk-btn {
-  font-size: 11px;
-  padding: 3px 8px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--text);
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.bulk-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
-}
-
-.bulk-btn.danger {
-  color: var(--danger);
-  border-color: rgba(255, 107, 107, 0.35);
-  background: rgba(255, 107, 107, 0.08);
-}
-
-.bulk-btn.danger:hover {
-  background: rgba(255, 107, 107, 0.16);
-}
-
-.bulk-btn.cancel {
-  padding: 3px 6px;
-  font-size: 13px;
-}
-
-/* Checkbox */
-.item-check {
-  display: flex;
-  align-items: center;
-  flex: 0 0 auto;
-  cursor: pointer;
-}
-
-.item-check input[type="checkbox"] {
-  width: 15px;
-  height: 15px;
-  cursor: pointer;
-  accent-color: var(--accent);
-  border-radius: 3px;
-}
-
-.item.selected {
-  border-color: rgba(47, 125, 255, 0.45) !important;
-  background: #121a2c !important;
 }
 
 /* Toast */

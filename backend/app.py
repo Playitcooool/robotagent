@@ -840,7 +840,7 @@ async def chat_send(
 
     async def event_stream():
         prev_rag_disabled = os.environ.get("RAG_DISABLED")
-        if rag_disabled:
+        if prev_rag_disabled:
             os.environ["RAG_DISABLED"] = "1"
         main_latest_text = ""
         main_stream_text = ""
@@ -1176,12 +1176,14 @@ async def chat_send(
                 {"role": "user", "content": user_message},
             ]
             # 同时订阅 messages(增量token) 与 values(状态事件)，保证前端实时流式显示。
+            print(f"[DEBUG] ====== Starting astream for user={user_id} session={session_id} ======")
             async for mode, event in active_agent.astream(
                 {"messages": input_messages},
                 stream_mode=["messages", "values"],
                 config={"configurable": {"thread_id": f"{user_id}:{session_id}"}},
             ):
                 if mode == "messages":
+                    print(f"[DEBUG] ======== messages mode event ========")
                     try:
                         msg, _meta = event
                     except Exception:
@@ -1199,6 +1201,7 @@ async def chat_send(
                             )
                     role_name = _normalize_message_role(msg)
                     source = _resolve_agent_source(_meta)
+                    print(f"[DEBUG] role_name={role_name} source={source}")
                     if role_name in {"assistant", "ai"}:
                         msg_id = _extract_message_id(msg)
                         if msg_id:
@@ -1238,6 +1241,7 @@ async def chat_send(
 
                     if role_name in {"assistant", "ai"}:
                         thinking_text = _extract_thinking_from_message(msg)
+                        print(f"[DEBUG] role={role_name} thinking_text={repr(thinking_text[:100]) if thinking_text else ''}")
                         if thinking_text:
                             if len(thinking_text) > MAX_THINKING_CHARS:
                                 thinking_text = thinking_text[:MAX_THINKING_CHARS]
@@ -1261,6 +1265,7 @@ async def chat_send(
                                 ) + "\n"
 
                         delta = _extract_text_from_message(msg)
+                        print(f"[DEBUG] delta={repr(delta[:200]) if delta else ''}")
                         if delta:
                             answer_delta, think_tag_delta, in_think_tag, think_tag_carry = (
                                 _split_think_and_answer_delta(
@@ -1288,6 +1293,7 @@ async def chat_send(
                                     thinking_truncated = True
 
                             if answer_delta:
+                                print(f"[DEBUG] YIELDING DELTA: {repr(answer_delta[:100])} source={source}")
                                 if source == "main":
                                     main_stream_text += answer_delta
                                 yield json.dumps(
@@ -1301,10 +1307,13 @@ async def chat_send(
                     continue
 
                 if mode != "values":
+                    print(f"[DEBUG] non-messages/values mode: {mode}")
                     continue
 
+                print(f"[DEBUG] ======== values mode event ========")
                 messages = event.get("messages") if isinstance(event, dict) else None
                 if isinstance(messages, list):
+                    print(f"[DEBUG] values messages list len={len(messages)}")
                     for message in messages:
                         role_name = _normalize_message_role(message)
                         if role_name not in {"assistant", "ai"}:
@@ -1621,6 +1630,7 @@ async def chat_send(
                 ) + "\n"
 
             final_text = main_latest_text or main_stream_text
+            print(f"[DEBUG] final_text={repr(final_text[:200]) if final_text else 'EMPTY'} main_latest_text={repr(main_latest_text[:100]) if main_latest_text else ''} main_stream_text={repr(main_stream_text[:100]) if main_stream_text else ''}")
             if final_text:
                 await _append_chat_message(user_id, session_id, "assistant", final_text)
             final_usage_by_agent = {}
@@ -1636,6 +1646,7 @@ async def chat_send(
                     final_usage_by_agent,
                 )
             # 发送完成信号
+            print(f"[DEBUG] ====== STREAM COMPLETE, yielding done ======")
             yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
         except Exception as e:
             logger.error(
@@ -1654,7 +1665,7 @@ async def chat_send(
                 ensure_ascii=False,
             ) + "\n"
         finally:
-            if rag_disabled:
+            if prev_rag_disabled:
                 if prev_rag_disabled is None:
                     os.environ.pop("RAG_DISABLED", None)
                 else:
