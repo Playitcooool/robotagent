@@ -1,3 +1,7 @@
+import os
+os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,host.docker.internal")
+os.environ.setdefault("no_proxy", "localhost,127.0.0.1,host.docker.internal")
+
 import argparse
 import asyncio
 import json
