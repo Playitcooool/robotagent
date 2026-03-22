@@ -11,6 +11,12 @@ services:
     environment:
       - TZ=UTC
       - PYBULLET_STREAM_DIR=/app/mcp/.sim_stream
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - http_proxy=
+      - https_proxy=
+      - NO_PROXY=localhost,127.0.0.1
+      - no_proxy=localhost,127.0.0.1
     tty: true
     ports:
       - "127.0.0.1:18001:8000"

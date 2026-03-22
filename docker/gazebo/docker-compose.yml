@@ -13,6 +13,12 @@ services:
       - ROS_DOMAIN_ID=0
       - GAZEBO_BUILTIN_MODEL_ROOT=/app/mcp/assets/gazebo_models
       - GAZEBO_MODEL_PATH=/app/mcp/assets/gazebo_models:/opt/gazebo_models/osrf:/usr/share/gazebo-11/models
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - http_proxy=
+      - https_proxy=
+      - NO_PROXY=localhost,127.0.0.1
+      - no_proxy=localhost,127.0.0.1
     ports:
       - "127.0.0.1:8002:8002"
     tty: true
