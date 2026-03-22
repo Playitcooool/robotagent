@@ -6,11 +6,12 @@
 
 实验设计:
 - 测试集: experiments/data/test_queries.jsonl (20个新提示，不在训练轨迹中)
-  - 10个 in_domain: 与训练任务同分布（PyBullet机器人操作）
-  - 10个 ood: 超出训练分布（化学仿真、里程计、Gazebo、RL等）
+  - easy (6个): 简单单步操作
+  - medium (6个): 多步骤或参数调节
+  - hard (8个): 精密控制/协同规划/边界条件
 - 对比: 每个提示分别以"有经验注入"和"无经验注入"两种方式运行
 - 评估: 使用 DeepSeek Judge 独立评分两者
-- 分析: 计算经验带来的提升率，识别泛化边界
+- 分析: 计算经验带来的提升率，按难度分组分析泛化边界
 
 使用方式:
     python evaluate_experiment_04.py \
@@ -134,7 +135,7 @@ def build_judge_prompt(query: dict, response: str, experience_context: str = "")
     return f"""请对以下机器人任务响应进行严格评分。
 
 **测试提示**: {query['prompt']}
-**类别**: {query.get('category', 'unknown')}
+**难度**: {query.get('difficulty', 'unknown')}
 **经验上下文**:
 {experience_context}
 
@@ -256,10 +257,11 @@ def generate_report(results: list, out_dir: Path):
             by_query[qid] = {}
         by_query[qid][r["mode"]] = r
 
-    # 计算每个 query 的提升率
+    # 按难度分组
+    diff_scores = {"easy": {"with_exp": [], "without_exp": []},
+                   "medium": {"with_exp": [], "without_exp": []},
+                   "hard": {"with_exp": [], "without_exp": []}}
     improvements = []
-    in_domain_scores = {"with_exp": [], "without_exp": []}
-    ood_scores = {"with_exp": [], "without_exp": []}
 
     for qid, modes in by_query.items():
         w_exp = modes.get("with_exp", {}).get("score", {})
@@ -269,13 +271,10 @@ def generate_report(results: list, out_dir: Path):
             delta = w_exp.get("overall_score", 0) - wo_exp.get("overall_score", 0)
             improvements.append(delta)
 
-            category = modes.get("with_exp", {}).get("category", "unknown")
-            if category == "in_domain":
-                in_domain_scores["with_exp"].append(w_exp.get("overall_score", 0))
-                in_domain_scores["without_exp"].append(wo_exp.get("overall_score", 0))
-            else:
-                ood_scores["with_exp"].append(w_exp.get("overall_score", 0))
-                ood_scores["without_exp"].append(wo_exp.get("overall_score", 0))
+            difficulty = modes.get("with_exp", {}).get("difficulty", "unknown")
+            if difficulty in diff_scores:
+                diff_scores[difficulty]["with_exp"].append(w_exp.get("overall_score", 0))
+                diff_scores[difficulty]["without_exp"].append(wo_exp.get("overall_score", 0))
 
     # 生成图表
     try:
@@ -285,9 +284,9 @@ def generate_report(results: list, out_dir: Path):
         plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial Unicode MS']
         plt.rcParams['axes.unicode_minus'] = False
 
-        # 1. 经验提升率分布
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
+        # 1. 经验提升率分布
         if improvements:
             axes[0].hist(improvements, bins=10, color='#3498db', alpha=0.7, edgecolor='black')
             axes[0].axvline(mean(improvements), color='red', linestyle='--', linewidth=2,
@@ -297,21 +296,21 @@ def generate_report(results: list, out_dir: Path):
             axes[0].set_title('Experience Benefit Distribution', fontsize=14, fontweight='bold')
             axes[0].legend()
 
-        # 2. In-domain vs OOD 对比
-        categories = ['In-Domain', 'OOD']
-        with_scores = [mean(in_domain_scores["with_exp"]) if in_domain_scores["with_exp"] else 0,
-                       mean(ood_scores["with_exp"]) if ood_scores["with_exp"] else 0]
-        without_scores = [mean(in_domain_scores["without_exp"]) if in_domain_scores["without_exp"] else 0,
-                          mean(ood_scores["without_exp"]) if ood_scores["without_exp"] else 0]
+        # 2. 按难度分组对比
+        difficulties = ['easy', 'medium', 'hard']
+        with_scores = [mean(diff_scores[d]["with_exp"]) if diff_scores[d]["with_exp"] else 0
+                       for d in difficulties]
+        without_scores = [mean(diff_scores[d]["without_exp"]) if diff_scores[d]["without_exp"] else 0
+                          for d in difficulties]
 
-        x = np.arange(len(categories))
+        x = np.arange(len(difficulties))
         width = 0.35
         axes[1].bar(x - width/2, with_scores, width, label='With Experience', color='#2ecc71', alpha=0.8)
         axes[1].bar(x + width/2, without_scores, width, label='Without Experience', color='#e74c3c', alpha=0.8)
         axes[1].set_ylabel('Average Score', fontsize=12)
-        axes[1].set_title('In-Domain vs OOD Performance', fontsize=14, fontweight='bold')
+        axes[1].set_title('Performance by Task Difficulty', fontsize=14, fontweight='bold')
         axes[1].set_xticks(x)
-        axes[1].set_xticklabels(categories)
+        axes[1].set_xticklabels(difficulties)
         axes[1].legend()
         axes[1].set_ylim(0, 10)
 
@@ -334,15 +333,16 @@ def generate_report(results: list, out_dir: Path):
             ax.bar(x - width/2, w_scores, width, label='With Experience', color='#2ecc71', alpha=0.8)
             ax.bar(x + width/2, wo_scores, width, label='Without Experience', color='#e74c3c', alpha=0.8)
 
-            # 标注类别
-            categories_list = [by_query[q].get("with_exp", {}).get("category", "unknown") for q in sorted_qids]
-            for i, cat in enumerate(categories_list):
-                color = '#3498db' if cat == 'in_domain' else '#9b59b6'
-                ax.axvline(i, color=color, linestyle=':', alpha=0.5)
+            # 标注难度
+            diff_colors = {'easy': '#2ecc71', 'medium': '#f39c12', 'hard': '#e74c3c'}
+            for i, qid in enumerate(sorted_qids):
+                diff = by_query[q].get("with_exp", {}).get("difficulty", "unknown")
+                color = diff_colors.get(diff, '#95a5a6')
+                ax.axvline(i, color=color, linestyle=':', alpha=0.6, linewidth=2)
 
             ax.set_xlabel('Query ID', fontsize=12)
             ax.set_ylabel('Score', fontsize=12)
-            ax.set_title('Per-Query: With vs Without Experience (blue=in_domain, purple=ood)', fontsize=14, fontweight='bold')
+            ax.set_title('Per-Query: With vs Without Experience (green=easy, orange=medium, red=hard)', fontsize=14, fontweight='bold')
             ax.set_xticks(x)
             ax.set_xticklabels(sorted_qids)
             ax.legend()
@@ -444,7 +444,7 @@ async def main():
 
             result = {
                 "query_id": query["id"],
-                "category": query["category"],
+                "difficulty": query["difficulty"],
                 "prompt": query["prompt"],
                 "mode": mode,
                 "response": response[:500] if response else "",
@@ -469,8 +469,7 @@ async def main():
         by_query[qid][r["mode"]] = r
 
     improvements = []
-    in_domain_improvements = []
-    ood_improvements = []
+    diff_improvements = {"easy": [], "medium": [], "hard": []}
 
     for qid, modes in by_query.items():
         w_exp = modes.get("with_exp", {}).get("score", {})
@@ -480,23 +479,30 @@ async def main():
             delta = w_exp.get("overall_score", 0) - wo_exp.get("overall_score", 0)
             improvements.append(delta)
 
-            category = modes.get("with_exp", {}).get("category", "unknown")
-            if category == "in_domain":
-                in_domain_improvements.append(delta)
-            else:
-                ood_improvements.append(delta)
+            difficulty = modes.get("with_exp", {}).get("difficulty", "unknown")
+            if difficulty in diff_improvements:
+                diff_improvements[difficulty].append(delta)
+
+    diff_stats = {}
+    for d, vals in diff_improvements.items():
+        diff_stats[d] = {
+            "mean": round(mean(vals), 3) if vals else 0,
+            "count": len(vals),
+        }
 
     summary = {
         "total_queries": len(queries),
         "total_results": len(results),
-        "in_domain_count": sum(1 for q in queries if q.get("category") == "in_domain"),
-        "ood_count": sum(1 for q in queries if q.get("category") != "in_domain"),
+        "difficulty_counts": {
+            "easy": sum(1 for q in queries if q.get("difficulty") == "easy"),
+            "medium": sum(1 for q in queries if q.get("difficulty") == "medium"),
+            "hard": sum(1 for q in queries if q.get("difficulty") == "hard"),
+        },
         "improvements": {
             "mean": round(mean(improvements), 3) if improvements else 0,
             "std": round(stdev(improvements), 3) if len(improvements) > 1 else 0,
             "positive_ratio": round(sum(1 for i in improvements if i > 0) / len(improvements), 3) if improvements else 0,
-            "in_domain_mean": round(mean(in_domain_improvements), 3) if in_domain_improvements else 0,
-            "ood_mean": round(mean(ood_improvements), 3) if ood_improvements else 0,
+            "by_difficulty": diff_stats,
         }
     }
 
