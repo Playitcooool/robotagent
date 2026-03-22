@@ -13,6 +13,7 @@ simulation_api_key: "no_need"
 mcp:
   ip: "http://localhost"
   port: "18001"
+  gazebo_port: "8002"
 
 tavily:
   api_key: "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"
