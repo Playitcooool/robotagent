@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+
 os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,host.docker.internal")
 os.environ.setdefault("no_proxy", "localhost,127.0.0.1,host.docker.internal")
 
@@ -59,18 +60,23 @@ def load_config() -> dict:
 # Agent builder (mirrors collect.py build_agent)
 # ---------------------------------------------------------------------------
 
+
 async def build_exp_agent(
     base_url: str,
     model: str,
     api_key: str,
     system_prompt: str,
     with_experiences: bool,
-    request_timeout_s: float | None = 600.0,
+    request_timeout_s: float | None = 1800,
 ) -> Any:
     """Build an agent. If with_experiences=True, inject from agent_experiences.json."""
     from deepagents import create_deep_agent
     import tools.GeneralTool as GeneralToolModule
-    from tools.SubAgentTool import init_subagents, _load_agent_experiences, build_experience_suffix
+    from tools.SubAgentTool import (
+        init_subagents,
+        _load_agent_experiences,
+        build_experience_suffix,
+    )
 
     general_tools = []
     for func_name in GeneralToolModule.__all__:
@@ -131,7 +137,11 @@ def call_judge(llm: ChatOpenAI, prompt: str, max_retries: int = 3) -> dict:
             content = getattr(response, "content", "")
             if isinstance(content, list):
                 content = "".join(
-                    str(block.get("text", "")) if isinstance(block, dict) else str(block)
+                    (
+                        str(block.get("text", ""))
+                        if isinstance(block, dict)
+                        else str(block)
+                    )
                     for block in content
                 )
             json_match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
@@ -144,7 +154,7 @@ def call_judge(llm: ChatOpenAI, prompt: str, max_retries: int = 3) -> dict:
             last_error = str(e)
 
         if attempt < max_retries - 1:
-            time_module.sleep(2 ** attempt)
+            time_module.sleep(2**attempt)
 
     return {
         "overall_score": 0.0,
@@ -183,6 +193,7 @@ def build_judge_prompt(query: dict, response: str, mode: str) -> str:
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
+
 
 def load_test_queries(path: Path) -> list:
     queries = []
@@ -223,8 +234,9 @@ def load_existing_results(out_dir: Path) -> tuple[list, set]:
 # Run agent on a query
 # ---------------------------------------------------------------------------
 
+
 async def run_agent_query(
-    agent, query: dict, timeout_s: float = 300.0
+    agent, query: dict, timeout_s: float = 1200.0
 ) -> tuple[str, str]:
     """Run agent on a single query, return (response_text, error)."""
     try:
@@ -250,6 +262,7 @@ async def run_agent_query(
 # ---------------------------------------------------------------------------
 # Charts
 # ---------------------------------------------------------------------------
+
 
 def generate_report(results: list, out_dir: Path):
     """Generate charts."""
@@ -289,8 +302,13 @@ def generate_report(results: list, out_dir: Path):
     if improvements:
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.hist(improvements, bins=10, color="#3498db", alpha=0.7, edgecolor="black")
-        ax.axvline(mean(improvements), color="red", linestyle="--", linewidth=2,
-                   label=f"Mean: {mean(improvements):.2f}")
+        ax.axvline(
+            mean(improvements),
+            color="red",
+            linestyle="--",
+            linewidth=2,
+            label=f"Mean: {mean(improvements):.2f}",
+        )
         ax.set_xlabel("Score Improvement (with - without)", fontsize=12)
         ax.set_ylabel("Count", fontsize=12)
         ax.set_title("Experience Benefit Distribution", fontsize=14, fontweight="bold")
@@ -317,8 +335,22 @@ def generate_report(results: list, out_dir: Path):
     x = np.arange(len(difficulties))
     width = 0.35
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.bar(x - width / 2, with_scores, width, label="With Experience", color="#2ecc71", alpha=0.8)
-    ax.bar(x + width / 2, without_scores, width, label="Without Experience", color="#e74c3c", alpha=0.8)
+    ax.bar(
+        x - width / 2,
+        with_scores,
+        width,
+        label="With Experience",
+        color="#2ecc71",
+        alpha=0.8,
+    )
+    ax.bar(
+        x + width / 2,
+        without_scores,
+        width,
+        label="Without Experience",
+        color="#e74c3c",
+        alpha=0.8,
+    )
     ax.set_ylabel("Average Score", fontsize=12)
     ax.set_title("Performance by Task Difficulty", fontsize=14, fontweight="bold")
     ax.set_xticks(x)
@@ -335,11 +367,31 @@ def generate_report(results: list, out_dir: Path):
         sorted_qids = sorted(by_query.keys())
         x = np.arange(len(sorted_qids))
 
-        w_scores = [by_query[q].get("with_exp", {}).get("score", {}).get("overall_score", 0) for q in sorted_qids]
-        wo_scores = [by_query[q].get("without_exp", {}).get("score", {}).get("overall_score", 0) for q in sorted_qids]
+        w_scores = [
+            by_query[q].get("with_exp", {}).get("score", {}).get("overall_score", 0)
+            for q in sorted_qids
+        ]
+        wo_scores = [
+            by_query[q].get("without_exp", {}).get("score", {}).get("overall_score", 0)
+            for q in sorted_qids
+        ]
 
-        ax.bar(x - width / 2, w_scores, width, label="With Experience", color="#2ecc71", alpha=0.8)
-        ax.bar(x + width / 2, wo_scores, width, label="Without Experience", color="#e74c3c", alpha=0.8)
+        ax.bar(
+            x - width / 2,
+            w_scores,
+            width,
+            label="With Experience",
+            color="#2ecc71",
+            alpha=0.8,
+        )
+        ax.bar(
+            x + width / 2,
+            wo_scores,
+            width,
+            label="Without Experience",
+            color="#e74c3c",
+            alpha=0.8,
+        )
 
         diff_colors = {"easy": "#2ecc71", "medium": "#f39c12", "hard": "#e74c3c"}
         for i, qid in enumerate(sorted_qids):
@@ -349,7 +401,11 @@ def generate_report(results: list, out_dir: Path):
 
         ax.set_xlabel("Query ID", fontsize=12)
         ax.set_ylabel("Score", fontsize=12)
-        ax.set_title("Per-Query: With vs Without Experience (green=easy, orange=medium, red=hard)", fontsize=14, fontweight="bold")
+        ax.set_title(
+            "Per-Query: With vs Without Experience (green=easy, orange=medium, red=hard)",
+            fontsize=14,
+            fontweight="bold",
+        )
         ax.set_xticks(x)
         ax.set_xticklabels(sorted_qids)
         ax.legend()
@@ -365,19 +421,29 @@ def generate_report(results: list, out_dir: Path):
 # Main
 # ---------------------------------------------------------------------------
 
+
 async def main():
-    parser = argparse.ArgumentParser(description="实验4: 经验迁移性分析（直接Agent对比）")
+    parser = argparse.ArgumentParser(
+        description="实验4: 经验迁移性分析（直接Agent对比）"
+    )
     parser.add_argument("--test-queries", required=True, help="测试查询JSONL文件")
     parser.add_argument("--out-dir", required=True, help="输出目录")
     parser.add_argument("--config", default=None, help="配置文件路径")
     parser.add_argument("--limit", type=int, default=0, help="限制测试数量")
-    parser.add_argument("--experiences-only", action="store_true", help="只运行有经验版本")
+    parser.add_argument(
+        "--experiences-only", action="store_true", help="只运行有经验版本"
+    )
+    parser.add_argument(
+        "--timeout", type=int, default=1200, help="单个query超时时间（秒），默认1200"
+    )
     args = parser.parse_args()
 
     config = load_config()
 
     # Agent config (local deployment)
-    agent_base_url = os.environ.get("AGENT_MODEL_URL") or config.get("model_url", "http://localhost:1234/v1")
+    agent_base_url = os.environ.get("AGENT_MODEL_URL") or config.get(
+        "model_url", "http://localhost:1234/v1"
+    )
     agent_model = os.environ.get("AGENT_MODEL") or config.get("llm", "")
     agent_api_key = os.environ.get("AGENT_API_KEY") or config.get("api_key", "no_need")
 
@@ -385,7 +451,9 @@ async def main():
     judge_cfg = config.get("judge", {})
     judge_api_base = os.environ.get("JUDGE_API_BASE") or judge_cfg.get("api_base", "")
     judge_api_key = os.environ.get("JUDGE_API_KEY") or judge_cfg.get("api_key", "")
-    judge_model = os.environ.get("JUDGE_MODEL") or judge_cfg.get("model", "deepseek-chat")
+    judge_model = os.environ.get("JUDGE_MODEL") or judge_cfg.get(
+        "model", "deepseek-chat"
+    )
 
     if not judge_api_base or not judge_model:
         raise ValueError("需要配置 judge API（在 config.yaml 或环境变量中）")
@@ -393,7 +461,7 @@ async def main():
     # Load test queries
     queries = load_test_queries(Path(args.test_queries))
     if args.limit > 0:
-        queries = queries[:args.limit]
+        queries = queries[: args.limit]
     print(f"Loaded {len(queries)} test queries")
 
     # Init judge LLM
@@ -402,7 +470,7 @@ async def main():
         api_key=judge_api_key or "dummy",
         model=judge_model,
         temperature=0,
-        timeout=judge_cfg.get("timeout", 120),
+        timeout=judge_cfg.get("timeout", 300),
     )
 
     # Build two agents at startup (rebuilt each query to ensure clean state)
@@ -430,33 +498,42 @@ async def main():
             run_idx += 1
             key = (query["id"], mode)
             if key in completed_keys:
-                print(f"[{run_idx}/{total_runs}] Skipping query_id={query['id']}, mode={mode} (already done)")
+                print(
+                    f"[{run_idx}/{total_runs}] Skipping query_id={query['id']}, mode={mode} (already done)"
+                )
                 continue
 
-            print(f"[{run_idx}/{total_runs}] Query {query['id']} ({query.get('difficulty', '?')}), mode={mode}")
+            print(
+                f"[{run_idx}/{total_runs}] Query {query['id']} ({query.get('difficulty', '?')}), mode={mode}"
+            )
 
             # Build agent for this run
-            with_exp = (mode == "with_exp")
+            with_exp = mode == "with_exp"
             agent = await build_exp_agent(
                 base_url=agent_base_url,
                 model=agent_model,
                 api_key=agent_api_key,
                 system_prompt=MainAgentPrompt.SYSTEM_PROMPT,
                 with_experiences=with_exp,
-                request_timeout_s=600.0,
+                request_timeout_s=float(args.timeout * 2),
             )
 
             # Run query
-            response, error = await run_agent_query(agent, query, timeout_s=300.0)
+            response, error = await run_agent_query(agent, query, timeout_s=float(args.timeout))
 
             if error:
                 print(f"  [ERROR] {error}")
-                score_data = {"overall_score": 0.0, "brief_reason": f"运行错误: {error}"}
+                score_data = {
+                    "overall_score": 0.0,
+                    "brief_reason": f"运行错误: {error}",
+                }
             else:
                 # Judge scoring
                 judge_prompt = build_judge_prompt(query, response, mode)
                 score_data = call_judge(judge_llm, judge_prompt)
-                print(f"  Score: {score_data.get('overall_score', 'N/A'):.1f}/10 - {score_data.get('brief_reason', '')[:60]}")
+                print(
+                    f"  Score: {score_data.get('overall_score', 'N/A'):.1f}/10 - {score_data.get('brief_reason', '')[:60]}"
+                )
 
             result = {
                 "query_id": query["id"],
@@ -517,7 +594,11 @@ async def main():
         "improvements": {
             "mean": round(mean(improvements), 3) if improvements else 0,
             "std": round(stdev(improvements), 3) if len(improvements) > 1 else 0,
-            "positive_ratio": round(sum(1 for i in improvements if i > 0) / len(improvements), 3) if improvements else 0,
+            "positive_ratio": (
+                round(sum(1 for i in improvements if i > 0) / len(improvements), 3)
+                if improvements
+                else 0
+            ),
             "by_difficulty": diff_stats,
         },
     }
