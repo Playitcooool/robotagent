@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+import os
+os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,host.docker.internal")
+os.environ.setdefault("no_proxy", "localhost,127.0.0.1,host.docker.internal")
+
 """
 实验4评估脚本: 经验迁移性分析 (Experience Transferability Analysis)
 
@@ -23,7 +27,6 @@
 import argparse
 import asyncio
 import json
-import os
 import re
 import sys
 import time as time_module
