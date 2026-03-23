@@ -2,7 +2,7 @@
 """
 实验4评估脚本: 经验迁移性分析 (Experience Transferability Analysis)
 
-研究问题: 从训练轨迹中提炼的经验，能否泛化到全新的测试任务？
+研究问题: 从训练轨迹中提炼的经验（agent_experiences.json），能否泛化到全新的测试任务？
 
 实验设计:
 - 测试集: experiments/data/test_queries.jsonl (20个新提示，不在训练轨迹中)
@@ -10,13 +10,14 @@
   - medium (6个): 多步骤或参数调节
   - hard (8个): 精密控制/协同规划/边界条件
 - 对比: 每个提示分别以"有经验注入"和"无经验注入"两种方式运行
+  - 有经验: backend 注入了 prompts/agent_experiences.json 的经验段落
+  - 无经验: backend 使用 clean base prompt
 - 评估: 使用 DeepSeek Judge 独立评分两者
 - 分析: 计算经验带来的提升率，按难度分组分析泛化边界
 
 使用方式:
     python evaluate_experiment_04.py \
         --test-queries experiments/data/test_queries.jsonl \
-        --memory output/training_free_grpo/external_memory.json \
         --out-dir results/exp04
 """
 
@@ -24,48 +25,12 @@ import argparse
 import asyncio
 import json
 import os
-import re
 import time as time_module
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from statistics import mean, stdev
 
 import yaml
 from langchain_openai import ChatOpenAI
-
-MEMORY_JSON_PATH_DEFAULT = "output/training_free_grpo/external_memory.json"
-
-
-def load_experiences(memory_path: str) -> list:
-    """加载经验库"""
-    if not os.path.exists(memory_path):
-        return []
-    with open(memory_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return data.get("experiences", [])
-
-
-def build_experience_context(experiences: list, max_experiences: int = 5) -> str:
-    """构建经验上下文（用于注入到 system prompt）"""
-    if not experiences:
-        return "（无相关经验）"
-
-    # 按 score 降序，取前 max_experiences 个
-    sorted_exp = sorted(experiences, key=lambda x: x.get("score", 0), reverse=True)[:max_experiences]
-
-    lines = []
-    for i, exp in enumerate(sorted_exp, 1):
-        principles = "; ".join(exp.get("principles", [])[:3])
-        dos = "; ".join(exp.get("dos", [])[:3])
-        donts = "; ".join(exp.get("donts", [])[:3])
-        lines.append(
-            f"经验{i}: {exp.get('summary', '')}\n"
-            f"  原则: {principles}\n"
-            f"  应做: {dos}\n"
-            f"  避免: {donts}\n"
-            f"  (质量评分: {exp.get('score', 0):.1f}/10)"
-        )
-    return "\n".join(lines)
 
 
 def load_test_queries(path: Path) -> list:
@@ -178,7 +143,7 @@ def load_existing_results(out_dir: Path) -> tuple[list, set]:
     return existing_results, completed_keys
 
 
-async def run_query_with_agent(query: dict, with_experience: bool, experiences: list,
+async def run_query_with_agent(query: dict, with_experience: bool,
                                  agent_config: dict) -> tuple[str, str]:
     """
     通过后端API运行查询
@@ -191,29 +156,19 @@ async def run_query_with_agent(query: dict, with_experience: bool, experiences: 
     backend_url = agent_config.get("backend_url", "http://localhost:8000")
     session_id = f"exp04_{query['id']}_{'exp' if with_experience else 'noexp'}"
 
-    # 构建带有经验注入的system prompt
-    if with_experience and experiences:
-        exp_context = build_experience_context(experiences)
-        system_extra = (
-            f"\n\n## 经验参考\n以下是从历史任务中提炼的经验，可作为参考：\n{exp_context}\n\n"
-            f"注意：这些经验来自类似任务，可以借鉴但不要机械套用，根据实际任务需求灵活运用。"
-        )
-    else:
-        system_extra = ""
-
     headers = {"Content-Type": "application/json"}
+    # 适配 backend 的 ChatIn schema: message 对应 prompt, 用 exp_mode 控制带/不带经验
     payload = {
-        "user_id": "experiment_04",
+        "message": query["prompt"],
         "session_id": session_id,
-        "prompt": query["prompt"],
-        "system_extra": system_extra,
+        "enabled_tools": [],
     }
 
     try:
-        # 使用流式API收集完整响应
+        # 使用流式API收集完整响应，通过 exp_mode 选择带/不带经验的 agent
         response_text = ""
         async with requests.post(
-            f"{backend_url}/chat/stream",
+            f"{backend_url}/api/chat/send?exp_mode={'without_exp' if not with_experience else 'with_exp'}",
             json=payload,
             headers=headers,
             timeout=agent_config.get("timeout", 120),
@@ -361,7 +316,6 @@ def generate_report(results: list, out_dir: Path):
 async def main():
     parser = argparse.ArgumentParser(description="实验4: 经验迁移性分析")
     parser.add_argument("--test-queries", required=True, help="测试查询JSONL文件")
-    parser.add_argument("--memory", default=MEMORY_JSON_PATH_DEFAULT, help="经验库路径")
     parser.add_argument("--out-dir", required=True, help="输出目录")
     parser.add_argument("--config", default=None, help="配置文件路径")
     parser.add_argument("--limit", type=int, default=0, help="限制测试数量")
@@ -386,9 +340,7 @@ async def main():
     if args.limit > 0:
         queries = queries[:args.limit]
 
-    experiences = load_experiences(args.memory)
     print(f"Loaded {len(queries)} test queries")
-    print(f"Loaded {len(experiences)} experiences from {args.memory}")
 
     # 初始化Judge LLM
     llm = ChatOpenAI(
@@ -428,7 +380,6 @@ async def main():
             response, error = await run_query_with_agent(
                 query,
                 with_experience=(mode == "with_exp"),
-                experiences=experiences,
                 agent_config=agent_config,
             )
 
@@ -437,8 +388,7 @@ async def main():
                 score_data = {"overall_score": 0.0, "brief_reason": f"运行错误: {error}"}
             else:
                 # 调用Judge评分
-                exp_context = build_experience_context(experiences) if mode == "with_exp" else ""
-                judge_prompt = build_judge_prompt(query, response, exp_context)
+                judge_prompt = build_judge_prompt(query, response, "")
                 score_data = call_judge(llm, judge_prompt)
                 print(f"  Score: {score_data.get('overall_score', 'N/A'):.1f}/10 - {score_data.get('brief_reason', '')[:50]}")
 
