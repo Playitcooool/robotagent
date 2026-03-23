@@ -2,7 +2,7 @@
 """
 实验4评估脚本: 经验迁移性分析 (Experience Transferability Analysis)
 
-研究问题: 从训练轨迹中提炼的经验（agent_experiences.json），能否泛化到全新的测试任务？
+研究问题: 从训练轨迹中提炼的经验，能否泛化到全新的测试任务？
 
 实验设计:
 - 测试集: experiments/data/test_queries.jsonl (20个新提示，不在训练轨迹中)
@@ -10,8 +10,7 @@
   - medium (6个): 多步骤或参数调节
   - hard (8个): 精密控制/协同规划/边界条件
 - 对比: 每个提示分别以"有经验注入"和"无经验注入"两种方式运行
-  - 有经验: backend 注入了 prompts/agent_experiences.json 的经验段落
-  - 无经验: backend 使用 clean base prompt
+- Agent: 本地部署模型（与 collect.py 相同）
 - 评估: 使用 DeepSeek Judge 独立评分两者
 - 分析: 计算经验带来的提升率，按难度分组分析泛化边界
 
@@ -25,84 +24,143 @@ import argparse
 import asyncio
 import json
 import os
+import re
+import sys
 import time as time_module
 from pathlib import Path
 from statistics import mean, stdev
+from typing import Any
+
+current_file = os.path.abspath(__file__)
+current_dir = os.path.dirname(current_file)
+root_dir = os.path.dirname(current_dir)
+sys.path.insert(0, root_dir)
 
 import yaml
 from langchain_openai import ChatOpenAI
+from langchain.agents.middleware import ToolRetryMiddleware
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+CONFIG_PATH = Path(root_dir) / "config" / "config.yml"
 
 
-def load_test_queries(path: Path) -> list:
-    """加载测试查询"""
-    queries = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            queries.append(json.loads(line))
-    return queries
+def load_config() -> dict:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
-def load_config(config_path: str = None) -> dict:
-    """加载配置文件"""
-    if config_path is None:
-        config_path = Path(__file__).parent / "config.yaml"
+# ---------------------------------------------------------------------------
+# Agent builder (mirrors collect.py build_agent)
+# ---------------------------------------------------------------------------
+
+async def build_exp_agent(
+    base_url: str,
+    model: str,
+    api_key: str,
+    system_prompt: str,
+    with_experiences: bool,
+    request_timeout_s: float | None = 600.0,
+) -> Any:
+    """Build an agent. If with_experiences=True, inject from agent_experiences.json."""
+    from deepagents import create_deep_agent
+    import tools.GeneralTool as GeneralToolModule
+    from tools.SubAgentTool import init_subagents, _load_agent_experiences, build_experience_suffix
+
+    general_tools = []
+    for func_name in GeneralToolModule.__all__:
+        general_tools.append(getattr(GeneralToolModule, func_name))
+
+    # Load experiences from JSON
+    experiences = _load_agent_experiences() if with_experiences else []
+
+    # Build system prompt with or without experience suffix
+    if with_experiences and experiences:
+        exp_suffix = build_experience_suffix(experiences)
+        full_system_prompt = system_prompt + exp_suffix
     else:
-        config_path = Path(config_path)
+        full_system_prompt = system_prompt
 
-    if not config_path.exists():
-        return {}
+    subagents = list(await init_subagents(experiences=experiences))
 
-    with config_path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    chat = ChatOpenAI(
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+        request_timeout=request_timeout_s,
+    )
+
+    return create_deep_agent(
+        model=chat,
+        tools=general_tools,
+        system_prompt=full_system_prompt,
+        subagents=subagents,
+        middleware=[
+            ToolRetryMiddleware(
+                max_retries=1,
+                backoff_factor=1.0,
+                initial_delay=1.0,
+            )
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Judge (DeepSeek)
+# ---------------------------------------------------------------------------
+
+JUDGE_SYSTEM_PROMPT = """你是一个严格的质量评审专家。只返回JSON格式的评分结果。"""
 
 
 def call_judge(llm: ChatOpenAI, prompt: str, max_retries: int = 3) -> dict:
-    """调用LLM Judge评分"""
+    """Call LLM Judge to score a response."""
     last_error = None
     for attempt in range(max_retries):
         try:
-            response = llm.invoke([
-                {"role": "system", "content": "你是一个严格的质量评审专家。只返回JSON格式的评分结果。"},
-                {"role": "user", "content": prompt}
-            ])
+            response = llm.invoke(
+                [
+                    {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ]
+            )
             content = getattr(response, "content", "")
             if isinstance(content, list):
                 content = "".join(
                     str(block.get("text", "")) if isinstance(block, dict) else str(block)
                     for block in content
                 )
-            # 提取JSON
-            json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
+            json_match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group())
             return json.loads(content)
         except json.JSONDecodeError as e:
             last_error = f"JSON decode error: {e}"
-            print(f"[WARN] Judge JSON decode failed (attempt {attempt + 1}/{max_retries}): {last_error}")
         except Exception as e:
             last_error = str(e)
-            print(f"[WARN] Judge API call failed (attempt {attempt + 1}/{max_retries}): {last_error}")
 
         if attempt < max_retries - 1:
             time_module.sleep(2 ** attempt)
 
-    print(f"[ERROR] Judge failed after {max_retries} attempts: {last_error}")
-    return {"overall_score": 0.0, "task_completion": 0.0, "correctness": 0.0,
-            "clarity": 0.0, "robustness": 0.0, "conciseness": 0.0,
-            "brief_reason": last_error or "judge failed"}
+    return {
+        "overall_score": 0.0,
+        "task_completion": 0.0,
+        "correctness": 0.0,
+        "clarity": 0.0,
+        "robustness": 0.0,
+        "conciseness": 0.0,
+        "brief_reason": last_error or "judge failed",
+    }
 
 
-def build_judge_prompt(query: dict, response: str, experience_context: str = "") -> str:
-    """构建Judge评估prompt"""
+def build_judge_prompt(query: dict, response: str, mode: str) -> str:
+    """Build prompt for judge."""
     return f"""请对以下机器人任务响应进行严格评分。
 
 **测试提示**: {query['prompt']}
 **难度**: {query.get('difficulty', 'unknown')}
-**经验上下文**:
-{experience_context}
+**模式**: {mode}
 
 **响应内容**:
 {response[:1500] if response else '（无响应）'}
@@ -119,8 +177,23 @@ def build_judge_prompt(query: dict, response: str, experience_context: str = "")
 }}"""
 
 
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+
+def load_test_queries(path: Path) -> list:
+    queries = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            queries.append(json.loads(line))
+    return queries
+
+
 def load_existing_results(out_dir: Path) -> tuple[list, set]:
-    """加载已存在的结果，支持断点续跑"""
+    """Load existing results, return (results, completed_keys)."""
     details_file = out_dir / "details.jsonl"
     if not details_file.exists():
         return [], set()
@@ -135,7 +208,7 @@ def load_existing_results(out_dir: Path) -> tuple[list, set]:
             try:
                 r = json.loads(line)
                 existing_results.append(r)
-                key = (r.get("query_id"), r.get("mode"))  # mode: with_exp / without_exp
+                key = (r.get("query_id"), r.get("mode"))
                 completed_keys.add(key)
             except Exception:
                 continue
@@ -143,68 +216,50 @@ def load_existing_results(out_dir: Path) -> tuple[list, set]:
     return existing_results, completed_keys
 
 
-async def run_query_with_agent(query: dict, with_experience: bool,
-                                 agent_config: dict) -> tuple[str, str]:
-    """
-    通过后端API运行查询
+# ---------------------------------------------------------------------------
+# Run agent on a query
+# ---------------------------------------------------------------------------
 
-    Returns:
-        tuple of (response_text, error_message)
-    """
-    import requests
-
-    backend_url = agent_config.get("backend_url", "http://localhost:8000")
-    session_id = f"exp04_{query['id']}_{'exp' if with_experience else 'noexp'}"
-
-    headers = {"Content-Type": "application/json"}
-    # 适配 backend 的 ChatIn schema: message 对应 prompt, 用 exp_mode 控制带/不带经验
-    payload = {
-        "message": query["prompt"],
-        "session_id": session_id,
-        "enabled_tools": [],
-    }
-
+async def run_agent_query(
+    agent, query: dict, timeout_s: float = 300.0
+) -> tuple[str, str]:
+    """Run agent on a single query, return (response_text, error)."""
     try:
-        # 使用流式API收集完整响应，通过 exp_mode 选择带/不带经验的 agent
+        result = await asyncio.wait_for(
+            agent.ainvoke({"messages": [{"role": "user", "content": query["prompt"]}]}),
+            timeout=timeout_s,
+        )
+        # Extract response text from result
+        messages = result.get("messages", []) if isinstance(result, dict) else []
+        # Get the last assistant message
         response_text = ""
-        async with requests.post(
-            f"{backend_url}/api/chat/send?exp_mode={'without_exp' if not with_experience else 'with_exp'}",
-            json=payload,
-            headers=headers,
-            timeout=agent_config.get("timeout", 120),
-            stream=True,
-        ) as resp:
-            if not resp.ok:
-                return "", f"HTTP {resp.status_code}"
-
-            for line in resp.iter_lines():
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line.decode("utf-8"))
-                except Exception:
-                    continue
-
-                if data.get("type") == "error":
-                    return "", data.get("error", "unknown error")
-                if data.get("type") == "delta":
-                    response_text += data.get("text", "")
-                if data.get("type") == "done":
-                    break
-
-        return response_text.strip(), ""
-    except requests.Timeout:
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                response_text = msg.get("content", "")
+                break
+        return response_text, ""
+    except asyncio.TimeoutError:
         return "", "timeout"
     except Exception as e:
         return "", str(e)
 
 
+# ---------------------------------------------------------------------------
+# Charts
+# ---------------------------------------------------------------------------
+
 def generate_report(results: list, out_dir: Path):
-    """生成分析报告和图表"""
+    """Generate charts."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+
     fig_dir = out_dir / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    # 按 query_id 分组
+    plt.rcParams["font.sans-serif"] = ["DejaVu Sans", "Arial Unicode MS"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+    # Group by query
     by_query = {}
     for r in results:
         qid = r["query_id"]
@@ -212,11 +267,8 @@ def generate_report(results: list, out_dir: Path):
             by_query[qid] = {}
         by_query[qid][r["mode"]] = r
 
-    # 按难度分组
-    diff_scores = {"easy": {"with_exp": [], "without_exp": []},
-                   "medium": {"with_exp": [], "without_exp": []},
-                   "hard": {"with_exp": [], "without_exp": []}}
     improvements = []
+    diff_improvements = {"easy": [], "medium": [], "hard": []}
 
     for qid, modes in by_query.items():
         w_exp = modes.get("with_exp", {}).get("score", {})
@@ -227,135 +279,139 @@ def generate_report(results: list, out_dir: Path):
             improvements.append(delta)
 
             difficulty = modes.get("with_exp", {}).get("difficulty", "unknown")
-            if difficulty in diff_scores:
-                diff_scores[difficulty]["with_exp"].append(w_exp.get("overall_score", 0))
-                diff_scores[difficulty]["without_exp"].append(wo_exp.get("overall_score", 0))
+            if difficulty in diff_improvements:
+                diff_improvements[difficulty].append(delta)
 
-    # 生成图表
-    try:
-        import matplotlib.pyplot as plt
-        import numpy as np
-
-        plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial Unicode MS']
-        plt.rcParams['axes.unicode_minus'] = False
-
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-        # 1. 经验提升率分布
-        if improvements:
-            axes[0].hist(improvements, bins=10, color='#3498db', alpha=0.7, edgecolor='black')
-            axes[0].axvline(mean(improvements), color='red', linestyle='--', linewidth=2,
-                             label=f'Mean: {mean(improvements):.2f}')
-            axes[0].set_xlabel('Score Improvement (with - without)', fontsize=12)
-            axes[0].set_ylabel('Count', fontsize=12)
-            axes[0].set_title('Experience Benefit Distribution', fontsize=14, fontweight='bold')
-            axes[0].legend()
-
-        # 2. 按难度分组对比
-        difficulties = ['easy', 'medium', 'hard']
-        with_scores = [mean(diff_scores[d]["with_exp"]) if diff_scores[d]["with_exp"] else 0
-                       for d in difficulties]
-        without_scores = [mean(diff_scores[d]["without_exp"]) if diff_scores[d]["without_exp"] else 0
-                          for d in difficulties]
-
-        x = np.arange(len(difficulties))
-        width = 0.35
-        axes[1].bar(x - width/2, with_scores, width, label='With Experience', color='#2ecc71', alpha=0.8)
-        axes[1].bar(x + width/2, without_scores, width, label='Without Experience', color='#e74c3c', alpha=0.8)
-        axes[1].set_ylabel('Average Score', fontsize=12)
-        axes[1].set_title('Performance by Task Difficulty', fontsize=14, fontweight='bold')
-        axes[1].set_xticks(x)
-        axes[1].set_xticklabels(difficulties)
-        axes[1].legend()
-        axes[1].set_ylim(0, 10)
-
+    # 1. Improvement distribution
+    if improvements:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.hist(improvements, bins=10, color="#3498db", alpha=0.7, edgecolor="black")
+        ax.axvline(mean(improvements), color="red", linestyle="--", linewidth=2,
+                   label=f"Mean: {mean(improvements):.2f}")
+        ax.set_xlabel("Score Improvement (with - without)", fontsize=12)
+        ax.set_ylabel("Count", fontsize=12)
+        ax.set_title("Experience Benefit Distribution", fontsize=14, fontweight="bold")
+        ax.legend()
         plt.tight_layout()
-        plt.savefig(fig_dir / "exp04_analysis.png", dpi=150, bbox_inches='tight')
+        plt.savefig(fig_dir / "improvement_hist.png", dpi=150, bbox_inches="tight")
         plt.close()
 
-        # 3. 每个 query 的对比条形图
-        if by_query:
-            fig, ax = plt.subplots(figsize=(14, 6))
-            sorted_qids = sorted(by_query.keys())
-            x = np.arange(len(sorted_qids))
-            width = 0.35
+    # 2. By difficulty
+    difficulties = ["easy", "medium", "hard"]
+    with_scores = []
+    without_scores = []
+    for d in difficulties:
+        w = diff_improvements[d]
+        with_scores.append(mean(w) if w else 0)
+        wo_vals = [
+            by_query[q].get("without_exp", {}).get("score", {}).get("overall_score", 0)
+            for q in by_query
+            if by_query[q].get("without_exp", {}).get("difficulty") == d
+            and by_query[q].get("without_exp", {}).get("score", {})
+        ]
+        without_scores.append(mean(wo_vals) if wo_vals else 0)
 
-            w_scores = [by_query[q].get("with_exp", {}).get("score", {}).get("overall_score", 0)
-                        for q in sorted_qids]
-            wo_scores = [by_query[q].get("without_exp", {}).get("score", {}).get("overall_score", 0)
-                         for q in sorted_qids]
+    x = np.arange(len(difficulties))
+    width = 0.35
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.bar(x - width / 2, with_scores, width, label="With Experience", color="#2ecc71", alpha=0.8)
+    ax.bar(x + width / 2, without_scores, width, label="Without Experience", color="#e74c3c", alpha=0.8)
+    ax.set_ylabel("Average Score", fontsize=12)
+    ax.set_title("Performance by Task Difficulty", fontsize=14, fontweight="bold")
+    ax.set_xticks(x)
+    ax.set_xticklabels(difficulties)
+    ax.legend()
+    ax.set_ylim(0, 10)
+    plt.tight_layout()
+    plt.savefig(fig_dir / "by_difficulty.png", dpi=150, bbox_inches="tight")
+    plt.close()
 
-            ax.bar(x - width/2, w_scores, width, label='With Experience', color='#2ecc71', alpha=0.8)
-            ax.bar(x + width/2, wo_scores, width, label='Without Experience', color='#e74c3c', alpha=0.8)
+    # 3. Per-query comparison
+    if by_query:
+        fig, ax = plt.subplots(figsize=(14, 6))
+        sorted_qids = sorted(by_query.keys())
+        x = np.arange(len(sorted_qids))
 
-            # 标注难度
-            diff_colors = {'easy': '#2ecc71', 'medium': '#f39c12', 'hard': '#e74c3c'}
-            for i, qid in enumerate(sorted_qids):
-                diff = by_query[q].get("with_exp", {}).get("difficulty", "unknown")
-                color = diff_colors.get(diff, '#95a5a6')
-                ax.axvline(i, color=color, linestyle=':', alpha=0.6, linewidth=2)
+        w_scores = [by_query[q].get("with_exp", {}).get("score", {}).get("overall_score", 0) for q in sorted_qids]
+        wo_scores = [by_query[q].get("without_exp", {}).get("score", {}).get("overall_score", 0) for q in sorted_qids]
 
-            ax.set_xlabel('Query ID', fontsize=12)
-            ax.set_ylabel('Score', fontsize=12)
-            ax.set_title('Per-Query: With vs Without Experience (green=easy, orange=medium, red=hard)', fontsize=14, fontweight='bold')
-            ax.set_xticks(x)
-            ax.set_xticklabels(sorted_qids)
-            ax.legend()
-            ax.set_ylim(0, 10)
+        ax.bar(x - width / 2, w_scores, width, label="With Experience", color="#2ecc71", alpha=0.8)
+        ax.bar(x + width / 2, wo_scores, width, label="Without Experience", color="#e74c3c", alpha=0.8)
 
-            plt.tight_layout()
-            plt.savefig(fig_dir / "per_query_comparison.png", dpi=150, bbox_inches='tight')
-            plt.close()
+        diff_colors = {"easy": "#2ecc71", "medium": "#f39c12", "hard": "#e74c3c"}
+        for i, qid in enumerate(sorted_qids):
+            diff = by_query[qid].get("with_exp", {}).get("difficulty", "unknown")
+            color = diff_colors.get(diff, "#95a5a6")
+            ax.axvline(i, color=color, linestyle=":", alpha=0.6, linewidth=2)
 
-        print(f"Charts saved to {fig_dir}/")
+        ax.set_xlabel("Query ID", fontsize=12)
+        ax.set_ylabel("Score", fontsize=12)
+        ax.set_title("Per-Query: With vs Without Experience (green=easy, orange=medium, red=hard)", fontsize=14, fontweight="bold")
+        ax.set_xticks(x)
+        ax.set_xticklabels(sorted_qids)
+        ax.legend()
+        ax.set_ylim(0, 10)
+        plt.tight_layout()
+        plt.savefig(fig_dir / "per_query_comparison.png", dpi=150, bbox_inches="tight")
+        plt.close()
 
-    except ImportError:
-        print("[WARN] matplotlib not available, skipping charts")
+    print(f"Charts saved to {fig_dir}/")
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 async def main():
-    parser = argparse.ArgumentParser(description="实验4: 经验迁移性分析")
+    parser = argparse.ArgumentParser(description="实验4: 经验迁移性分析（直接Agent对比）")
     parser.add_argument("--test-queries", required=True, help="测试查询JSONL文件")
     parser.add_argument("--out-dir", required=True, help="输出目录")
     parser.add_argument("--config", default=None, help="配置文件路径")
     parser.add_argument("--limit", type=int, default=0, help="限制测试数量")
-    parser.add_argument("--experiences-only", action="store_true",
-                        help="只运行有经验注入的测试（跳过无经验对照）")
+    parser.add_argument("--experiences-only", action="store_true", help="只运行有经验版本")
     args = parser.parse_args()
 
-    # 加载配置
-    config = load_config(args.config)
-    judge_config = config.get("judge", {})
-    agent_config = config.get("agent", {})
+    config = load_config()
 
-    api_base = os.environ.get("JUDGE_API_BASE") or judge_config.get("api_base", "")
-    api_key = os.environ.get("JUDGE_API_KEY") or judge_config.get("api_key", "")
-    model = os.environ.get("JUDGE_MODEL") or judge_config.get("model", "deepseek-chat")
+    # Agent config (local deployment)
+    agent_base_url = os.environ.get("AGENT_MODEL_URL") or config.get("model_url", "http://localhost:1234/v1")
+    agent_model = os.environ.get("AGENT_MODEL") or config.get("llm", "")
+    agent_api_key = os.environ.get("AGENT_API_KEY") or config.get("api_key", "no_need")
 
-    if not api_base or not model:
+    # Judge config (DeepSeek)
+    judge_cfg = config.get("judge", {})
+    judge_api_base = os.environ.get("JUDGE_API_BASE") or judge_cfg.get("api_base", "")
+    judge_api_key = os.environ.get("JUDGE_API_KEY") or judge_cfg.get("api_key", "")
+    judge_model = os.environ.get("JUDGE_MODEL") or judge_cfg.get("model", "deepseek-chat")
+
+    if not judge_api_base or not judge_model:
         raise ValueError("需要配置 judge API（在 config.yaml 或环境变量中）")
 
-    # 加载测试数据和经验
+    # Load test queries
     queries = load_test_queries(Path(args.test_queries))
     if args.limit > 0:
         queries = queries[:args.limit]
-
     print(f"Loaded {len(queries)} test queries")
 
-    # 初始化Judge LLM
-    llm = ChatOpenAI(
-        base_url=api_base,
-        api_key=api_key or "dummy",
-        model=model,
+    # Init judge LLM
+    judge_llm = ChatOpenAI(
+        base_url=judge_api_base,
+        api_key=judge_api_key or "dummy",
+        model=judge_model,
         temperature=0,
-        timeout=judge_config.get("timeout", 120),
+        timeout=judge_cfg.get("timeout", 120),
     )
 
-    # 输出目录
+    # Build two agents at startup (rebuilt each query to ensure clean state)
+    from prompts import MainAgentPrompt
+
+    print(f"Building agents with local model: {agent_model} @ {agent_base_url}")
+
+    # Output dir
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 支持断点续跑
+    # Resume
     existing_results, completed_keys = load_existing_results(out_dir)
     results = existing_results
 
@@ -371,30 +427,37 @@ async def main():
             run_idx += 1
             key = (query["id"], mode)
             if key in completed_keys:
-                print(f"[{run_idx}/{total_runs}] Skipping query_id={query['id']}, mode={mode} (already completed)")
+                print(f"[{run_idx}/{total_runs}] Skipping query_id={query['id']}, mode={mode} (already done)")
                 continue
 
-            print(f"[{run_idx}/{total_runs}] Query {query['id']} ({query['category']}), mode={mode}")
+            print(f"[{run_idx}/{total_runs}] Query {query['id']} ({query.get('difficulty', '?')}), mode={mode}")
 
-            # 运行查询
-            response, error = await run_query_with_agent(
-                query,
-                with_experience=(mode == "with_exp"),
-                agent_config=agent_config,
+            # Build agent for this run
+            with_exp = (mode == "with_exp")
+            agent = await build_exp_agent(
+                base_url=agent_base_url,
+                model=agent_model,
+                api_key=agent_api_key,
+                system_prompt=MainAgentPrompt.SYSTEM_PROMPT,
+                with_experiences=with_exp,
+                request_timeout_s=600.0,
             )
+
+            # Run query
+            response, error = await run_agent_query(agent, query, timeout_s=300.0)
 
             if error:
                 print(f"  [ERROR] {error}")
                 score_data = {"overall_score": 0.0, "brief_reason": f"运行错误: {error}"}
             else:
-                # 调用Judge评分
-                judge_prompt = build_judge_prompt(query, response, "")
-                score_data = call_judge(llm, judge_prompt)
-                print(f"  Score: {score_data.get('overall_score', 'N/A'):.1f}/10 - {score_data.get('brief_reason', '')[:50]}")
+                # Judge scoring
+                judge_prompt = build_judge_prompt(query, response, mode)
+                score_data = call_judge(judge_llm, judge_prompt)
+                print(f"  Score: {score_data.get('overall_score', 'N/A'):.1f}/10 - {score_data.get('brief_reason', '')[:60]}")
 
             result = {
                 "query_id": query["id"],
-                "difficulty": query["difficulty"],
+                "difficulty": query.get("difficulty", "unknown"),
                 "prompt": query["prompt"],
                 "mode": mode,
                 "response": response[:500] if response else "",
@@ -403,14 +466,14 @@ async def main():
             }
             results.append(result)
 
-            # 保存中间结果
+            # Save
             with (out_dir / "details.jsonl").open("a", encoding="utf-8") as f:
                 f.write(json.dumps(result, ensure_ascii=False) + "\n")
 
-        # 每个query跑完一次with_exp后等待一下，避免并发过高
+        # Pause between queries to avoid overwhelming
         await asyncio.sleep(1)
 
-    # 汇总分析
+    # Summary
     by_query = {}
     for r in results:
         qid = r["query_id"]
@@ -453,7 +516,7 @@ async def main():
             "std": round(stdev(improvements), 3) if len(improvements) > 1 else 0,
             "positive_ratio": round(sum(1 for i in improvements if i > 0) / len(improvements), 3) if improvements else 0,
             "by_difficulty": diff_stats,
-        }
+        },
     }
 
     with (out_dir / "summary.json").open("w", encoding="utf-8") as f:
@@ -462,7 +525,6 @@ async def main():
     print("\n=== Experiment 4 Summary ===")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
-    # 生成图表
     generate_report(results, out_dir)
 
 

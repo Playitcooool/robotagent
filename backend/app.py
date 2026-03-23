@@ -3,7 +3,7 @@ os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,host.docker.internal")
 os.environ.setdefault("no_proxy", "localhost,127.0.0.1,host.docker.internal")
 
 from fastapi import FastAPI
-from fastapi import Depends, HTTPException, status, Query
+from fastapi import Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pathlib import Path
@@ -73,8 +73,7 @@ logger.setLevel(logging.INFO)
 DEBUG_STREAM_FIELDS = os.environ.get("DEBUG_STREAM_FIELDS", "0") == "1"
 
 # ========== 2. 全局变量定义（关键：提前声明active_agent） ==========
-active_agent_with_exp = None  # 带经验的agent
-active_agent_without_exp = None  # 不带经验的agent（用于exp4对比实验）
+active_agent = None  # 全局agent，启动事件中初始化
 chat_redis: Optional[Redis] = None
 auth_redis: Optional[Redis] = None
 CHAT_REDIS_URL = os.environ["CHAT_REDIS_URL"]
@@ -127,43 +126,7 @@ app = FastAPI()
 # ========== 7. 启动事件（正确初始化agent） ==========
 @app.on_event("startup")
 async def startup_event():
-    global active_agent_with_exp, active_agent_without_exp, chat_redis, auth_redis
-
-    async def _build_agent(runtime_system_prompt: str, experiences: list):
-        """创建单个 agent 实例"""
-        subagents = list(await init_subagents(experiences=experiences))
-        DB_URI = "redis://localhost:6379"
-        async with AsyncRedisSaver.from_conn_string(DB_URI) as checkpointer:
-            await checkpointer.asetup()
-            return create_deep_agent(
-                model=chatBot,
-                tools=all_tools,
-                system_prompt=runtime_system_prompt,
-                subagents=subagents,
-                checkpointer=checkpointer,
-            )
-
-    def _subagent_name(sa) -> str:
-        if isinstance(sa, dict):
-            return str(sa.get("name") or "").strip()
-        return str(getattr(sa, "name", "") or "").strip()
-
-    def _build_prompt_suffix(subagents) -> str:
-        available = [_subagent_name(sa) for sa in subagents if _subagent_name(sa)]
-        suffix = (
-            "\n\n[Runtime Subagent Availability]\n"
-            f"- Available subagents now: {available or ['none']}\n"
-        )
-        if "simulator" not in available:
-            suffix += (
-                "- simulator is currently unavailable. "
-                "Do NOT invoke simulator. "
-                "For simulation requests, first explain simulator is unavailable and ask user to start MCP services.\n"
-            )
-        if "data-analyzer" not in available:
-            suffix += "- data-analyzer is currently unavailable. Do NOT invoke data-analyzer.\n"
-        return suffix
-
+    global active_agent, chat_redis, auth_redis  # 关联全局变量
     try:
         chat_redis = Redis.from_url(CHAT_REDIS_URL, decode_responses=True)
         await chat_redis.ping()
@@ -172,39 +135,71 @@ async def startup_event():
         await auth_redis.ping()
         logger.info(f"Auth Redis 已连接: {AUTH_REDIS_URL}")
 
+        # 加载所有工具
         all_tools = get_tools()
         if not all_tools:
             logger.warning("未加载到任何工具，agent将使用空工具列表")
 
-        # 加载 experience
-        experiences = _load_agent_experiences()
-        logger.info(f"已加载 {len(experiences)} 条 agent experiences")
+        # 加载 experience（从 agent_experperiences.json）
+        # 通过环境变量控制：WITHOUT_EXPERIENCE=1 启动则跳过注入
+        inject_experiences = os.environ.get("WITHOUT_EXPERIENCE", "0") != "1"
+        if inject_experiences:
+            experiences = _load_agent_experiences()
+            logger.info(f"已加载 {len(experiences)} 条 agent experiences")
+        else:
+            experiences = []
+            logger.info("WITHOUT_EXPERIENCE=1，已跳过 experience 注入")
 
-        # 构建两个 system_prompt（一个有 experience 段落，一个没有）
-        # 先获取 available subagents（两个 agent 用相同的工具列表）
-        tmp_subagents = list(await init_subagents(experiences=experiences))
-        available = [_subagent_name(sa) for sa in tmp_subagents if _subagent_name(sa)]
-        logger.info(f"可用子代理：{available}")
-        prompt_suffix = _build_prompt_suffix(tmp_subagents)
+        subagents = list(await init_subagents(experiences=experiences))
 
-        # Agent WITH experience
-        exp_suffix = build_experience_suffix(experiences) if experiences else ""
-        runtime_with_exp = MainAgentPrompt.SYSTEM_PROMPT + exp_suffix + prompt_suffix
-        logger.info("正在创建带经验的 agent...")
-        active_agent_with_exp = await _build_agent(runtime_with_exp, experiences)
-        logger.info("带经验的 agent 创建成功！")
+        def _subagent_name(sa) -> str:
+            if isinstance(sa, dict):
+                return str(sa.get("name") or "").strip()
+            return str(getattr(sa, "name", "") or "").strip()
 
-        # Agent WITHOUT experience
-        runtime_without_exp = MainAgentPrompt.SYSTEM_PROMPT + prompt_suffix
-        logger.info("正在创建不带经验的 agent...")
-        active_agent_without_exp = await _build_agent(runtime_without_exp, [])
-        logger.info("不带经验的 agent 创建成功！")
+        available_subagents = [_subagent_name(sa) for sa in subagents]
+        available_subagents = [n for n in available_subagents if n]
+        logger.info(f"可用子代理：{available_subagents}")
 
+        prompt_suffix = (
+            "\n\n[Runtime Subagent Availability]\n"
+            f"- Available subagents now: {available_subagents or ['none']}\n"
+        )
+        if "simulator" not in available_subagents:
+            prompt_suffix += (
+                "- simulator is currently unavailable. "
+                "Do NOT invoke simulator. "
+                "For simulation requests, first explain simulator is unavailable and ask user to start MCP services.\n"
+            )
+        if "data-analyzer" not in available_subagents:
+            prompt_suffix += (
+                "- data-analyzer is currently unavailable. "
+                "Do NOT invoke data-analyzer.\n"
+            )
+
+        # 注入 experience 到 MainAgent（simulation 和 analysis subagent 已通过 init_subagents 注入）
+        if experiences:
+            exp_suffix = build_experience_suffix(experiences)
+        else:
+            exp_suffix = ""
+
+        runtime_system_prompt = MainAgentPrompt.SYSTEM_PROMPT + exp_suffix + prompt_suffix
+
+        # 创建带工具的agent（核心修正）
+        DB_URI = "redis://localhost:6379"
+        async with AsyncRedisSaver.from_conn_string(DB_URI) as checkpointer:
+            await checkpointer.asetup()
+            active_agent = create_deep_agent(
+                model=chatBot,
+                tools=all_tools,
+                system_prompt=runtime_system_prompt,
+                subagents=subagents,
+                checkpointer=checkpointer,
+            )
         logger.info("Agent 初始化成功！")
     except Exception as e:
         logger.error(f"Agent 初始化失败：{str(e)}", exc_info=True)
-        active_agent_with_exp = None
-        active_agent_without_exp = None
+        active_agent = None
         if chat_redis is not None:
             await chat_redis.aclose()
             chat_redis = None
@@ -570,7 +565,7 @@ async def health_check():
     """后端健康检查"""
     health_info = {
         "status": "healthy",
-        "agent_ready": active_agent_with_exp is not None and active_agent_without_exp is not None,
+        "agent_ready": active_agent is not None,
     }
 
     # 检查 Redis 连接
@@ -708,7 +703,7 @@ async def list_tools():
 async def ping():
     return {
         "status": "ok",
-        "agent_ready": active_agent_with_exp is not None and active_agent_without_exp is not None,
+        "agent_ready": active_agent is not None,  # 新增：返回agent状态
     }
 
 
@@ -834,7 +829,6 @@ async def delete_session(
 async def chat_send(
     payload: ChatIn,
     current_user: dict = Depends(require_auth_user),
-    exp_mode: Optional[str] = Query(default="with_exp", description="exp4对比实验用：with_exp 或 without_exp"),
 ):
     user_message = payload.message or ""
     session_id = payload.session_id or "default_session"  # 使用会话ID或默认值
@@ -849,12 +843,7 @@ async def chat_send(
     user_id = current_user.get("uid", "unknown")
     await _append_chat_message(user_id, session_id, "user", user_message)
 
-    # 选择带经验或不带经验的 agent
-    if exp_mode == "without_exp":
-        active_agent = active_agent_without_exp
-    else:
-        active_agent = active_agent_with_exp
-
+    # 核心修正：使用全局的active_agent，而非初始空工具的agent
     if not active_agent:
         # 返回流式错误响应（保持格式统一）并添加防缓冲头
         return StreamingResponse(
