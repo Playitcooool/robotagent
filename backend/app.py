@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from pathlib import Path
 import ast
 from deepagents import create_deep_agent
-from tools.SubAgentTool import init_subagents
+from tools.SubAgentTool import init_subagents, _load_agent_experiences, build_experience_suffix
 import logging
 import json
 import yaml
@@ -139,7 +139,18 @@ async def startup_event():
         all_tools = get_tools()
         if not all_tools:
             logger.warning("未加载到任何工具，agent将使用空工具列表")
-        subagents = list(await init_subagents())
+
+        # 加载 experience（从 agent_experperiences.json）
+        # 通过环境变量控制：WITHOUT_EXPERIENCE=1 启动则跳过注入
+        inject_experiences = os.environ.get("WITHOUT_EXPERIENCE", "0") != "1"
+        if inject_experiences:
+            experiences = _load_agent_experiences()
+            logger.info(f"已加载 {len(experiences)} 条 agent experiences")
+        else:
+            experiences = []
+            logger.info("WITHOUT_EXPERIENCE=1，已跳过 experience 注入")
+
+        subagents = list(await init_subagents(experiences=experiences))
 
         def _subagent_name(sa) -> str:
             if isinstance(sa, dict):
@@ -165,7 +176,14 @@ async def startup_event():
                 "- data-analyzer is currently unavailable. "
                 "Do NOT invoke data-analyzer.\n"
             )
-        runtime_system_prompt = MainAgentPrompt.SYSTEM_PROMPT + prompt_suffix
+
+        # 注入 experience 到 MainAgent（simulation 和 analysis subagent 已通过 init_subagents 注入）
+        if experiences:
+            exp_suffix = build_experience_suffix(experiences)
+        else:
+            exp_suffix = ""
+
+        runtime_system_prompt = MainAgentPrompt.SYSTEM_PROMPT + exp_suffix + prompt_suffix
 
         # 创建带工具的agent（核心修正）
         DB_URI = "redis://localhost:6379"

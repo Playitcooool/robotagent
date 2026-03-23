@@ -7,7 +7,7 @@
 
 使用方式:
     python evaluate_experiment_02.py \
-        --trajectories ../trajectories.jsonl \
+        --trajectories ../output/training_free_grpo/trajectories.jsonl \
         --out-dir results/exp02
 """
 
@@ -24,8 +24,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 
-plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial Unicode MS']
-plt.rcParams['axes.unicode_minus'] = False
+plt.rcParams["font.sans-serif"] = ["DejaVu Sans", "Arial Unicode MS"]
+plt.rcParams["axes.unicode_minus"] = False
 
 
 def generate_charts(results: list, out_dir: Path):
@@ -36,60 +36,52 @@ def generate_charts(results: list, out_dir: Path):
     # 提取数据
     success_rates = []
     quality_scores = []
-    verdicts = []
 
     for r in results:
         j = r.get("judgment", {})
         sr = j.get("success_rate")
         qs = j.get("quality_score")
-        v = j.get("verdict")
         if sr is not None:
             success_rates.append(sr)
         if qs is not None:
             quality_scores.append(qs)
-        if v:
-            verdicts.append(v)
 
-    # 1. 成功/失败饼图
-    fig, ax = plt.subplots(figsize=(8, 6))
-    success_count = sum(1 for v in verdicts if v == "SUCCESS")
-    fail_count = sum(1 for v in verdicts if v == "FAIL")
-
-    if success_count + fail_count > 0:
-        labels = ['Success', 'Fail']
-        sizes = [success_count, fail_count]
-        colors = ['#2ecc71', '#e74c3c']
-        wedges, texts, autotexts = ax.pie(sizes, labels=labels, colors=colors,
-                                          autopct='%1.1f%%', shadow=True, startangle=90)
-        ax.set_title('Task Execution Verdict', fontsize=14, fontweight='bold')
-        plt.tight_layout()
-        plt.savefig(fig_dir / "verdict_pie.png", dpi=150, bbox_inches='tight')
-        plt.close()
-
-    # 2. 成功率分布直方图
+    # 1. 成功率分布直方图
     if success_rates:
         fig, ax = plt.subplots(figsize=(10, 6))
-        ax.hist(success_rates, bins=10, color='#3498db', alpha=0.7, edgecolor='black')
-        ax.axvline(mean(success_rates), color='red', linestyle='--', linewidth=2, label=f'Mean: {mean(success_rates):.1f}%')
-        ax.set_xlabel('Success Rate (%)', fontsize=12)
-        ax.set_ylabel('Count', fontsize=12)
-        ax.set_title('Success Rate Distribution', fontsize=14, fontweight='bold')
+        ax.hist(success_rates, bins=10, color="#3498db", alpha=0.7, edgecolor="black")
+        ax.axvline(
+            mean(success_rates),
+            color="red",
+            linestyle="--",
+            linewidth=2,
+            label=f"Mean: {mean(success_rates):.1f}%",
+        )
+        ax.set_xlabel("Success Rate (%)", fontsize=12)
+        ax.set_ylabel("Count", fontsize=12)
+        ax.set_title("Success Rate Distribution", fontsize=14, fontweight="bold")
         ax.legend()
         plt.tight_layout()
-        plt.savefig(fig_dir / "success_rate_hist.png", dpi=150, bbox_inches='tight')
+        plt.savefig(fig_dir / "success_rate_hist.png", dpi=150, bbox_inches="tight")
         plt.close()
 
     # 3. 质量评分柱状图
     if quality_scores:
         fig, ax = plt.subplots(figsize=(8, 6))
-        ax.hist(quality_scores, bins=5, color='#9b59b6', alpha=0.7, edgecolor='black')
-        ax.axvline(mean(quality_scores), color='red', linestyle='--', linewidth=2, label=f'Mean: {mean(quality_scores):.2f}')
-        ax.set_xlabel('Quality Score (1-5)', fontsize=12)
-        ax.set_ylabel('Count', fontsize=12)
-        ax.set_title('Quality Score Distribution', fontsize=14, fontweight='bold')
+        ax.hist(quality_scores, bins=5, color="#9b59b6", alpha=0.7, edgecolor="black")
+        ax.axvline(
+            mean(quality_scores),
+            color="red",
+            linestyle="--",
+            linewidth=2,
+            label=f"Mean: {mean(quality_scores):.2f}",
+        )
+        ax.set_xlabel("Quality Score (1-5)", fontsize=12)
+        ax.set_ylabel("Count", fontsize=12)
+        ax.set_title("Quality Score Distribution", fontsize=14, fontweight="bold")
         ax.legend()
         plt.tight_layout()
-        plt.savefig(fig_dir / "quality_score_hist.png", dpi=150, bbox_inches='tight')
+        plt.savefig(fig_dir / "quality_score_hist.png", dpi=150, bbox_inches="tight")
         plt.close()
 
     print(f"Charts saved to {fig_dir}/")
@@ -161,33 +153,47 @@ def call_judge(llm: ChatOpenAI, prompt: str, max_retries: int = 3):
     last_error = None
     for attempt in range(max_retries):
         try:
-            response = llm.invoke([
-                {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt}
-            ])
+            response = llm.invoke(
+                [
+                    {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ]
+            )
             content = getattr(response, "content", "")
             if isinstance(content, list):
                 content = "".join(
-                    str(block.get("text", "")) if isinstance(block, dict) else str(block)
+                    (
+                        str(block.get("text", ""))
+                        if isinstance(block, dict)
+                        else str(block)
+                    )
                     for block in content
                 )
             # 提取JSON
-            json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
+            json_match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group())
             return json.loads(content)
         except json.JSONDecodeError as e:
             last_error = f"JSON decode error: {e}"
-            print(f"[WARN] Judge JSON decode failed (attempt {attempt + 1}/{max_retries}): {last_error}")
+            print(
+                f"[WARN] Judge JSON decode failed (attempt {attempt + 1}/{max_retries}): {last_error}"
+            )
         except Exception as e:
             last_error = str(e)
-            print(f"[WARN] Judge API call failed (attempt {attempt + 1}/{max_retries}): {last_error}")
+            print(
+                f"[WARN] Judge API call failed (attempt {attempt + 1}/{max_retries}): {last_error}"
+            )
 
         if attempt < max_retries - 1:
-            time.sleep(2 ** attempt)
+            time.sleep(2**attempt)
 
     print(f"[ERROR] Judge failed after {max_retries} attempts: {last_error}")
-    return {"error": last_error, "success_rate": 0, "quality_score": 0, "verdict": "UNKNOWN"}
+    return {
+        "error": last_error,
+        "success_rate": None,
+        "quality_score": None,
+    }
 
 
 def build_evaluation_prompt(traj: dict) -> str:
@@ -214,9 +220,8 @@ def build_evaluation_prompt(traj: dict) -> str:
 
 请评估并返回JSON:
 {{
-    "success_rate": 0-100,   // 任务成功率估算(%)
-    "quality_score": 1-5,    // 执行质量评分
-    "verdict": "SUCCESS 或 FAIL"  // 最终判定
+    "success_rate": 0-100,   // 任务成功率估算(%)(0=完全失败, 100=完美完成)
+    "quality_score": 1-5,    // 执行质量评分(1=极差, 5=优秀)
 }}
 ```"""
 
@@ -244,7 +249,7 @@ def main():
     traj_path = Path(args.trajectories)
     trajectories = load_trajectories(traj_path)
     if args.limit > 0:
-        trajectories = trajectories[:args.limit]
+        trajectories = trajectories[: args.limit]
 
     print(f"Loaded {len(trajectories)} trajectories")
     print(f"Using Judge: {model} @ {api_base}")
@@ -269,9 +274,13 @@ def main():
     for i, traj in enumerate(trajectories):
         key = (traj.get("prompt_id"), traj.get("attempt_id"))
         if key in completed_keys:
-            print(f"[{i+1}/{len(trajectories)}] Skipping prompt_id={key[0]}, attempt={key[1]} (already completed)")
+            print(
+                f"[{i+1}/{len(trajectories)}] Skipping prompt_id={key[0]}, attempt={key[1]} (already completed)"
+            )
             continue
-        print(f"[{i+1}/{len(trajectories)}] Evaluating prompt_id={traj.get('prompt_id')}, attempt={traj.get('attempt_id')}")
+        print(
+            f"[{i+1}/{len(trajectories)}] Evaluating prompt_id={traj.get('prompt_id')}, attempt={traj.get('attempt_id')}"
+        )
         prompt = build_evaluation_prompt(traj)
         judgment = call_judge(llm, prompt)
 
@@ -280,7 +289,7 @@ def main():
             "attempt_id": traj.get("attempt_id"),
             "prompt": traj.get("prompt"),
             "response": traj.get("response", "")[:200],
-            "judgment": judgment
+            "judgment": judgment,
         }
         results.append(result)
 
@@ -288,21 +297,23 @@ def main():
         with (out_dir / "details.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(result, ensure_ascii=False) + "\n")
 
-    # 汇总统计
+    # 汇总统计（仅依赖 success_rate，废弃 verdict）
+    success_rates = [
+        r["judgment"].get("success_rate", 0)
+        for r in results
+        if r["judgment"].get("success_rate") is not None
+    ]
+    quality_scores = [
+        r["judgment"].get("quality_score", 0)
+        for r in results
+        if r["judgment"].get("quality_score") is not None
+    ]
+
     summary = {
         "total": len(results),
-        "success_count": sum(1 for r in results if r["judgment"].get("verdict") == "SUCCESS"),
-        "fail_count": sum(1 for r in results if r["judgment"].get("verdict") == "FAIL"),
+        "avg_success_rate": mean(success_rates) if success_rates else None,
+        "avg_quality_score": mean(quality_scores) if quality_scores else None,
     }
-
-    # 计算平均分
-    success_rates = [r["judgment"].get("success_rate", 0) for r in results if r["judgment"].get("success_rate")]
-    quality_scores = [r["judgment"].get("quality_score", 0) for r in results if r["judgment"].get("quality_score")]
-
-    if success_rates:
-        summary["avg_success_rate"] = mean(success_rates)
-    if quality_scores:
-        summary["avg_quality_score"] = mean(quality_scores)
 
     with (out_dir / "summary.json").open("w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)

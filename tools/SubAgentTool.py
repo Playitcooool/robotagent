@@ -227,3 +227,72 @@ async def init_subagents(
     subagents.append(simulation_agent)
 
     return tuple(subagents)
+
+
+# ---------------------------------------------------------------------------
+# Experience loading helpers (for agent_experiences.json)
+# ---------------------------------------------------------------------------
+
+def _load_agent_experiences() -> list:
+    """
+    Load experiences from prompts/agent_experiences.json.
+    Returns a list of experience dicts compatible with _build_exp_context.
+    Each agent's experience section becomes one fake experience entry.
+    """
+    import json
+    from pathlib import Path
+
+    exp_file = Path(__file__).parent.parent / "prompts" / "agent_experiences.json"
+    if not exp_file.exists():
+        return []
+
+    with exp_file.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    # Convert our JSON format to _build_exp_context compatible format
+    # (mimics the external_memory.json structure)
+    experiences = []
+    for agent_key, exp_data in data.items():
+        header = exp_data.get("header", "")
+        items = exp_data.get("items", [])
+        高分要点 = exp_data.get("高分要点", "")
+
+        # Build a "fake" experience entry for each agent
+        # _build_exp_context will format: "总结: {summary}" + "原则: {principles}"
+        exp = {
+            "prompt_id": agent_key,
+            "score": 10.0,
+            "summary": header,
+            "principles": items,
+            "dos": [高分要点],
+            "donts": [],
+        }
+        experiences.append(exp)
+
+    return experiences
+
+
+def build_experience_suffix(experiences: list, max_experiences: int = 10) -> str:
+    """
+    Build the text suffix for main agent's system prompt from experience list.
+    Mimics _build_exp_context but returns a formatted text block.
+    """
+    if not experiences:
+        return ""
+
+    lines = ["\n\n## 实际轨迹中的常见错误与高分要点（来自历史任务统计）"]
+    for exp in experiences[-max_experiences:]:
+        lines.append("")
+        # summary as header
+        summary = str(exp.get("summary", "")).strip()
+        if summary:
+            lines.append(summary)
+        # principles as items
+        for p in exp.get("principles", [])[:10]:
+            lines.append(f"- {p}")
+        # dos / 高分要点
+        for d in exp.get("dos", []):
+            if d:
+                lines.append(str(d))
+
+    return "\n".join(lines)
