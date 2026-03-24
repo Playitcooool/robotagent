@@ -244,15 +244,25 @@ async def run_agent_query(
             agent.ainvoke({"messages": [{"role": "user", "content": query["prompt"]}]}),
             timeout=timeout_s,
         )
-        # Extract response text from result
-        messages = result.get("messages", []) if isinstance(result, dict) else []
-        # Get the last assistant message
-        response_text = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "assistant":
-                response_text = msg.get("content", "")
-                break
-        return response_text, ""
+
+        # Handle different result formats from create_deep_agent
+        # Case 1: result is a dict with "messages" key
+        if isinstance(result, dict):
+            messages = result.get("messages", [])
+            for msg in reversed(messages):
+                role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+                if role == "assistant":
+                    content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+                    return str(content), ""
+            return "", ""
+
+        # Case 2: result is an AIMessage (direct response)
+        if hasattr(result, "content"):
+            return str(result.content), ""
+
+        # Case 3: result is something else, try to stringify
+        return str(result), ""
+
     except asyncio.TimeoutError:
         return "", "timeout"
     except Exception as e:
