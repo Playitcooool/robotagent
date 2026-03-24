@@ -249,11 +249,11 @@ async def run_agent_query(
             print(f"  [DEBUG] result type={type(result).__name__}")
             if isinstance(result, dict):
                 msgs = result.get("messages", [])
-                print(f"  [DEBUG] messages count={len(msgs)}")
-                for m in reversed(msgs[-3:]):
-                    role = m.get("role") if isinstance(m, dict) else getattr(m, "role", "?")
+                print(f"  [DEBUG] messages count={len(msgs)}, types={[type(m).__name__ for m in msgs]}")
+                for i, m in enumerate(reversed(msgs[-5:])):
+                    role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
                     content = m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
-                    print(f"  [DEBUG]   msg role={role}, content={repr(str(content)[:80])}")
+                    print(f"  [DEBUG]   msg[-{i}] type={type(m).__name__} role={repr(role)} content={repr(str(content)[:60])}")
             else:
                 print(f"  [DEBUG] result={repr(result)[:200]}")
 
@@ -261,10 +261,14 @@ async def run_agent_query(
         # Case 1: result is a dict with "messages" key
         if isinstance(result, dict):
             messages = result.get("messages", [])
+            # Find the last assistant message by checking type (AIMessage objects don't have .role)
             for msg in reversed(messages):
-                role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
-                if role == "assistant":
+                if type(msg).__name__ == "AIMessage":
                     content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+                    if content:
+                        return str(content), ""
+                elif isinstance(msg, dict) and msg.get("role") == "assistant":
+                    content = msg.get("content", "")
                     if content:
                         return str(content), ""
             return "", ""
