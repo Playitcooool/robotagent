@@ -5,6 +5,7 @@ import struct
 import time
 import uuid
 import zlib
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +91,10 @@ def _encode_png_rgb(rgb: np.ndarray) -> bytes:
 
 
 def _capture_rgb_frame(width: int = 320, height: int = 240) -> np.ndarray:
+    cid = simulation_instance
+    if cid is None or not p.isConnected(cid):
+        # Return black frame if simulation is not connected
+        return np.zeros((height, width, 3), dtype=np.uint8)
     aspect = width / max(1, height)
     view_matrix = p.computeViewMatrixFromYawPitchRoll(
         cameraTargetPosition=[0.2, 0.0, 0.02],
@@ -98,6 +103,7 @@ def _capture_rgb_frame(width: int = 320, height: int = 240) -> np.ndarray:
         pitch=-35.0,
         roll=0.0,
         upAxisIndex=2,
+        physicsClientId=cid,
     )
     projection_matrix = p.computeProjectionMatrixFOV(
         fov=60.0, aspect=aspect, nearVal=0.1, farVal=10.0
@@ -108,6 +114,7 @@ def _capture_rgb_frame(width: int = 320, height: int = 240) -> np.ndarray:
         viewMatrix=view_matrix,
         projectionMatrix=projection_matrix,
         renderer=p.ER_TINY_RENDERER,
+        physicsClientId=cid,
     )
     rgba_array = np.array(rgba, dtype=np.uint8).reshape((height, width, 4))
     return rgba_array[:, :, :3]
@@ -179,13 +186,20 @@ def ensure_simulation():
         setup_simulation(gui=False)
 
 
+@contextmanager
+def with_simulation():
+    """Context manager that ensures simulation is initialized and yields the correct client ID.
+    All PyBullet API calls MUST use this client ID to target the correct simulation instance."""
+    ensure_simulation()
+    yield simulation_instance
+
+
 def cleanup_simulation():
-    """关闭PyBullet环境"""
+    """关闭PyBullet环境，释放所有资源。"""
     global simulation_instance
     if simulation_instance is not None:
         try:
             if p.isConnected(simulation_instance):
-                p.resetSimulation(physicsClientId=simulation_instance)
                 p.disconnect(simulation_instance)
         except Exception:
             # Best-effort cleanup; always clear local state.
@@ -203,11 +217,12 @@ def cleanup_simulation():
         print("No simulation environment to close.")
 
 
-def step(n: int = 240):
+def step(n: int = 240, cid: int | None = None):
     """执行指定步数的仿真"""
+    if cid is None:
+        cid = simulation_instance
     for _ in range(n):
-        p.stepSimulation()
-        # 移除非必要的sleep以提高性能，帧发布由调用者控制
+        p.stepSimulation(physicsClientId=cid)
 
 
 # ======================
@@ -317,45 +332,45 @@ def push_cube_step(args: PushCubeStepArgs):
     - Do not use for articulated robot manipulation; this is a cube baseline.
     - Do not use with non-positive steps.
     """
-    ensure_simulation()
-    if args.steps <= 0:
-        raise ValueError("steps must be > 0")
+    with with_simulation() as cid:
+        if args.steps <= 0:
+            raise ValueError("steps must be > 0")
 
-    cube = p.loadURDF("cube_small.urdf", args.start_position)
-    run_id = str(uuid.uuid4())
+        cube = p.loadURDF("cube_small.urdf", args.start_position, physicsClientId=cid)
+        run_id = str(uuid.uuid4())
 
-    # 线性插值推动
-    start_pos = args.start_position
-    dx = args.push_vector[0] / args.steps
-    dy = args.push_vector[1] / args.steps
-    dz = args.push_vector[2] / args.steps
+        # 线性插值推动
+        start_pos = args.start_position
+        dx = args.push_vector[0] / args.steps
+        dy = args.push_vector[1] / args.steps
+        dz = args.push_vector[2] / args.steps
 
-    _publish_realtime_frame(
-        run_id=run_id,
-        task="push_cube_step",
-        step_idx=0,
-        total_steps=args.steps,
-        done=False,
-    )
-
-    # 每次调用执行一个小步进
-    for i in range(args.steps):
-        new_pos = [
-            start_pos[0] + dx * i,
-            start_pos[1] + dy * i,
-            start_pos[2] + dz * i,
-        ]
-        p.resetBasePositionAndOrientation(cube, new_pos, [0, 0, 0, 1])
-        step(1)
         _publish_realtime_frame(
             run_id=run_id,
             task="push_cube_step",
-            step_idx=i + 1,
+            step_idx=0,
             total_steps=args.steps,
-            done=(i + 1 == args.steps),
+            done=False,
         )
 
-    final_pos, _ = p.getBasePositionAndOrientation(cube)
+        # 每次调用执行一个小步进
+        for i in range(args.steps):
+            new_pos = [
+                start_pos[0] + dx * i,
+                start_pos[1] + dy * i,
+                start_pos[2] + dz * i,
+            ]
+            p.resetBasePositionAndOrientation(cube, new_pos, [0, 0, 0, 1], physicsClientId=cid)
+            step(1, cid)
+            _publish_realtime_frame(
+                run_id=run_id,
+                task="push_cube_step",
+                step_idx=i + 1,
+                total_steps=args.steps,
+                done=(i + 1 == args.steps),
+            )
+
+        final_pos, _ = p.getBasePositionAndOrientation(cube, physicsClientId=cid)
 
     return {
         "task": "push_cube_step",
@@ -402,40 +417,40 @@ def grab_and_place_step(args: GrabAndPlaceStepArgs):
     - Do not use for precise grasp/contact planning; this is a simplified teleport-style routine.
     - Do not use with non-positive steps.
     """
-    ensure_simulation()
-    if args.steps <= 0:
-        raise ValueError("steps must be > 0")
+    with with_simulation() as cid:
+        if args.steps <= 0:
+            raise ValueError("steps must be > 0")
 
-    cube = p.loadURDF("cube_small.urdf", args.start_position)
-    run_id = str(uuid.uuid4())
-    total_steps = 60 + args.steps
+        cube = p.loadURDF("cube_small.urdf", args.start_position, physicsClientId=cid)
+        run_id = str(uuid.uuid4())
+        total_steps = 60 + args.steps
 
-    # Lift object (teleport)
-    p.resetBasePositionAndOrientation(cube, [0, 0.2, 0.2], [0, 0, 0, 1])
-    for i in range(60):
-        step(1)
-        _publish_realtime_frame(
-            run_id=run_id,
-            task="grab_and_place_step",
-            step_idx=i + 1,
-            total_steps=total_steps,
-            done=False,
-        )
+        # Lift object (teleport)
+        p.resetBasePositionAndOrientation(cube, [0, 0.2, 0.2], [0, 0, 0, 1], physicsClientId=cid)
+        for i in range(60):
+            step(1, cid)
+            _publish_realtime_frame(
+                run_id=run_id,
+                task="grab_and_place_step",
+                step_idx=i + 1,
+                total_steps=total_steps,
+                done=False,
+            )
 
-    # Place object at the target position
-    p.resetBasePositionAndOrientation(cube, args.target_position, [0, 0, 0, 1])
-    for i in range(args.steps):
-        step(1)
-        current_step = 60 + i + 1
-        _publish_realtime_frame(
-            run_id=run_id,
-            task="grab_and_place_step",
-            step_idx=current_step,
-            total_steps=total_steps,
-            done=(current_step == total_steps),
-        )
+        # Place object at the target position
+        p.resetBasePositionAndOrientation(cube, args.target_position, [0, 0, 0, 1], physicsClientId=cid)
+        for i in range(args.steps):
+            step(1, cid)
+            current_step = 60 + i + 1
+            _publish_realtime_frame(
+                run_id=run_id,
+                task="grab_and_place_step",
+                step_idx=current_step,
+                total_steps=total_steps,
+                done=(current_step == total_steps),
+            )
 
-    final_pos, _ = p.getBasePositionAndOrientation(cube)
+        final_pos, _ = p.getBasePositionAndOrientation(cube, physicsClientId=cid)
 
     return {
         "task": "grab_and_place_step",
@@ -479,46 +494,46 @@ def path_planning(args: PathPlanningArgs):
     - Do not use when obstacle avoidance or IK-level realism is required.
     - Do not use with non-positive steps.
     """
-    ensure_simulation()
-    if args.steps <= 0:
-        raise ValueError("steps must be > 0")
+    with with_simulation() as cid:
+        if args.steps <= 0:
+            raise ValueError("steps must be > 0")
 
-    robot_id = p.loadURDF("kuka_iiwa/model.urdf", basePosition=args.start_position)
-    run_id = str(uuid.uuid4())
+        robot_id = p.loadURDF("kuka_iiwa/model.urdf", basePosition=args.start_position, physicsClientId=cid)
+        run_id = str(uuid.uuid4())
 
-    # 假设这里的路径规划为线性移动
-    move_vector = [
-        (args.target_position[0] - args.start_position[0]) / args.steps,
-        (args.target_position[1] - args.start_position[1]) / args.steps,
-        (args.target_position[2] - args.start_position[2]) / args.steps,
-    ]
-
-    _publish_realtime_frame(
-        run_id=run_id,
-        task="path_planning",
-        step_idx=0,
-        total_steps=args.steps,
-        done=False,
-    )
-
-    for i in range(args.steps):
-        new_pos = [
-            args.start_position[0] + move_vector[0] * i,
-            args.start_position[1] + move_vector[1] * i,
-            args.start_position[2] + move_vector[2] * i,
+        # 假设这里的路径规划为线性移动
+        move_vector = [
+            (args.target_position[0] - args.start_position[0]) / args.steps,
+            (args.target_position[1] - args.start_position[1]) / args.steps,
+            (args.target_position[2] - args.start_position[2]) / args.steps,
         ]
-        # Move the robot arm
-        p.resetBasePositionAndOrientation(robot_id, new_pos, [0, 0, 0, 1])
-        step(1)
+
         _publish_realtime_frame(
             run_id=run_id,
             task="path_planning",
-            step_idx=i + 1,
+            step_idx=0,
             total_steps=args.steps,
-            done=(i + 1 == args.steps),
+            done=False,
         )
 
-    final_pos, _ = p.getBasePositionAndOrientation(robot_id)
+        for i in range(args.steps):
+            new_pos = [
+                args.start_position[0] + move_vector[0] * i,
+                args.start_position[1] + move_vector[1] * i,
+                args.start_position[2] + move_vector[2] * i,
+            ]
+            # Move the robot arm
+            p.resetBasePositionAndOrientation(robot_id, new_pos, [0, 0, 0, 1], physicsClientId=cid)
+            step(1, cid)
+            _publish_realtime_frame(
+                run_id=run_id,
+                task="path_planning",
+                step_idx=i + 1,
+                total_steps=args.steps,
+                done=(i + 1 == args.steps),
+            )
+
+        final_pos, _ = p.getBasePositionAndOrientation(robot_id, physicsClientId=cid)
 
     return {
         "task": "path_planning",
@@ -558,25 +573,25 @@ def adjust_physics(args: FrictionAndElasticityArgs):
     - Do not use as a motion-control action; it only changes dynamics parameters.
     - Do not expect global scene-wide physics update; this currently applies to the created test cube.
     """
-    ensure_simulation()
-    cube = p.loadURDF("cube_small.urdf", [0, 0, 0.02])
+    with with_simulation() as cid:
+        cube = p.loadURDF("cube_small.urdf", [0, 0, 0.02], physicsClientId=cid)
 
-    # 调整摩擦力和弹性
-    p.changeDynamics(
-        cube, -1, lateralFriction=args.friction, restitution=args.restitution
-    )
-    step(1)
-    _publish_snapshot(
-        "adjust_physics",
-        done=True,
-        extra={"friction": args.friction, "restitution": args.restitution},
-    )
+        # 调整摩擦力和弹性
+        p.changeDynamics(
+            cube, -1, lateralFriction=args.friction, restitution=args.restitution, physicsClientId=cid
+        )
+        step(1, cid)
+        _publish_snapshot(
+            "adjust_physics",
+            done=True,
+            extra={"friction": args.friction, "restitution": args.restitution},
+        )
 
-    return {
-        "task": "adjust_physics",
-        "status": "success",
-        "message": "Friction and elasticity adjusted for the cube.",
-    }
+        return {
+            "task": "adjust_physics",
+            "status": "success",
+            "message": "Friction and elasticity adjusted for the cube.",
+        }
 
 
 # 多物体抓取工具
@@ -603,26 +618,26 @@ def multi_object_grab_and_place(args: MultiObjectGrabArgs):
     - Do not use for sequential pick-place with collision-aware planning.
     - Do not use when object-specific trajectories are required.
     """
-    ensure_simulation()
-    cubes = []
-    for pos in args.object_positions:
-        cubes.append(p.loadURDF("cube_small.urdf", pos))
+    with with_simulation() as cid:
+        cubes = []
+        for pos in args.object_positions:
+            cubes.append(p.loadURDF("cube_small.urdf", pos, physicsClientId=cid))
 
-    # 抓取并移动到目标位置
-    for cube in cubes:
-        p.resetBasePositionAndOrientation(cube, args.target_position, [0, 0, 0, 1])
-    step(1)
-    _publish_snapshot(
-        "multi_object_grab_and_place",
-        done=True,
-        extra={"count": len(cubes)},
-    )
+        # 抓取并移动到目标位置
+        for cube in cubes:
+            p.resetBasePositionAndOrientation(cube, args.target_position, [0, 0, 0, 1], physicsClientId=cid)
+        step(1, cid)
+        _publish_snapshot(
+            "multi_object_grab_and_place",
+            done=True,
+            extra={"count": len(cubes)},
+        )
 
-    return {
-        "task": "multi_object_grab_and_place",
-        "status": "success",
-        "message": "Multiple objects moved to the target position.",
-    }
+        return {
+            "task": "multi_object_grab_and_place",
+            "status": "success",
+            "message": "Multiple objects moved to the target position.",
+        }
 
 
 # 模拟视觉传感器
@@ -660,21 +675,22 @@ def simulate_vision_sensor(args: VisionSensorArgs):
     - Do not use if you only need object state/poses (use check_simulation_state instead).
     - Do not assume returned image is compressed/serialized for direct JSON transport.
     """
-    ensure_simulation()
-    width, height = args.width, args.height
-    img_arr = p.getCameraImage(
-        width,
-        height,
-        viewMatrix=args.view_matrix,
-        projectionMatrix=args.projection_matrix,
-    )
-    _publish_snapshot("simulate_vision_sensor", done=True)
-    return {
-        "task": "simulate_vision_sensor",
-        "status": "success",
-        "image": img_arr[2],  # Return RGB image as base64 (or image path)
-        "message": "Captured image from the vision sensor.",
-    }
+    with with_simulation() as cid:
+        width, height = args.width, args.height
+        img_arr = p.getCameraImage(
+            width,
+            height,
+            viewMatrix=args.view_matrix,
+            projectionMatrix=args.projection_matrix,
+            physicsClientId=cid,
+        )
+        _publish_snapshot("simulate_vision_sensor", done=True)
+        return {
+            "task": "simulate_vision_sensor",
+            "status": "success",
+            "image": img_arr[2],  # Return RGB image as base64 (or image path)
+            "message": "Captured image from the vision sensor.",
+        }
 
 
 # ======================
@@ -711,29 +727,29 @@ def check_simulation_state():
     - Do not use as a motion action; this is read-only inspection.
     - Do not expect detailed joint-level kinematics; it returns base positions only.
     """
-    ensure_simulation()
-    num_objects = p.getNumBodies()  # 获取场景中的物体数量
-    state_data = {}
+    with with_simulation() as cid:
+        num_objects = p.getNumBodies(physicsClientId=cid)
+        state_data = {}
 
-    # 获取所有物体的状态
-    for obj_id in range(num_objects):
-        pos, _ = p.getBasePositionAndOrientation(
-            obj_id
-        )  # 获取物体的唯一 ID 并获取其位置和姿态
-        state_data[obj_id] = pos  # 以物体 ID 为键，将位置存储在字典中
+        # 获取所有物体的状态
+        for obj_id in range(num_objects):
+            pos, _ = p.getBasePositionAndOrientation(
+                obj_id, physicsClientId=cid
+            )
+            state_data[obj_id] = pos
 
-    _publish_snapshot(
-        "check_simulation_state",
-        done=False,
-        extra={"num_objects": num_objects},
-    )
+        _publish_snapshot(
+            "check_simulation_state",
+            done=False,
+            extra={"num_objects": num_objects},
+        )
 
-    return {
-        "task": "check_simulation_state",
-        "status": "success",
-        "state_data": state_data,
-        "message": "Simulation environment state checked.",
-    }
+        return {
+            "task": "check_simulation_state",
+            "status": "success",
+            "state_data": state_data,
+            "message": "Simulation environment state checked.",
+        }
 
 
 # ======================
@@ -757,25 +773,24 @@ def reset_simulation(args: ResetSimulationArgs):
     - status: 操作结果
     - message: 描述信息
     """
-    ensure_simulation()
-
-    if args.keep_objects:
-        # 只重置位置和速度，保留物体
-        num_bodies = p.getNumBodies()
-        for body_id in range(num_bodies):
-            if body_id == 0:
-                continue  # skip plane
-            # 重置到初始位置（需要记录）或者静止
-            p.resetBasePositionAndOrientation(body_id, [0, 0, 0.5], [0, 0, 0, 1])
-            p.resetBaseVelocity(body_id, [0, 0, 0], [0, 0, 0])
-    else:
-        # 完全重置 - 删除所有非地面物体
-        num_bodies = p.getNumBodies()
-        for body_id in range(num_bodies - 1, 0, -1):
-            try:
-                p.removeBody(body_id)
-            except:
-                pass
+    with with_simulation() as cid:
+        if args.keep_objects:
+            # 只重置位置和速度，保留物体
+            num_bodies = p.getNumBodies(physicsClientId=cid)
+            for body_id in range(num_bodies):
+                if body_id == 0:
+                    continue  # skip plane
+                # 重置到初始位置（需要记录）或者静止
+                p.resetBasePositionAndOrientation(body_id, [0, 0, 0.5], [0, 0, 0, 1], physicsClientId=cid)
+                p.resetBaseVelocity(body_id, [0, 0, 0], [0, 0, 0], physicsClientId=cid)
+        else:
+            # 完全重置 - 删除所有非地面物体
+            num_bodies = p.getNumBodies(physicsClientId=cid)
+            for body_id in range(num_bodies - 1, 0, -1):
+                try:
+                    p.removeBody(body_id, physicsClientId=cid)
+                except:
+                    pass
 
     _publish_snapshot("reset_simulation", done=True, extra={"keep_objects": args.keep_objects})
 
@@ -860,28 +875,26 @@ def get_object_state(args: GetObjectStateArgs):
     - linear_velocity: [x, y, z]
     - angular_velocity: [x, y, z]
     """
-    ensure_simulation()
-
-    try:
-        pos, ori = p.getBasePositionAndOrientation(args.object_id)
-        lin_vel, ang_vel = p.getBaseVelocity(args.object_id)
-
-        return {
-            "task": "get_object_state",
-            "status": "success",
-            "object_id": args.object_id,
-            "position": list(pos),
-            "orientation": list(ori),
-            "linear_velocity": list(lin_vel),
-            "angular_velocity": list(ang_vel),
-            "message": f"Object {args.object_id} state retrieved.",
-        }
-    except Exception as e:
-        return {
-            "task": "get_object_state",
-            "status": "error",
-            "message": f"Failed to get object state: {str(e)}",
-        }
+    with with_simulation() as cid:
+        try:
+            pos, ori = p.getBasePositionAndOrientation(args.object_id, physicsClientId=cid)
+            lin_vel, ang_vel = p.getBaseVelocity(args.object_id, physicsClientId=cid)
+            return {
+                "task": "get_object_state",
+                "status": "success",
+                "object_id": args.object_id,
+                "position": list(pos),
+                "orientation": list(ori),
+                "linear_velocity": list(lin_vel),
+                "angular_velocity": list(ang_vel),
+                "message": f"Object {args.object_id} state retrieved.",
+            }
+        except Exception as e:
+            return {
+                "task": "get_object_state",
+                "status": "error",
+                "message": f"Failed to get object state: {str(e)}",
+            }
 
 
 # ======================
@@ -917,28 +930,27 @@ def set_object_position(args: SetObjectPositionArgs):
     - position: 设置后的位置
     - orientation: 设置后的姿态
     """
-    ensure_simulation()
+    with with_simulation() as cid:
+        try:
+            p.resetBasePositionAndOrientation(args.object_id, args.position, args.orientation, physicsClientId=cid)
+            p.resetBaseVelocity(args.object_id, [0, 0, 0], [0, 0, 0], physicsClientId=cid)
 
-    try:
-        p.resetBasePositionAndOrientation(args.object_id, args.position, args.orientation)
-        p.resetBaseVelocity(args.object_id, [0, 0, 0], [0, 0, 0])
+            _publish_snapshot("set_object_position", done=False, extra={"object_id": args.object_id})
 
-        _publish_snapshot("set_object_position", done=False, extra={"object_id": args.object_id})
-
-        return {
-            "task": "set_object_position",
-            "status": "success",
-            "object_id": args.object_id,
-            "position": args.position,
-            "orientation": args.orientation,
-            "message": f"Object {args.object_id} moved to {args.position}",
-        }
-    except Exception as e:
-        return {
-            "task": "set_object_position",
-            "status": "error",
-            "message": f"Failed to set object position: {str(e)}",
-        }
+            return {
+                "task": "set_object_position",
+                "status": "success",
+                "object_id": args.object_id,
+                "position": args.position,
+                "orientation": args.orientation,
+                "message": f"Object {args.object_id} moved to {args.position}",
+            }
+        except Exception as e:
+            return {
+                "task": "set_object_position",
+                "status": "error",
+                "message": f"Failed to set object position: {str(e)}",
+            }
 
 
 # ======================
@@ -961,10 +973,9 @@ def step_simulation(args: StepSimulationArgs):
     - 每步检查状态
     - 实现闭环控制
     """
-    ensure_simulation()
-
-    for _ in range(args.steps):
-        p.stepSimulation()
+    with with_simulation() as cid:
+        for _ in range(args.steps):
+            p.stepSimulation(physicsClientId=cid)
 
     return {
         "task": "step_simulation",
@@ -1014,29 +1025,29 @@ def create_object(args: CreateObjectArgs):
     - object_id: 创建的物体 ID
     - position: 初始位置
     """
-    ensure_simulation()
+    with with_simulation() as cid:
+        size = args.size
+        col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[s/2 for s in size], physicsClientId=cid)
+        vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[s/2 for s in size], rgbaColor=args.color, physicsClientId=cid)
 
-    size = args.size
-    col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[s/2 for s in size])
-    vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[s/2 for s in size], rgbaColor=args.color)
+        object_id = p.createMultiBody(
+            baseMass=args.mass,
+            baseCollisionShapeIndex=col,
+            baseVisualShapeIndex=vis,
+            basePosition=args.position,
+            physicsClientId=cid,
+        )
 
-    object_id = p.createMultiBody(
-        baseMass=args.mass,
-        baseCollisionShapeIndex=col,
-        baseVisualShapeIndex=vis,
-        basePosition=args.position,
-    )
+        _publish_snapshot("create_object", done=False, extra={"object_id": object_id})
 
-    _publish_snapshot("create_object", done=False, extra={"object_id": object_id})
-
-    return {
-        "task": "create_object",
-        "status": "success",
-        "object_id": object_id,
-        "object_type": args.object_type,
-        "position": args.position,
-        "message": f"Created {args.object_type} at {args.position} with ID {object_id}",
-    }
+        return {
+            "task": "create_object",
+            "status": "success",
+            "object_id": object_id,
+            "object_type": args.object_type,
+            "position": args.position,
+            "message": f"Created {args.object_type} at {args.position} with ID {object_id}",
+        }
 
 
 # ======================
@@ -1060,22 +1071,21 @@ def delete_object(args: DeleteObjectArgs):
     Returns:
     - deleted_id: 被删除的物体 ID
     """
-    ensure_simulation()
-
-    try:
-        p.removeBody(args.object_id)
-        return {
-            "task": "delete_object",
-            "status": "success",
-            "deleted_id": args.object_id,
-            "message": f"Deleted object {args.object_id}",
-        }
-    except Exception as e:
-        return {
-            "task": "delete_object",
-            "status": "error",
-            "message": f"Failed to delete object: {str(e)}",
-        }
+    with with_simulation() as cid:
+        try:
+            p.removeBody(args.object_id, physicsClientId=cid)
+            return {
+                "task": "delete_object",
+                "status": "success",
+                "deleted_id": args.object_id,
+                "message": f"Deleted object {args.object_id}",
+            }
+        except Exception as e:
+            return {
+                "task": "delete_object",
+                "status": "error",
+                "message": f"Failed to delete object: {str(e)}",
+            }
 
 
 # ======================
@@ -1092,20 +1102,19 @@ def get_simulation_info():
     - gravity: 重力设置
     - time_elapsed: 已用仿真时间
     """
-    ensure_simulation()
-
-    params = p.getPhysicsEngineParameters()
-    return {
-        "task": "get_simulation_info",
-        "status": "success",
-        "timestep": params['fixedTimeStep'],
-        "num_bodies": p.getNumBodies(),
-        "gravity": [
-            params['gravityAccelerationX'],
-            params['gravityAccelerationY'],
-            params['gravityAccelerationZ']
-        ],
-        "message": "Simulation info retrieved.",
+    with with_simulation() as cid:
+        params = p.getPhysicsEngineParameters(physicsClientId=cid)
+        return {
+            "task": "get_simulation_info",
+            "status": "success",
+            "timestep": params['fixedTimeStep'],
+            "num_bodies": p.getNumBodies(physicsClientId=cid),
+            "gravity": [
+                params['gravityAccelerationX'],
+                params['gravityAccelerationY'],
+                params['gravityAccelerationZ']
+            ],
+            "message": "Simulation info retrieved.",
     }
 
 
@@ -1129,9 +1138,8 @@ def set_gravity(args: SetGravityArgs):
     - 零重力实验
     - 月球/火星重力模拟
     """
-    ensure_simulation()
-
-    p.setGravity(*args.gravity)
+    with with_simulation() as cid:
+        p.setGravity(*args.gravity, physicsClientId=cid)
 
     return {
         "task": "set_gravity",
