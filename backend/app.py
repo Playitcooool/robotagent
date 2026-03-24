@@ -178,8 +178,9 @@ async def startup_event():
             )
 
         # 注入 experience 到 MainAgent（simulation 和 analysis subagent 已通过 init_subagents 注入）
+        # 注意：MainAgent 只接收 main_agent 的经验，不接收 simulation/analysis 的经验，避免干扰
         if experiences:
-            exp_suffix = build_experience_suffix(experiences)
+            exp_suffix = build_experience_suffix(experiences, agent_filter="main_agent")
         else:
             exp_suffix = ""
 

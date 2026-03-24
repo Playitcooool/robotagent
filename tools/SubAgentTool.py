@@ -107,12 +107,13 @@ async def init_subagents(
     subagents = []
     experiences = experiences or []
 
-    # Build experience context for subagents
-    def _build_exp_context(exps: list) -> str:
-        if not exps:
+    # Build experience context for subagents (filtered by agent type)
+    def _build_exp_context(exps: list, agent_filter: str) -> str:
+        filtered = [e for e in exps if e.get("prompt_id") == agent_filter]
+        if not filtered:
             return ""
         lines = ["", "【历史经验（请遵守）】"]
-        for exp in exps[-max_experiences_in_subagent:]:
+        for exp in filtered[-max_experiences_in_subagent:]:
             lines.append(f"- prompt_id={exp.get('prompt_id')}, score={exp.get('score', 0.0)}")
             s = str(exp.get("summary", "")).strip()
             if s:
@@ -136,7 +137,7 @@ async def init_subagents(
         )
 
     # Rebuild analysis agent graph with current experiences
-    analysis_system = AnalysisAgentPrompt.SYSTEM_PROMPT + _build_exp_context(experiences)
+    analysis_system = AnalysisAgentPrompt.SYSTEM_PROMPT + _build_exp_context(experiences, "analysis_agent")
     analysis_graph = create_agent(
         model=_cached_analysis_chat,
         tools=_cached_analysis_tools,
@@ -213,7 +214,7 @@ async def init_subagents(
         )
 
     # Rebuild simulation agent graph with current experiences
-    sim_system = SimulationAgentPrompt.SYSTEM_PROMPT + _build_exp_context(experiences)
+    sim_system = SimulationAgentPrompt.SYSTEM_PROMPT + _build_exp_context(experiences, "simulation_agent")
     simulation_graph = create_agent(
         model=_cached_simulation_chat,
         tools=_cached_mcp_tools,
@@ -272,16 +273,25 @@ def _load_agent_experiences() -> list:
     return experiences
 
 
-def build_experience_suffix(experiences: list, max_experiences: int = 10) -> str:
+def build_experience_suffix(experiences: list, max_experiences: int = 10, agent_filter: str | None = None) -> str:
     """
-    Build the text suffix for main agent's system prompt from experience list.
-    Mimics _build_exp_context but returns a formatted text block.
+    Build the text suffix for an agent's system prompt from experience list.
+
+    Args:
+        experiences: List of experience dicts (from _load_agent_experiences).
+        max_experiences: Max number of experience entries to include.
+        agent_filter: If set, only include experiences whose prompt_id matches this filter.
+                      If None, includes all experiences (legacy behavior for subagents).
     """
     if not experiences:
         return ""
 
+    filtered = experiences
+    if agent_filter:
+        filtered = [e for e in experiences if e.get("prompt_id") == agent_filter]
+
     lines = ["\n\n## 实际轨迹中的常见错误与高分要点（来自历史任务统计）"]
-    for exp in experiences[-max_experiences:]:
+    for exp in filtered[-max_experiences:]:
         lines.append("")
         # summary as header
         summary = str(exp.get("summary", "")).strip()
