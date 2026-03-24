@@ -131,6 +131,13 @@ class GazeboMCPNode(Node):
         with self._lock:
             return self._camera_frames.get(topic)
 
+    def clear_state(self):
+        """Clear all cached simulation state (model states and camera frames).
+        Call this between episodes/queries to prevent cross-contamination."""
+        with self._lock:
+            self._latest_model_states = None
+            self._camera_frames.clear()
+
     def wait_for_camera_frame(self, topic: str, timeout: float = 5.0) -> bytes | None:
         """等待相机帧，使用事件机制而非轮询"""
         import threading
@@ -748,6 +755,30 @@ def cleanup_ros_connection():
         "task": "cleanup_ros_connection",
         "status": "success",
         "message": "ROS2 connection cleaned up.",
+    }
+
+
+# ======================
+# Tool 12b: 清理仿真状态（保留连接）
+# ======================
+@mcp_server.tool()
+def clear_simulation_state():
+    """
+    Clear cached simulation state (model states and camera frames) without shutting down the ROS connection.
+
+    Use this between queries to prevent state from one query contaminating the next.
+    The ROS2 connection and service clients remain alive.
+
+    When NOT to use:
+    - Do not use as a substitute for reset_simulation/reset_world (those reset Gazebo world state).
+    - Use cleanup_ros_connection when the session is fully done.
+    """
+    node = ensure_ros()
+    node.clear_state()
+    return {
+        "task": "clear_simulation_state",
+        "status": "success",
+        "message": "Cached simulation state cleared.",
     }
 
 
