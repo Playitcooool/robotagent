@@ -10,8 +10,25 @@
       <button class="logout-mini" @click="$emit('logout')">{{ t('logout') }}</button>
     </div>
 
+    <!-- Search -->
+    <div class="search-wrap">
+      <input
+        v-model="searchQuery"
+        class="session-search"
+        type="search"
+        :placeholder="lang === 'zh' ? '搜索会话...' : 'Search sessions...'"
+      />
+    </div>
+
+    <!-- Empty state (no sessions or no search results) -->
+    <div v-if="sessions.length === 0 || (searchQuery && filteredSessions.length === 0)" class="empty-state">
+      <div class="empty-icon">{{ sessions.length === 0 ? '📭' : '🔍' }}</div>
+      <p class="empty-title">{{ sessions.length === 0 ? (lang === 'zh' ? '暂无会话' : 'No sessions yet') : (lang === 'zh' ? '无匹配结果' : 'No results') }}</p>
+      <p class="empty-hint">{{ sessions.length === 0 ? (lang === 'zh' ? '点击下方按钮开始新对话' : 'Start a new conversation below') : (lang === 'zh' ? '尝试其他关键词' : 'Try a different keyword') }}</p>
+    </div>
+
       <div
-        v-for="s in sessions"
+        v-for="s in filteredSessions"
         :key="s.session_id"
         :class="['item', { active: s.session_id === currentSessionId }]"
         @click="select(s)"
@@ -86,7 +103,7 @@
 </template>
 
 <script>
-import { ref, onMounted, watch, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, onMounted, watch, onBeforeUnmount, nextTick } from 'vue'
 
 export default {
   name: 'Sidebar',
@@ -105,8 +122,19 @@ export default {
     const editingTitle = ref('')
     const titleInput = ref(null)
     const toast = ref('')
+    const searchQuery = ref('')
     let loadController = null
     let loadSeq = 0
+
+    const filteredSessions = computed(() => {
+      if (!searchQuery.value.trim()) return sessions.value
+      const q = searchQuery.value.toLowerCase()
+      return sessions.value.filter(s => {
+        const title = (s.title || '').toLowerCase()
+        const preview = (s.preview || '').toLowerCase()
+        return title.includes(q) || preview.includes(q)
+      })
+    })
 
     // Translations
     const t = (key) => {
@@ -308,6 +336,8 @@ export default {
 
     return {
       sessions,
+      filteredSessions,
+      searchQuery,
       deletingSessionId,
       editingSessionId,
       editingTitle,
@@ -324,8 +354,7 @@ export default {
       shareSession,
       snippet,
       sessionTitle,
-      formatTime,
-      t
+      formatTime
     }
   }
 }
@@ -381,6 +410,30 @@ export default {
   padding: 4px 8px;
   font-size: 12px;
   cursor: pointer;
+}
+
+.search-wrap {
+  margin-bottom: 10px;
+}
+
+.session-search {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 13px;
+  box-sizing: border-box;
+}
+
+.session-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.session-search::placeholder {
+  color: var(--muted);
 }
 
 .list {
@@ -534,6 +587,34 @@ export default {
 .delete-mini:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.empty-icon {
+  font-size: 36px;
+  margin-bottom: 12px;
+  opacity: 0.6;
+}
+
+.empty-title {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.empty-hint {
+  margin: 0;
+  font-size: 12px;
 }
 
 .footer {

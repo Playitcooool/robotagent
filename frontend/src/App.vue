@@ -1,6 +1,15 @@
 <template>
+  <a href="#main-content" class="skip-link">{{ lang === 'zh' ? '跳转到内容' : 'Skip to content' }}</a>
+
   <div v-if="authLoading" class="auth-shell">
-    <div class="auth-card"><p>正在检查登录状态...</p></div>
+    <div class="auth-card skeleton-card">
+      <div class="skeleton-title"></div>
+      <div class="skeleton-subtitle"></div>
+      <div class="skeleton-form">
+        <div class="skeleton-input"></div>
+        <div class="skeleton-input"></div>
+      </div>
+    </div>
   </div>
 
   <div v-else-if="!authUser" class="auth-shell">
@@ -12,14 +21,14 @@
       <div class="topbar-left">
         <span class="brand">RobotAgent</span>
         <button
-          :class="['top-nav-btn', activeTopTab === 'about' ? 'active' : '']"
-          @click="activeTopTab = 'about'"
+          :class="['top-nav-btn', route.path === '/about' ? 'active' : '']"
+          @click="router.push('/about')"
         >
           {{ t('about') }}
         </button>
         <button
-          :class="['top-nav-btn', activeTopTab === 'chat' ? 'active' : '']"
-          @click="activeTopTab = 'chat'"
+          :class="['top-nav-btn', route.path.startsWith('/chat') ? 'active' : '']"
+          @click="router.push('/chat')"
         >
           {{ t('chat') }}
         </button>
@@ -33,12 +42,18 @@
         <button class="theme-toggle" @click="toggleTheme" :title="t('switchTheme')">
           {{ isDark ? '☀️' : '🌙' }}
         </button>
+        <!-- Font size -->
+        <select class="font-size-select" :value="fontSize" @change="setFontSize(Number($event.target.value))" :title="lang === 'zh' ? '字体大小' : 'Font Size'">
+          <option value="12">A-</option>
+          <option value="15">A</option>
+          <option value="18">A+</option>
+        </select>
         <span class="whoami">{{ t('currentUser') }}：{{ authUser.username }}</span>
         <button class="logout" @click="onLogout">{{ t('logout') }}</button>
       </div>
     </header>
 
-    <div v-if="activeTopTab === 'chat'" :class="['app-grid', showToolPanel ? 'has-right' : 'no-right']">
+    <div id="main-content" v-if="route.path.startsWith('/chat')" :class="['app-grid', showToolPanel ? 'has-right' : 'no-right']">
       <aside class="left">
         <Sidebar
           @selectSession="onSelectSession"
@@ -68,14 +83,22 @@
       </Transition>
     </div>
 
-    <main v-else class="about-shell">
+    <main v-if="route.path === '/about'" class="about-shell">
       <AboutView />
     </main>
+
+    <ShortcutHelp
+      :visible="showShortcutHelp"
+      :lang="lang"
+      @close="showShortcutHelp = false"
+    />
   </div>
 </template>
 
 <script>
 import { ref, onMounted, computed, onBeforeUnmount } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import ShortcutHelp from './components/ShortcutHelp.vue'
 import Sidebar from './components/Sidebar.vue'
 import ChatView from './components/ChatView.vue'
 import ToolResults from './components/ToolResults.vue'
@@ -112,7 +135,7 @@ const translations = {
 
 export default {
   name: 'App',
-  components: { Sidebar, ChatView, ToolResults, AuthView, AboutView },
+  components: { ShortcutHelp, Sidebar, ChatView, ToolResults, AuthView, AboutView },
   setup () {
     // Theme
     const isDark = ref(localStorage.getItem(THEME_KEY) !== 'light')
@@ -169,8 +192,31 @@ export default {
     const authToken = ref(localStorage.getItem(AUTH_TOKEN_KEY) || '')
     const authUser = ref(null)
     const authLoading = ref(true)
-    const activeTopTab = ref('chat')
+    const route = useRoute()
+    const router = useRouter()
     const simStreamActive = ref(false)
+    const showShortcutHelp = ref(false)
+    const fontSize = ref(parseInt(localStorage.getItem('robotagent_font_size')) || 15)
+
+    function setFontSize (size) {
+      fontSize.value = size
+      localStorage.setItem('robotagent_font_size', size)
+      document.documentElement.style.setProperty('--font-size-base', `${size}px`)
+    }
+
+    function handleKeydown (e) {
+      // ? to show shortcuts help
+      if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const tag = document.activeElement?.tagName
+        if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
+          showShortcutHelp.value = true
+        }
+      }
+      // Escape to close shortcut help
+      if (e.key === 'Escape' && showShortcutHelp.value) {
+        showShortcutHelp.value = false
+      }
+    }
     const showToolPanel = computed(() => {
       if (simStreamActive.value) return true
       const msgs = Array.isArray(conversation.value) ? conversation.value : []
@@ -181,7 +227,7 @@ export default {
       return msgs.some((m) => {
         if (String(m?.role || '') !== 'assistant') return false
         const txt = String(m?.text || '').trim()
-        return txt && txt !== WELCOME_TEXT
+        return txt && txt !== WELCOME_TEXT && txt !== WELCOME_TEXT_EN
       })
     })
 
@@ -282,11 +328,10 @@ export default {
 
       eventSource.onerror = () => {
         eventSource.close()
-        // 只有在连接仍然处于活动状态时才重连
-        if (liveFrameEventSource === eventSource && authToken.value && simStreamActive.value) {
+        liveFrameEventSource = null
+        if (authToken.value && simStreamActive.value) {
           setTimeout(() => {
-            // 再次检查，确保用户没有主动关闭
-            if (liveFrameEventSource === null && authToken.value && simStreamActive.value) {
+            if (liveFrameEventSource === null) {
               startLiveFrameStream()
             }
           }, 1000)
@@ -809,7 +854,11 @@ export default {
       }
     }
 
-    onMounted(checkAuth)
+    onMounted(() => {
+      checkAuth()
+      // Keyboard shortcuts
+      document.addEventListener('keydown', handleKeydown)
+    })
     onBeforeUnmount(() => {
       stopLiveFrameStream()
       if (sessionLoadController) sessionLoadController.abort()
@@ -822,11 +871,13 @@ export default {
       for (const msgId in typewriterAccum) {
         delete typewriterAccum[msgId]
       }
+      document.removeEventListener('keydown', handleKeydown)
     })
 
     return {
       authLoading,
-      activeTopTab,
+      route,
+      router,
       authToken,
       authUser,
       conversation,
@@ -844,7 +895,10 @@ export default {
       onLogout,
       onSelectSession,
       onSessionDeleted,
-      onSendMessage
+      onSendMessage,
+      showShortcutHelp,
+      fontSize,
+      setFontSize
     }
   }
 }
