@@ -236,7 +236,7 @@ def load_existing_results(out_dir: Path) -> tuple[list, set]:
 
 
 async def run_agent_query(
-    agent, query: dict, timeout_s: float = 1200.0
+    agent, query: dict, timeout_s: float = 1200.0, debug: bool = False
 ) -> tuple[str, str]:
     """Run agent on a single query, return (response_text, error)."""
     try:
@@ -244,6 +244,18 @@ async def run_agent_query(
             agent.ainvoke({"messages": [{"role": "user", "content": query["prompt"]}]}),
             timeout=timeout_s,
         )
+
+        if debug:
+            print(f"  [DEBUG] result type={type(result).__name__}")
+            if isinstance(result, dict):
+                msgs = result.get("messages", [])
+                print(f"  [DEBUG] messages count={len(msgs)}")
+                for m in reversed(msgs[-3:]):
+                    role = m.get("role") if isinstance(m, dict) else getattr(m, "role", "?")
+                    content = m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
+                    print(f"  [DEBUG]   msg role={role}, content={repr(str(content)[:80])}")
+            else:
+                print(f"  [DEBUG] result={repr(result)[:200]}")
 
         # Handle different result formats from create_deep_agent
         # Case 1: result is a dict with "messages" key
@@ -253,7 +265,8 @@ async def run_agent_query(
                 role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
                 if role == "assistant":
                     content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
-                    return str(content), ""
+                    if content:
+                        return str(content), ""
             return "", ""
 
         # Case 2: result is an AIMessage (direct response)
@@ -446,6 +459,9 @@ async def main():
     parser.add_argument(
         "--timeout", type=int, default=1200, help="单个query超时时间（秒），默认1200"
     )
+    parser.add_argument(
+        "--debug", action="store_true", help="打印详细调试信息"
+    )
     args = parser.parse_args()
 
     config = load_config()
@@ -529,7 +545,7 @@ async def main():
             )
 
             # Run query
-            response, error = await run_agent_query(agent, query, timeout_s=float(args.timeout))
+            response, error = await run_agent_query(agent, query, timeout_s=float(args.timeout), debug=args.debug)
 
             if error:
                 print(f"  [ERROR] {error}")
