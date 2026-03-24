@@ -236,54 +236,70 @@ def load_existing_results(out_dir: Path) -> tuple[list, set]:
 
 
 async def run_agent_query(
-    agent, query: dict, timeout_s: float = 1200.0, debug: bool = False
+    agent, query: dict, timeout_s: float = 1200.0, debug: bool = False,
+    max_retries: int = 2
 ) -> tuple[str, str]:
     """Run agent on a single query, return (response_text, error)."""
-    try:
-        result = await asyncio.wait_for(
-            agent.ainvoke({"messages": [{"role": "user", "content": query["prompt"]}]}),
-            timeout=timeout_s,
-        )
+    last_error = ""
+    for attempt in range(max_retries + 1):
+        if attempt > 0:
+            print(f"  [RETRY] attempt {attempt + 1}/{max_retries + 1}")
+        try:
+            result = await asyncio.wait_for(
+                agent.ainvoke({"messages": [{"role": "user", "content": query["prompt"]}]}),
+                timeout=timeout_s,
+            )
 
-        if debug:
-            print(f"  [DEBUG] result type={type(result).__name__}")
+            if debug:
+                print(f"  [DEBUG] result type={type(result).__name__}")
+                if isinstance(result, dict):
+                    msgs = result.get("messages", [])
+                    print(f"  [DEBUG] messages count={len(msgs)}, types={[type(m).__name__ for m in msgs]}")
+                    for i, m in enumerate(reversed(msgs[-5:])):
+                        content = m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
+                        print(f"  [DEBUG]   msg[-{i}] type={type(m).__name__} content={repr(str(content)[:60])}")
+                else:
+                    print(f"  [DEBUG] result={repr(result)[:200]}")
+
+            # Handle different result formats from create_deep_agent
+            # Case 1: result is a dict with "messages" key
             if isinstance(result, dict):
-                msgs = result.get("messages", [])
-                print(f"  [DEBUG] messages count={len(msgs)}, types={[type(m).__name__ for m in msgs]}")
-                for i, m in enumerate(reversed(msgs[-5:])):
-                    role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
-                    content = m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
-                    print(f"  [DEBUG]   msg[-{i}] type={type(m).__name__} role={repr(role)} content={repr(str(content)[:60])}")
-            else:
-                print(f"  [DEBUG] result={repr(result)[:200]}")
+                messages = result.get("messages", [])
+                for msg in reversed(messages):
+                    if type(msg).__name__ == "AIMessage":
+                        content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+                        if content:
+                            return str(content), ""
+                    elif isinstance(msg, dict) and msg.get("role") == "assistant":
+                        content = msg.get("content", "")
+                        if content:
+                            return str(content), ""
+                return "", ""
 
-        # Handle different result formats from create_deep_agent
-        # Case 1: result is a dict with "messages" key
-        if isinstance(result, dict):
-            messages = result.get("messages", [])
-            # Find the last assistant message by checking type (AIMessage objects don't have .role)
-            for msg in reversed(messages):
-                if type(msg).__name__ == "AIMessage":
-                    content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
-                    if content:
-                        return str(content), ""
-                elif isinstance(msg, dict) and msg.get("role") == "assistant":
-                    content = msg.get("content", "")
-                    if content:
-                        return str(content), ""
-            return "", ""
+            # Case 2: result is an AIMessage (direct response)
+            if hasattr(result, "content"):
+                return str(result.content), ""
 
-        # Case 2: result is an AIMessage (direct response)
-        if hasattr(result, "content"):
-            return str(result.content), ""
+            # Case 3: result is something else, try to stringify
+            return str(result), ""
 
-        # Case 3: result is something else, try to stringify
-        return str(result), ""
+        except asyncio.TimeoutError:
+            last_error = "timeout"
+            print(f"  [WARN] timeout on attempt {attempt + 1}")
+            if attempt < max_retries:
+                from tools.SubAgentTool import reset_cached_mcp_tools
+                reset_cached_mcp_tools()
+        except Exception as e:
+            last_error = str(e)
+            print(f"  [WARN] error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries:
+                try:
+                    from tools.SubAgentTool import reset_cached_mcp_tools
+                    reset_cached_mcp_tools()
+                except Exception:
+                    pass
 
-    except asyncio.TimeoutError:
-        return "", "timeout"
-    except Exception as e:
-        return "", str(e)
+    return "", last_error
 
 
 # ---------------------------------------------------------------------------
