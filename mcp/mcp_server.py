@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import struct
+import threading
 import time
 import uuid
 import zlib
@@ -15,6 +16,66 @@ import pybullet_data
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
+# ======================
+# 公共常量和工具函数
+# ======================
+MAX_STEPS_PER_CALL = 10000  # 单次工具调用最多步进数，防止超时
+_sim_lock = threading.Lock()  # 保护 simulation_instance 全局状态
+_plane_body_id = None  # 跟踪 plane 的 body_id，不假设为 0
+
+
+def _validate_vector(
+    vec: list[float],
+    name: str,
+    size: int | None = None,
+    *,
+    allow_zero: bool = True,
+    allow_negative: bool = True,
+    max_val: float | None = None,
+) -> list[float]:
+    """校验向量参数，检测 NaN/Inf/超限值。"""
+    if not isinstance(vec, (list, tuple)):
+        raise ValueError(f"{name} must be a list, got {type(vec).__name__}")
+    if size is not None and len(vec) != size:
+        raise ValueError(f"{name} must have {size} elements, got {len(vec)}")
+    for i, v in enumerate(vec):
+        if not isinstance(v, (int, float)):
+            raise ValueError(f"{name}[{i}] must be numeric, got {type(v).__name__}")
+        if np.isnan(v) or np.isinf(v):
+            raise ValueError(f"{name}[{i}] must be finite, got {v}")
+        if not allow_zero and v == 0:
+            raise ValueError(f"{name}[{i}] must be non-zero, got {v}")
+        if not allow_negative and v < 0:
+            raise ValueError(f"{name}[{i}] must be non-negative, got {v}")
+        if max_val is not None and abs(v) > max_val:
+            raise ValueError(f"{name}[{i}] must be within [-{max_val}, {max_val}], got {v}")
+    return vec
+
+
+def _clamp_vector(vec: list[float], lo: float, hi: float) -> list[float]:
+    return [max(lo, min(hi, float(v))) for v in vec]
+
+
+def _safe_step(cid: int, steps: int) -> int:
+    """安全步进，防止超时。返回实际步进数。"""
+    steps = max(1, min(int(steps), MAX_STEPS_PER_CALL))
+    for _ in range(steps):
+        p.stepSimulation(physicsClientId=cid)
+    return steps
+
+
+def _is_body_valid(cid: int, body_id: int) -> bool:
+    """检查 body_id 是否对应一个有效物体。"""
+    try:
+        num = p.getNumBodies(physicsClientId=cid)
+        return 0 <= body_id < num
+    except Exception:
+        return False
+
+
+def _tool_error(task: str, msg: str, err_type: str = "error") -> dict:
+    return {"task": task, "status": "error", "message": msg, "error_type": err_type}
+
 
 # ======================
 # 初始化 MCP 服务器
@@ -26,7 +87,6 @@ mcp_server = FastMCP("pybullet_simulator")
 # ======================
 # 模拟环境实例
 simulation_instance = None
-_simulation_paused = False  # 暂停标志
 
 # 实时帧共享目录（默认放在当前 mcp 目录内，便于 Docker 挂载共享）
 DEFAULT_STREAM_DIR = Path(__file__).resolve().parent / ".sim_stream"
@@ -47,11 +107,14 @@ def _ensure_stream_dir():
 
 
 def _pybullet_asset_status() -> dict[str, bool]:
-    data_path = Path(pybullet_data.getDataPath())
-    return {
-        rel: (data_path / rel).exists()
-        for rel in REQUIRED_PYBULLET_ASSETS
-    }
+    try:
+        data_path = Path(pybullet_data.getDataPath())
+        return {
+            rel: (data_path / rel).exists()
+            for rel in REQUIRED_PYBULLET_ASSETS
+        }
+    except Exception:
+        return {rel: False for rel in REQUIRED_PYBULLET_ASSETS}
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]):
@@ -106,7 +169,7 @@ def _capture_rgb_frame(width: int = 320, height: int = 240) -> np.ndarray:
         physicsClientId=cid,
     )
     projection_matrix = p.computeProjectionMatrixFOV(
-        fov=60.0, aspect=aspect, nearVal=0.1, farVal=10.0
+        fov=60.0, aspect=aspect, nearVal=0.1, farVal=10.0, physicsClientId=cid
     )
     _, _, rgba, _, _ = p.getCameraImage(
         width,
@@ -166,19 +229,25 @@ def _publish_snapshot(task: str, *, done: bool = False, extra: dict[str, Any] | 
 
 def setup_simulation(gui: bool = False):
     """初始化PyBullet环境，只在首次创建时运行"""
-    global simulation_instance
-    if simulation_instance is None or not p.isConnected(simulation_instance):
-        if gui:
-            simulation_instance = p.connect(p.GUI)
-        else:
-            simulation_instance = p.connect(p.DIRECT)
+    global simulation_instance, _plane_body_id
+    with _sim_lock:
+        if simulation_instance is None or not p.isConnected(simulation_instance):
+            if gui:
+                simulation_instance = p.connect(p.GUI)
+            else:
+                simulation_instance = p.connect(p.DIRECT)
 
-        p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=simulation_instance)
-        p.setGravity(0, 0, -9.8, physicsClientId=simulation_instance)
-        p.loadURDF("plane.urdf", physicsClientId=simulation_instance)
-        _ensure_stream_dir()
-    else:
-        print("PyBullet environment is already running.")
+            try:
+                data_path_str = pybullet_data.getDataPath()
+                p.setAdditionalSearchPath(data_path_str, physicsClientId=simulation_instance)
+            except Exception:
+                # pybullet_data 路径获取失败时继续，搜索路径可能已配置
+                pass
+            p.setGravity(0, 0, -9.8, physicsClientId=simulation_instance)
+            _plane_body_id = p.loadURDF("plane.urdf", physicsClientId=simulation_instance)
+            _ensure_stream_dir()
+        else:
+            print("PyBullet environment is already running.")
 
 
 def ensure_simulation():
@@ -196,33 +265,34 @@ def with_simulation():
 
 def cleanup_simulation():
     """关闭PyBullet环境，释放所有资源。"""
-    global simulation_instance
-    if simulation_instance is not None:
-        try:
-            if p.isConnected(simulation_instance):
-                p.disconnect(simulation_instance)
-        except Exception:
-            # Best-effort cleanup; always clear local state.
-            pass
-        simulation_instance = None
-        # 清理帧文件
-        try:
-            if LATEST_META_FILE.exists():
-                LATEST_META_FILE.unlink()
-            if LATEST_FRAME_FILE.exists():
-                LATEST_FRAME_FILE.unlink()
-        except Exception:
-            pass
-    else:
-        print("No simulation environment to close.")
+    global simulation_instance, _plane_body_id
+    with _sim_lock:
+        if simulation_instance is not None:
+            try:
+                if p.isConnected(simulation_instance):
+                    p.disconnect(simulation_instance)
+            except Exception:
+                # Best-effort cleanup; always clear local state.
+                pass
+            simulation_instance = None
+            _plane_body_id = None
+            # 清理帧文件
+            try:
+                if LATEST_META_FILE.exists():
+                    LATEST_META_FILE.unlink()
+                if LATEST_FRAME_FILE.exists():
+                    LATEST_FRAME_FILE.unlink()
+            except Exception:
+                pass
+        else:
+            print("No simulation environment to close.")
 
 
 def step(n: int = 240, cid: int | None = None):
     """执行指定步数的仿真"""
     if cid is None:
         cid = simulation_instance
-    for _ in range(n):
-        p.stepSimulation(physicsClientId=cid)
+    _safe_step(cid, n)
 
 
 # ======================
@@ -248,22 +318,30 @@ def initialize_simulation(args: InitializeSimulationArgs):
 
     Returns:
     - task/status/message
+    - physicsClientId: 当前连接的客户端ID（用于调试）
     - also publishes a snapshot frame to the realtime stream directory.
 
     When NOT to use:
     - Do not call this before every single action in the same episode; initialize once and reuse.
     - Do not use this as a cleanup/reset tool (use cleanup_simulation_tool when done).
     """
-    setup_simulation(gui=args.gui)
-    _publish_snapshot("initialize_simulation", done=False, extra={"status": "running"})
-    asset_status = _pybullet_asset_status()
+    try:
+        setup_simulation(gui=args.gui)
+        _publish_snapshot("initialize_simulation", done=False, extra={"status": "running"})
+        asset_status = _pybullet_asset_status()
 
-    return {
-        "task": "initialize_simulation",
-        "status": "success",
-        "message": "Simulation environment initialized and running.",
-        "asset_status": asset_status,
-    }
+        with _sim_lock:
+            cid = simulation_instance
+
+        return {
+            "task": "initialize_simulation",
+            "status": "success",
+            "message": "Simulation environment initialized and running.",
+            "physicsClientId": cid,
+            "asset_status": asset_status,
+        }
+    except Exception as e:
+        return _tool_error("initialize_simulation", f"Failed to initialize: {e}", "pybullet")
 
 
 @mcp_server.tool()
@@ -276,7 +354,17 @@ def check_static_assets():
     - asset_status map
     - missing_assets list
     """
-    data_path = Path(pybullet_data.getDataPath())
+    try:
+        data_path = Path(pybullet_data.getDataPath())
+    except Exception as e:
+        return {
+            "task": "check_static_assets",
+            "status": "error",
+            "data_path": None,
+            "asset_status": {},
+            "missing_assets": REQUIRED_PYBULLET_ASSETS,
+            "message": f"Failed to get pybullet_data path: {e}",
+        }
     status = _pybullet_asset_status()
     missing = [k for k, v in status.items() if not v]
     return {
@@ -325,6 +413,7 @@ def push_cube_step(args: PushCubeStepArgs):
 
     Returns:
     - final_position
+    - object_id: 用于后续 get_object_state / delete_object
     - stream_id / stream_meta_path for frame tracking
     - human-readable message
 
@@ -332,54 +421,63 @@ def push_cube_step(args: PushCubeStepArgs):
     - Do not use for articulated robot manipulation; this is a cube baseline.
     - Do not use with non-positive steps.
     """
-    with with_simulation() as cid:
-        if args.steps <= 0:
-            raise ValueError("steps must be > 0")
+    try:
+        _validate_vector(args.start_position, "start_position", size=3, allow_negative=True, max_val=100.0)
+        _validate_vector(args.push_vector, "push_vector", size=3, allow_negative=True, max_val=100.0)
+    except ValueError as e:
+        return _tool_error("push_cube_step", str(e), "validation")
 
-        cube = p.loadURDF("cube_small.urdf", args.start_position, physicsClientId=cid)
-        run_id = str(uuid.uuid4())
+    steps = max(1, min(int(args.steps), MAX_STEPS_PER_CALL))
 
-        # 线性插值推动
-        start_pos = args.start_position
-        dx = args.push_vector[0] / args.steps
-        dy = args.push_vector[1] / args.steps
-        dz = args.push_vector[2] / args.steps
+    try:
+        with with_simulation() as cid:
+            cube = p.loadURDF("cube_small.urdf", args.start_position, physicsClientId=cid)
+            run_id = str(uuid.uuid4())
 
-        _publish_realtime_frame(
-            run_id=run_id,
-            task="push_cube_step",
-            step_idx=0,
-            total_steps=args.steps,
-            done=False,
-        )
+            # 线性插值推动
+            start_pos = args.start_position
+            dx = args.push_vector[0] / args.steps
+            dy = args.push_vector[1] / args.steps
+            dz = args.push_vector[2] / args.steps
 
-        # 每次调用执行一个小步进
-        for i in range(args.steps):
-            new_pos = [
-                start_pos[0] + dx * i,
-                start_pos[1] + dy * i,
-                start_pos[2] + dz * i,
-            ]
-            p.resetBasePositionAndOrientation(cube, new_pos, [0, 0, 0, 1], physicsClientId=cid)
-            step(1, cid)
             _publish_realtime_frame(
                 run_id=run_id,
                 task="push_cube_step",
-                step_idx=i + 1,
-                total_steps=args.steps,
-                done=(i + 1 == args.steps),
+                step_idx=0,
+                total_steps=steps,
+                done=False,
             )
 
-        final_pos, _ = p.getBasePositionAndOrientation(cube, physicsClientId=cid)
+            # 每次调用执行一个小步进
+            for i in range(steps):
+                new_pos = [
+                    start_pos[0] + dx * i,
+                    start_pos[1] + dy * i,
+                    start_pos[2] + dz * i,
+                ]
+                p.resetBasePositionAndOrientation(cube, new_pos, [0, 0, 0, 1], physicsClientId=cid)
+                _safe_step(cid, 1)
+                _publish_realtime_frame(
+                    run_id=run_id,
+                    task="push_cube_step",
+                    step_idx=i + 1,
+                    total_steps=steps,
+                    done=(i + 1 == steps),
+                )
 
-    return {
-        "task": "push_cube_step",
-        "status": "success",
-        "stream_id": run_id,
-        "stream_meta_path": str(LATEST_META_FILE),
-        "final_position": final_pos,
-        "message": f"Cube pushed along vector {args.push_vector}.",
-    }
+            final_pos, _ = p.getBasePositionAndOrientation(cube, physicsClientId=cid)
+
+        return {
+            "task": "push_cube_step",
+            "status": "success",
+            "stream_id": run_id,
+            "stream_meta_path": str(LATEST_META_FILE),
+            "final_position": final_pos,
+            "object_id": cube,
+            "message": f"Cube pushed along vector {args.push_vector}.",
+        }
+    except Exception as e:
+        return _tool_error("push_cube_step", f"PyBullet error: {e}", "pybullet")
 
 
 # ======================
@@ -417,49 +515,58 @@ def grab_and_place_step(args: GrabAndPlaceStepArgs):
     - Do not use for precise grasp/contact planning; this is a simplified teleport-style routine.
     - Do not use with non-positive steps.
     """
-    with with_simulation() as cid:
-        if args.steps <= 0:
-            raise ValueError("steps must be > 0")
+    try:
+        _validate_vector(args.start_position, "start_position", size=3, allow_negative=True, max_val=100.0)
+        _validate_vector(args.target_position, "target_position", size=3, allow_negative=True, max_val=100.0)
+    except ValueError as e:
+        return _tool_error("grab_and_place_step", str(e), "validation")
 
-        cube = p.loadURDF("cube_small.urdf", args.start_position, physicsClientId=cid)
-        run_id = str(uuid.uuid4())
-        total_steps = 60 + args.steps
+    steps = max(1, min(int(args.steps), MAX_STEPS_PER_CALL))
 
-        # Lift object (teleport)
-        p.resetBasePositionAndOrientation(cube, [0, 0.2, 0.2], [0, 0, 0, 1], physicsClientId=cid)
-        for i in range(60):
-            step(1, cid)
-            _publish_realtime_frame(
-                run_id=run_id,
-                task="grab_and_place_step",
-                step_idx=i + 1,
-                total_steps=total_steps,
-                done=False,
-            )
+    try:
+        with with_simulation() as cid:
+            cube = p.loadURDF("cube_small.urdf", args.start_position, physicsClientId=cid)
+            run_id = str(uuid.uuid4())
+            total_steps = 60 + steps
 
-        # Place object at the target position
-        p.resetBasePositionAndOrientation(cube, args.target_position, [0, 0, 0, 1], physicsClientId=cid)
-        for i in range(args.steps):
-            step(1, cid)
-            current_step = 60 + i + 1
-            _publish_realtime_frame(
-                run_id=run_id,
-                task="grab_and_place_step",
-                step_idx=current_step,
-                total_steps=total_steps,
-                done=(current_step == total_steps),
-            )
+            # Lift object (teleport)
+            p.resetBasePositionAndOrientation(cube, [0, 0.2, 0.2], [0, 0, 0, 1], physicsClientId=cid)
+            for i in range(60):
+                _safe_step(cid, 1)
+                _publish_realtime_frame(
+                    run_id=run_id,
+                    task="grab_and_place_step",
+                    step_idx=i + 1,
+                    total_steps=total_steps,
+                    done=False,
+                )
 
-        final_pos, _ = p.getBasePositionAndOrientation(cube, physicsClientId=cid)
+            # Place object at the target position
+            p.resetBasePositionAndOrientation(cube, args.target_position, [0, 0, 0, 1], physicsClientId=cid)
+            for i in range(steps):
+                _safe_step(cid, 1)
+                current_step = 60 + i + 1
+                _publish_realtime_frame(
+                    run_id=run_id,
+                    task="grab_and_place_step",
+                    step_idx=current_step,
+                    total_steps=total_steps,
+                    done=(current_step == total_steps),
+                )
 
-    return {
-        "task": "grab_and_place_step",
-        "status": "success",
-        "stream_id": run_id,
-        "stream_meta_path": str(LATEST_META_FILE),
-        "final_position": final_pos,
-        "message": f"Object placed at target location {args.target_position}.",
-    }
+            final_pos, _ = p.getBasePositionAndOrientation(cube, physicsClientId=cid)
+
+        return {
+            "task": "grab_and_place_step",
+            "status": "success",
+            "stream_id": run_id,
+            "stream_meta_path": str(LATEST_META_FILE),
+            "final_position": final_pos,
+            "object_id": cube,
+            "message": f"Object placed at target location {args.target_position}.",
+        }
+    except Exception as e:
+        return _tool_error("grab_and_place_step", f"PyBullet error: {e}", "pybullet")
 
 
 # 路径规划工具
@@ -494,55 +601,64 @@ def path_planning(args: PathPlanningArgs):
     - Do not use when obstacle avoidance or IK-level realism is required.
     - Do not use with non-positive steps.
     """
-    with with_simulation() as cid:
-        if args.steps <= 0:
-            raise ValueError("steps must be > 0")
+    try:
+        _validate_vector(args.start_position, "start_position", size=3, allow_negative=True, max_val=100.0)
+        _validate_vector(args.target_position, "target_position", size=3, allow_negative=True, max_val=100.0)
+    except ValueError as e:
+        return _tool_error("path_planning", str(e), "validation")
 
-        robot_id = p.loadURDF("kuka_iiwa/model.urdf", basePosition=args.start_position, physicsClientId=cid)
-        run_id = str(uuid.uuid4())
+    steps = max(1, min(int(args.steps), MAX_STEPS_PER_CALL))
 
-        # 假设这里的路径规划为线性移动
-        move_vector = [
-            (args.target_position[0] - args.start_position[0]) / args.steps,
-            (args.target_position[1] - args.start_position[1]) / args.steps,
-            (args.target_position[2] - args.start_position[2]) / args.steps,
-        ]
+    try:
+        with with_simulation() as cid:
+            robot_id = p.loadURDF("kuka_iiwa/model.urdf", basePosition=args.start_position, physicsClientId=cid)
+            run_id = str(uuid.uuid4())
 
-        _publish_realtime_frame(
-            run_id=run_id,
-            task="path_planning",
-            step_idx=0,
-            total_steps=args.steps,
-            done=False,
-        )
-
-        for i in range(args.steps):
-            new_pos = [
-                args.start_position[0] + move_vector[0] * i,
-                args.start_position[1] + move_vector[1] * i,
-                args.start_position[2] + move_vector[2] * i,
+            # 假设这里的路径规划为线性移动
+            move_vector = [
+                (args.target_position[0] - args.start_position[0]) / args.steps,
+                (args.target_position[1] - args.start_position[1]) / args.steps,
+                (args.target_position[2] - args.start_position[2]) / args.steps,
             ]
-            # Move the robot arm
-            p.resetBasePositionAndOrientation(robot_id, new_pos, [0, 0, 0, 1], physicsClientId=cid)
-            step(1, cid)
+
             _publish_realtime_frame(
                 run_id=run_id,
                 task="path_planning",
-                step_idx=i + 1,
-                total_steps=args.steps,
-                done=(i + 1 == args.steps),
+                step_idx=0,
+                total_steps=steps,
+                done=False,
             )
 
-        final_pos, _ = p.getBasePositionAndOrientation(robot_id, physicsClientId=cid)
+            for i in range(steps):
+                new_pos = [
+                    args.start_position[0] + move_vector[0] * i,
+                    args.start_position[1] + move_vector[1] * i,
+                    args.start_position[2] + move_vector[2] * i,
+                ]
+                # Move the robot arm
+                p.resetBasePositionAndOrientation(robot_id, new_pos, [0, 0, 0, 1], physicsClientId=cid)
+                _safe_step(cid, 1)
+                _publish_realtime_frame(
+                    run_id=run_id,
+                    task="path_planning",
+                    step_idx=i + 1,
+                    total_steps=steps,
+                    done=(i + 1 == steps),
+                )
 
-    return {
-        "task": "path_planning",
-        "status": "success",
-        "stream_id": run_id,
-        "stream_meta_path": str(LATEST_META_FILE),
-        "final_position": final_pos,
-        "message": "Robot arm moved to target position.",
-    }
+            final_pos, _ = p.getBasePositionAndOrientation(robot_id, physicsClientId=cid)
+
+        return {
+            "task": "path_planning",
+            "status": "success",
+            "stream_id": run_id,
+            "stream_meta_path": str(LATEST_META_FILE),
+            "final_position": final_pos,
+            "object_id": robot_id,
+            "message": "Robot arm moved to target position.",
+        }
+    except Exception as e:
+        return _tool_error("path_planning", f"PyBullet error: {e}", "pybullet")
 
 
 # 增加摩擦力和弹性
@@ -573,25 +689,36 @@ def adjust_physics(args: FrictionAndElasticityArgs):
     - Do not use as a motion-control action; it only changes dynamics parameters.
     - Do not expect global scene-wide physics update; this currently applies to the created test cube.
     """
-    with with_simulation() as cid:
-        cube = p.loadURDF("cube_small.urdf", [0, 0, 0.02], physicsClientId=cid)
+    friction = float(args.friction)
+    restitution = float(args.restitution)
+    if not (0.0 <= friction <= 10.0):
+        return _tool_error("adjust_physics", "friction must be in [0.0, 10.0]", "validation")
+    if not (0.0 <= restitution <= 1.0):
+        return _tool_error("adjust_physics", "restitution must be in [0.0, 1.0]", "validation")
 
-        # 调整摩擦力和弹性
-        p.changeDynamics(
-            cube, -1, lateralFriction=args.friction, restitution=args.restitution, physicsClientId=cid
-        )
-        step(1, cid)
-        _publish_snapshot(
-            "adjust_physics",
-            done=True,
-            extra={"friction": args.friction, "restitution": args.restitution},
-        )
+    try:
+        with with_simulation() as cid:
+            cube = p.loadURDF("cube_small.urdf", [0, 0, 0.02], physicsClientId=cid)
 
-        return {
-            "task": "adjust_physics",
-            "status": "success",
-            "message": "Friction and elasticity adjusted for the cube.",
-        }
+            # 调整摩擦力和弹性
+            p.changeDynamics(
+                cube, -1, lateralFriction=friction, restitution=restitution, physicsClientId=cid
+            )
+            _safe_step(cid, 1)
+            _publish_snapshot(
+                "adjust_physics",
+                done=True,
+                extra={"friction": friction, "restitution": restitution},
+            )
+
+            return {
+                "task": "adjust_physics",
+                "status": "success",
+                "object_id": cube,
+                "message": "Friction and elasticity adjusted for the cube.",
+            }
+    except Exception as e:
+        return _tool_error("adjust_physics", f"PyBullet error: {e}", "pybullet")
 
 
 # 多物体抓取工具
@@ -618,26 +745,51 @@ def multi_object_grab_and_place(args: MultiObjectGrabArgs):
     - Do not use for sequential pick-place with collision-aware planning.
     - Do not use when object-specific trajectories are required.
     """
-    with with_simulation() as cid:
-        cubes = []
-        for pos in args.object_positions:
-            cubes.append(p.loadURDF("cube_small.urdf", pos, physicsClientId=cid))
+    try:
+        _validate_vector(args.target_position, "target_position", size=3, allow_negative=True, max_val=100.0)
+    except ValueError as e:
+        return _tool_error("multi_object_grab_and_place", str(e), "validation")
 
-        # 抓取并移动到目标位置
-        for cube in cubes:
-            p.resetBasePositionAndOrientation(cube, args.target_position, [0, 0, 0, 1], physicsClientId=cid)
-        step(1, cid)
-        _publish_snapshot(
-            "multi_object_grab_and_place",
-            done=True,
-            extra={"count": len(cubes)},
-        )
+    for i, pos in enumerate(args.object_positions):
+        try:
+            _validate_vector(pos, f"object_positions[{i}]", size=3, allow_negative=True, max_val=100.0)
+        except ValueError as e:
+            return _tool_error("multi_object_grab_and_place", str(e), "validation")
 
-        return {
-            "task": "multi_object_grab_and_place",
-            "status": "success",
-            "message": "Multiple objects moved to the target position.",
-        }
+    try:
+        with with_simulation() as cid:
+            cubes = []
+            errors = []
+            for pos in args.object_positions:
+                try:
+                    cube = p.loadURDF("cube_small.urdf", pos, physicsClientId=cid)
+                    cubes.append(cube)
+                except Exception as e:
+                    errors.append(f"Failed to load object at {pos}: {e}")
+
+            # 抓取并移动到目标位置（单个失败不影响其他）
+            for cube in cubes:
+                try:
+                    p.resetBasePositionAndOrientation(cube, args.target_position, [0, 0, 0, 1], physicsClientId=cid)
+                except Exception as e:
+                    errors.append(f"Failed to reposition object {cube}: {e}")
+
+            _safe_step(cid, 1)
+            _publish_snapshot(
+                "multi_object_grab_and_place",
+                done=True,
+                extra={"count": len(cubes), "errors": errors if errors else None},
+            )
+
+            return {
+                "task": "multi_object_grab_and_place",
+                "status": "success" if not errors else "warning",
+                "object_ids": cubes,
+                "target_position": args.target_position,
+                "message": f"{len(cubes)} objects moved to the target position." + (f" ({len(errors)} errors)" if errors else ""),
+            }
+    except Exception as e:
+        return _tool_error("multi_object_grab_and_place", f"PyBullet error: {e}", "pybullet")
 
 
 # 模拟视觉传感器
@@ -675,22 +827,32 @@ def simulate_vision_sensor(args: VisionSensorArgs):
     - Do not use if you only need object state/poses (use check_simulation_state instead).
     - Do not assume returned image is compressed/serialized for direct JSON transport.
     """
-    with with_simulation() as cid:
-        width, height = args.width, args.height
-        img_arr = p.getCameraImage(
-            width,
-            height,
-            viewMatrix=args.view_matrix,
-            projectionMatrix=args.projection_matrix,
-            physicsClientId=cid,
-        )
-        _publish_snapshot("simulate_vision_sensor", done=True)
-        return {
-            "task": "simulate_vision_sensor",
-            "status": "success",
-            "image": img_arr[2],  # Return RGB image as base64 (or image path)
-            "message": "Captured image from the vision sensor.",
-        }
+    width = max(1, min(int(args.width), 4096))
+    height = max(1, min(int(args.height), 4096))
+    try:
+        _validate_vector(args.view_matrix, "view_matrix", size=16, allow_negative=True, max_val=1e6)
+        _validate_vector(args.projection_matrix, "projection_matrix", size=16, allow_negative=True, max_val=1e6)
+    except ValueError as e:
+        return _tool_error("simulate_vision_sensor", str(e), "validation")
+
+    try:
+        with with_simulation() as cid:
+            img_arr = p.getCameraImage(
+                width,
+                height,
+                viewMatrix=args.view_matrix,
+                projectionMatrix=args.projection_matrix,
+                physicsClientId=cid,
+            )
+            _publish_snapshot("simulate_vision_sensor", done=True)
+            return {
+                "task": "simulate_vision_sensor",
+                "status": "success",
+                "image": img_arr[2],  # Return RGB image as base64 (or image path)
+                "message": "Captured image from the vision sensor.",
+            }
+    except Exception as e:
+        return _tool_error("simulate_vision_sensor", f"PyBullet error: {e}", "pybullet")
 
 
 # ======================
@@ -773,32 +935,45 @@ def reset_simulation(args: ResetSimulationArgs):
     - status: 操作结果
     - message: 描述信息
     """
-    with with_simulation() as cid:
-        if args.keep_objects:
-            # 只重置位置和速度，保留物体
-            num_bodies = p.getNumBodies(physicsClientId=cid)
-            for body_id in range(num_bodies):
-                if body_id == 0:
-                    continue  # skip plane
-                # 重置到初始位置（需要记录）或者静止
-                p.resetBasePositionAndOrientation(body_id, [0, 0, 0.5], [0, 0, 0, 1], physicsClientId=cid)
-                p.resetBaseVelocity(body_id, [0, 0, 0], [0, 0, 0], physicsClientId=cid)
-        else:
-            # 完全重置 - 删除所有非地面物体
-            num_bodies = p.getNumBodies(physicsClientId=cid)
-            for body_id in range(num_bodies - 1, 0, -1):
-                try:
-                    p.removeBody(body_id, physicsClientId=cid)
-                except:
-                    pass
+    try:
+        with with_simulation() as cid:
+            removed_ids = []
+            kept_ids = []
+            if args.keep_objects:
+                # 只重置位置和速度，保留物体
+                num_bodies = p.getNumBodies(physicsClientId=cid)
+                for body_id in range(num_bodies):
+                    if body_id == _plane_body_id:
+                        continue  # skip plane (use tracked ID)
+                    try:
+                        p.resetBasePositionAndOrientation(body_id, [0, 0, 0.5], [0, 0, 0, 1], physicsClientId=cid)
+                        p.resetBaseVelocity(body_id, [0, 0, 0], [0, 0, 0], physicsClientId=cid)
+                        kept_ids.append(body_id)
+                    except Exception as e:
+                        kept_ids.append(f"error_{body_id}: {e}")
+            else:
+                # 完全重置 - 删除所有非地面物体
+                num_bodies = p.getNumBodies(physicsClientId=cid)
+                for body_id in range(num_bodies - 1, 0, -1):
+                    if body_id == _plane_body_id:
+                        continue
+                    try:
+                        p.removeBody(body_id, physicsClientId=cid)
+                        removed_ids.append(body_id)
+                    except Exception as e:
+                        removed_ids.append(f"error_{body_id}: {e}")
 
-    _publish_snapshot("reset_simulation", done=True, extra={"keep_objects": args.keep_objects})
+        _publish_snapshot("reset_simulation", done=True, extra={"keep_objects": args.keep_objects})
 
-    return {
-        "task": "reset_simulation",
-        "status": "success",
-        "message": "Simulation reset completed.",
-    }
+        return {
+            "task": "reset_simulation",
+            "status": "success",
+            "message": f"Simulation reset completed. Removed: {removed_ids}, Kept: {kept_ids}",
+            "removed_ids": removed_ids,
+            "kept_ids": kept_ids,
+        }
+    except Exception as e:
+        return _tool_error("reset_simulation", f"PyBullet error: {e}", "pybullet")
 
 
 # ======================
@@ -807,23 +982,17 @@ def reset_simulation(args: ResetSimulationArgs):
 @mcp_server.tool()
 def pause_simulation():
     """
-    暂停仿真。
+    暂停仿真（NOTE: PyBullet 不支持真正暂停，此操作目前无效）。
 
     暂停后物理不再更新，常用于：
     - 执行检查操作
     - 批量设置状态
     - 调试和控制执行节奏
-
-    注意：PyBullet DIRECT模式下使用全局标志实现。
     """
-    global _simulation_paused
-    ensure_simulation()
-    _simulation_paused = True
-
     return {
         "task": "pause_simulation",
-        "status": "success",
-        "message": "Simulation paused.",
+        "status": "warning",
+        "message": "PyBullet does not support true pause in DIRECT mode. Use step_simulation with steps=0 to control timing manually.",
     }
 
 
@@ -833,18 +1002,14 @@ def pause_simulation():
 @mcp_server.tool()
 def unpause_simulation():
     """
-    恢复仿真。
+    恢复仿真（NOTE: 此操作目前无效，因为 PyBullet 不支持暂停）。
 
     与 pause_simulation 配合使用，控制仿真节奏。
     """
-    global _simulation_paused
-    ensure_simulation()
-    _simulation_paused = False
-
     return {
         "task": "unpause_simulation",
-        "status": "success",
-        "message": "Simulation resumed.",
+        "status": "warning",
+        "message": "PyBullet does not support true pause in DIRECT mode. No action taken.",
     }
 
 
@@ -875,26 +1040,35 @@ def get_object_state(args: GetObjectStateArgs):
     - linear_velocity: [x, y, z]
     - angular_velocity: [x, y, z]
     """
-    with with_simulation() as cid:
-        try:
-            pos, ori = p.getBasePositionAndOrientation(args.object_id, physicsClientId=cid)
-            lin_vel, ang_vel = p.getBaseVelocity(args.object_id, physicsClientId=cid)
+    object_id = int(args.object_id)
+    try:
+        with with_simulation() as cid:
+            if not _is_body_valid(cid, object_id):
+                return {
+                    "task": "get_object_state",
+                    "status": "warning",
+                    "object_id": object_id,
+                    "message": f"Object ID {object_id} does not exist. Available IDs: 0 to {p.getNumBodies(physicsClientId=cid) - 1}",
+                }
+            pos, ori = p.getBasePositionAndOrientation(object_id, physicsClientId=cid)
+            lin_vel, ang_vel = p.getBaseVelocity(object_id, physicsClientId=cid)
             return {
                 "task": "get_object_state",
                 "status": "success",
-                "object_id": args.object_id,
+                "object_id": object_id,
                 "position": list(pos),
                 "orientation": list(ori),
                 "linear_velocity": list(lin_vel),
                 "angular_velocity": list(ang_vel),
-                "message": f"Object {args.object_id} state retrieved.",
+                "message": f"Object {object_id} state retrieved.",
             }
-        except Exception as e:
-            return {
-                "task": "get_object_state",
-                "status": "error",
-                "message": f"Failed to get object state: {str(e)}",
-            }
+    except Exception as e:
+        return {
+            "task": "get_object_state",
+            "status": "error",
+            "object_id": object_id,
+            "message": f"Failed to get object state: {str(e)}",
+        }
 
 
 # ======================
@@ -930,27 +1104,42 @@ def set_object_position(args: SetObjectPositionArgs):
     - position: 设置后的位置
     - orientation: 设置后的姿态
     """
-    with with_simulation() as cid:
-        try:
-            p.resetBasePositionAndOrientation(args.object_id, args.position, args.orientation, physicsClientId=cid)
-            p.resetBaseVelocity(args.object_id, [0, 0, 0], [0, 0, 0], physicsClientId=cid)
+    object_id = int(args.object_id)
+    try:
+        _validate_vector(args.position, "position", size=3, allow_negative=True, max_val=100.0)
+        _validate_vector(args.orientation, "orientation", size=4, allow_negative=True, max_val=1.1)
+    except ValueError as e:
+        return _tool_error("set_object_position", str(e), "validation")
 
-            _publish_snapshot("set_object_position", done=False, extra={"object_id": args.object_id})
+    try:
+        with with_simulation() as cid:
+            if not _is_body_valid(cid, object_id):
+                return {
+                    "task": "set_object_position",
+                    "status": "warning",
+                    "object_id": object_id,
+                    "message": f"Object ID {object_id} does not exist. Available IDs: 0 to {p.getNumBodies(physicsClientId=cid) - 1}",
+                }
+            p.resetBasePositionAndOrientation(object_id, args.position, args.orientation, physicsClientId=cid)
+            p.resetBaseVelocity(object_id, [0, 0, 0], [0, 0, 0], physicsClientId=cid)
+
+            _publish_snapshot("set_object_position", done=False, extra={"object_id": object_id})
 
             return {
                 "task": "set_object_position",
                 "status": "success",
-                "object_id": args.object_id,
+                "object_id": object_id,
                 "position": args.position,
                 "orientation": args.orientation,
-                "message": f"Object {args.object_id} moved to {args.position}",
+                "message": f"Object {object_id} moved to {args.position}",
             }
-        except Exception as e:
-            return {
-                "task": "set_object_position",
-                "status": "error",
-                "message": f"Failed to set object position: {str(e)}",
-            }
+    except Exception as e:
+        return {
+            "task": "set_object_position",
+            "status": "error",
+            "object_id": object_id,
+            "message": f"Failed to set object position: {str(e)}",
+        }
 
 
 # ======================
@@ -973,16 +1162,19 @@ def step_simulation(args: StepSimulationArgs):
     - 每步检查状态
     - 实现闭环控制
     """
-    with with_simulation() as cid:
-        for _ in range(args.steps):
-            p.stepSimulation(physicsClientId=cid)
+    steps = max(1, min(int(args.steps), MAX_STEPS_PER_CALL))
+    try:
+        with with_simulation() as cid:
+            _safe_step(cid, steps)
 
-    return {
-        "task": "step_simulation",
-        "status": "success",
-        "steps": args.steps,
-        "message": f"Executed {args.steps} simulation steps.",
-    }
+        return {
+            "task": "step_simulation",
+            "status": "success",
+            "steps": steps,
+            "message": f"Executed {steps} simulation steps.",
+        }
+    except Exception as e:
+        return _tool_error("step_simulation", f"PyBullet error: {e}", "pybullet")
 
 
 # ======================
@@ -1025,29 +1217,76 @@ def create_object(args: CreateObjectArgs):
     - object_id: 创建的物体 ID
     - position: 初始位置
     """
-    with with_simulation() as cid:
-        size = args.size
-        col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[s/2 for s in size], physicsClientId=cid)
-        vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[s/2 for s in size], rgbaColor=args.color, physicsClientId=cid)
+    # 校验 object_type
+    geom_map = {"cube": p.GEOM_BOX, "sphere": p.GEOM_SPHERE, "cylinder": p.GEOM_CYLINDER}
+    geom = geom_map.get(args.object_type.lower(), p.GEOM_BOX)
+    actual_type = next((k for k, v in geom_map.items() if v == geom), "cube")
 
-        object_id = p.createMultiBody(
-            baseMass=args.mass,
-            baseCollisionShapeIndex=col,
-            baseVisualShapeIndex=vis,
-            basePosition=args.position,
-            physicsClientId=cid,
-        )
+    # 校验 size
+    try:
+        _validate_vector(args.size, "size", size=3, allow_zero=False, allow_negative=False, max_val=10.0)
+    except ValueError as e:
+        return _tool_error("create_object", str(e), "validation")
 
-        _publish_snapshot("create_object", done=False, extra={"object_id": object_id})
+    mass = float(args.mass)
+    if mass <= 0:
+        return _tool_error("create_object", "mass must be > 0", "validation")
 
-        return {
-            "task": "create_object",
-            "status": "success",
-            "object_id": object_id,
-            "object_type": args.object_type,
-            "position": args.position,
-            "message": f"Created {args.object_type} at {args.position} with ID {object_id}",
-        }
+    try:
+        _validate_vector(args.position, "position", size=3, allow_negative=True, max_val=100.0)
+        _validate_vector(args.color, "color", size=4, allow_negative=False, max_val=1.0)
+    except ValueError as e:
+        return _tool_error("create_object", str(e), "validation")
+
+    col_shape = None
+    vis_shape = None
+    try:
+        with with_simulation() as cid:
+            half_extents = [s / 2 for s in args.size]
+            if geom == p.GEOM_SPHERE:
+                radius = args.size[0] / 2
+                col_shape = p.createCollisionShape(geom, radius=radius, physicsClientId=cid)
+                vis_shape = p.createVisualShape(geom, radius=radius, rgbaColor=args.color, physicsClientId=cid)
+            elif geom == p.GEOM_CYLINDER:
+                radius = args.size[0] / 2
+                height = args.size[2]
+                col_shape = p.createCollisionShape(geom, radius=radius, height=height, physicsClientId=cid)
+                vis_shape = p.createVisualShape(geom, radius=radius, height=height, rgbaColor=args.color, physicsClientId=cid)
+            else:
+                col_shape = p.createCollisionShape(geom, halfExtents=half_extents, physicsClientId=cid)
+                vis_shape = p.createVisualShape(geom, halfExtents=half_extents, rgbaColor=args.color, physicsClientId=cid)
+
+            object_id = p.createMultiBody(
+                baseMass=mass,
+                baseCollisionShapeIndex=col_shape,
+                baseVisualShapeIndex=vis_shape,
+                basePosition=args.position,
+                physicsClientId=cid,
+            )
+
+            _publish_snapshot("create_object", done=False, extra={"object_id": object_id})
+
+            return {
+                "task": "create_object",
+                "status": "success",
+                "object_id": object_id,
+                "object_type": actual_type,
+                "position": args.position,
+                "message": f"Created {actual_type} at {args.position} with ID {object_id}",
+            }
+    except Exception as e:
+        # Cleanup created shapes on failure
+        if col_shape is not None:
+            try:
+                p.removeBody(col_shape)
+            except Exception:
+                pass
+        if vis_shape is not None and vis_shape != col_shape:
+            try:
+                p.removeBody(vis_shape)
+            except Exception:
+                pass
+        return _tool_error("create_object", f"PyBullet error: {e}", "pybullet")
 
 
 # ======================
@@ -1071,21 +1310,30 @@ def delete_object(args: DeleteObjectArgs):
     Returns:
     - deleted_id: 被删除的物体 ID
     """
-    with with_simulation() as cid:
-        try:
-            p.removeBody(args.object_id, physicsClientId=cid)
+    object_id = int(args.object_id)
+    try:
+        with with_simulation() as cid:
+            if not _is_body_valid(cid, object_id):
+                return {
+                    "task": "delete_object",
+                    "status": "warning",
+                    "object_id": object_id,
+                    "message": f"Object ID {object_id} does not exist. Available IDs: 0 to {p.getNumBodies(physicsClientId=cid) - 1}",
+                }
+            p.removeBody(object_id, physicsClientId=cid)
             return {
                 "task": "delete_object",
                 "status": "success",
-                "deleted_id": args.object_id,
-                "message": f"Deleted object {args.object_id}",
+                "deleted_id": object_id,
+                "message": f"Deleted object {object_id}",
             }
-        except Exception as e:
-            return {
-                "task": "delete_object",
-                "status": "error",
-                "message": f"Failed to delete object: {str(e)}",
-            }
+    except Exception as e:
+        return {
+            "task": "delete_object",
+            "status": "error",
+            "object_id": object_id,
+            "message": f"Failed to delete object: {str(e)}",
+        }
 
 
 # ======================
@@ -1102,20 +1350,23 @@ def get_simulation_info():
     - gravity: 重力设置
     - time_elapsed: 已用仿真时间
     """
-    with with_simulation() as cid:
-        params = p.getPhysicsEngineParameters(physicsClientId=cid)
-        return {
-            "task": "get_simulation_info",
-            "status": "success",
-            "timestep": params['fixedTimeStep'],
-            "num_bodies": p.getNumBodies(physicsClientId=cid),
-            "gravity": [
-                params['gravityAccelerationX'],
-                params['gravityAccelerationY'],
-                params['gravityAccelerationZ']
-            ],
-            "message": "Simulation info retrieved.",
-    }
+    try:
+        with with_simulation() as cid:
+            params = p.getPhysicsEngineParameters(physicsClientId=cid)
+            return {
+                "task": "get_simulation_info",
+                "status": "success",
+                "timestep": params.get('fixedTimeStep', 0.0),
+                "num_bodies": p.getNumBodies(physicsClientId=cid),
+                "gravity": [
+                    params.get('gravityAccelerationX', 0.0),
+                    params.get('gravityAccelerationY', 0.0),
+                    params.get('gravityAccelerationZ', -9.8),
+                ],
+                "message": "Simulation info retrieved.",
+            }
+    except Exception as e:
+        return _tool_error("get_simulation_info", f"PyBullet error: {e}", "pybullet")
 
 
 # ======================
@@ -1138,15 +1389,23 @@ def set_gravity(args: SetGravityArgs):
     - 零重力实验
     - 月球/火星重力模拟
     """
-    with with_simulation() as cid:
-        p.setGravity(*args.gravity, physicsClientId=cid)
+    try:
+        _validate_vector(args.gravity, "gravity", size=3, allow_negative=True, max_val=100.0)
+    except ValueError as e:
+        return _tool_error("set_gravity", str(e), "validation")
 
-    return {
-        "task": "set_gravity",
-        "status": "success",
-        "gravity": args.gravity,
-        "message": f"Gravity set to {args.gravity}",
-    }
+    try:
+        with with_simulation() as cid:
+            p.setGravity(*args.gravity, physicsClientId=cid)
+
+        return {
+            "task": "set_gravity",
+            "status": "success",
+            "gravity": args.gravity,
+            "message": f"Gravity set to {args.gravity}",
+        }
+    except Exception as e:
+        return _tool_error("set_gravity", f"PyBullet error: {e}", "pybullet")
 
 
 # ======================

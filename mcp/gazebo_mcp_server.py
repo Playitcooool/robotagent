@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import rclpy
 from fastmcp import FastMCP
 from gazebo_msgs.msg import EntityState, ModelStates
@@ -16,6 +17,38 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_srvs.srv import Empty
+
+
+def _validate_vector(
+    vec: list[float],
+    name: str,
+    size: int | None = None,
+    *,
+    allow_zero: bool = True,
+    allow_negative: bool = True,
+    max_val: float | None = None,
+) -> list[float]:
+    """校验向量参数，检测 NaN/Inf/超限值。"""
+    if not isinstance(vec, (list, tuple)):
+        raise ValueError(f"{name} must be a list, got {type(vec).__name__}")
+    if size is not None and len(vec) != size:
+        raise ValueError(f"{name} must have {size} elements, got {len(vec)}")
+    for i, v in enumerate(vec):
+        if not isinstance(v, (int, float)):
+            raise ValueError(f"{name}[{i}] must be numeric, got {type(v).__name__}")
+        if np.isnan(v) or np.isinf(v):
+            raise ValueError(f"{name}[{i}] must be finite, got {v}")
+        if not allow_zero and v == 0:
+            raise ValueError(f"{name}[{i}] must be non-zero, got {v}")
+        if not allow_negative and v < 0:
+            raise ValueError(f"{name}[{i}] must be non-negative, got {v}")
+        if max_val is not None and abs(v) > max_val:
+            raise ValueError(f"{name}[{i}] must be within [-{max_val}, {max_val}], got {v}")
+    return vec
+
+
+def _tool_error(task: str, msg: str) -> dict:
+    return {"task": task, "status": "error", "message": msg}
 
 
 # ======================
@@ -188,7 +221,6 @@ class GazeboMCPNode(Node):
         finally:
             # 清理subscription
             self.destroy_subscription(sub)
-        self.create_subscription(Image, topic, self._make_camera_cb(topic), 1)
 
     # ------------------------------------------------------------------
     # Synchronous service call helper
@@ -337,6 +369,12 @@ def spawn_model(args: SpawnModelArgs):
     - Do not use for moving existing models (use set_model_state).
     - Do not call with duplicate model_name unless replacement behavior is explicitly desired.
     """
+    try:
+        _validate_vector(args.position, "position", size=3, allow_negative=True, max_val=1000.0)
+        _validate_vector(args.orientation, "orientation", size=4, allow_negative=True, max_val=1.1)
+    except ValueError as e:
+        return _tool_error("spawn_model", str(e))
+
     node = ensure_ros()
 
     xml = args.model_xml
@@ -349,37 +387,41 @@ def spawn_model(args: SpawnModelArgs):
         if path is None:
             builtins = _available_builtin_models()
             builtins_hint = f" Available built-ins: {builtins}." if builtins else ""
-            raise ValueError(
-                "Provide either model_xml or model_path."
-                f"{builtins_hint} You can also set GAZEBO_BUILTIN_MODEL_ROOT."
+            return _tool_error(
+                "spawn_model",
+                f"Provide either model_xml or model_path."
+                f"{builtins_hint} You can also set GAZEBO_BUILTIN_MODEL_ROOT.",
             )
         if not path.exists():
-            raise FileNotFoundError(f"Model file not found: {path}")
+            return _tool_error("spawn_model", f"Model file not found: {path}")
         xml = path.read_text(encoding="utf-8")
 
-    req = SpawnEntity.Request()
-    req.name = args.model_name
-    req.xml = xml
-    req.robot_namespace = args.robot_namespace
-    req.initial_pose = Pose(
-        position=Point(
-            x=args.position[0], y=args.position[1], z=args.position[2]
-        ),
-        orientation=Quaternion(
-            x=args.orientation[0],
-            y=args.orientation[1],
-            z=args.orientation[2],
-            w=args.orientation[3],
-        ),
-    )
+    try:
+        req = SpawnEntity.Request()
+        req.name = args.model_name
+        req.xml = xml
+        req.robot_namespace = args.robot_namespace
+        req.initial_pose = Pose(
+            position=Point(
+                x=args.position[0], y=args.position[1], z=args.position[2]
+            ),
+            orientation=Quaternion(
+                x=args.orientation[0],
+                y=args.orientation[1],
+                z=args.orientation[2],
+                w=args.orientation[3],
+            ),
+        )
 
-    result = node.call_service_sync(node.spawn_client, req)
-    return {
-        "task": "spawn_model",
-        "status": "success" if result.success else "failure",
-        "model_name": args.model_name,
-        "message": result.status_message,
-    }
+        result = node.call_service_sync(node.spawn_client, req)
+        return {
+            "task": "spawn_model",
+            "status": "success" if result.success else "failure",
+            "model_name": args.model_name,
+            "message": result.status_message,
+        }
+    except Exception as e:
+        return _tool_error("spawn_model", f"Service call failed: {e}")
 
 
 @mcp_server.tool()
@@ -531,42 +573,53 @@ def set_model_state(args: SetModelStateArgs):
     - Do not use as a physically realistic motion controller (this is instantaneous state set).
     - Do not use for spawning new models (use spawn_model).
     """
+    try:
+        _validate_vector(args.position, "position", size=3, allow_negative=True, max_val=1000.0)
+        _validate_vector(args.orientation, "orientation", size=4, allow_negative=True, max_val=1.1)
+        _validate_vector(args.linear_velocity, "linear_velocity", size=3, allow_negative=True, max_val=100.0)
+        _validate_vector(args.angular_velocity, "angular_velocity", size=3, allow_negative=True, max_val=100.0)
+    except ValueError as e:
+        return _tool_error("set_model_state", str(e))
+
     node = ensure_ros()
-    req = SetEntityState.Request()
-    req.state = EntityState(
-        name=args.model_name,
-        reference_frame=args.reference_frame,
-        pose=Pose(
-            position=Point(
-                x=args.position[0], y=args.position[1], z=args.position[2]
+    try:
+        req = SetEntityState.Request()
+        req.state = EntityState(
+            name=args.model_name,
+            reference_frame=args.reference_frame,
+            pose=Pose(
+                position=Point(
+                    x=args.position[0], y=args.position[1], z=args.position[2]
+                ),
+                orientation=Quaternion(
+                    x=args.orientation[0],
+                    y=args.orientation[1],
+                    z=args.orientation[2],
+                    w=args.orientation[3],
+                ),
             ),
-            orientation=Quaternion(
-                x=args.orientation[0],
-                y=args.orientation[1],
-                z=args.orientation[2],
-                w=args.orientation[3],
+            twist=Twist(
+                linear=Point(
+                    x=args.linear_velocity[0],
+                    y=args.linear_velocity[1],
+                    z=args.linear_velocity[2],
+                ),
+                angular=Point(
+                    x=args.angular_velocity[0],
+                    y=args.angular_velocity[1],
+                    z=args.angular_velocity[2],
+                ),
             ),
-        ),
-        twist=Twist(
-            linear=Point(
-                x=args.linear_velocity[0],
-                y=args.linear_velocity[1],
-                z=args.linear_velocity[2],
-            ),
-            angular=Point(
-                x=args.angular_velocity[0],
-                y=args.angular_velocity[1],
-                z=args.angular_velocity[2],
-            ),
-        ),
-    )
-    result = node.call_service_sync(node.set_entity_client, req)
-    return {
-        "task": "set_model_state",
-        "status": "success" if result.success else "failure",
-        "model_name": args.model_name,
-        "message": result.status_message,
-    }
+        )
+        result = node.call_service_sync(node.set_entity_client, req)
+        return {
+            "task": "set_model_state",
+            "status": "success" if result.success else "failure",
+            "model_name": args.model_name,
+            "message": result.status_message,
+        }
+    except Exception as e:
+        return _tool_error("set_model_state", f"Service call failed: {e}")
 
 
 # ======================
@@ -831,7 +884,7 @@ class ApplyForceArgs(BaseModel):
 @mcp_server.tool()
 def apply_force(args: ApplyForceArgs):
     """
-    对模型施加外力。
+    对模型施加外力（NOTE: 此工具尚未实现，始终返回 warning）。
 
     常用于：
     - 推动物体
@@ -840,16 +893,20 @@ def apply_force(args: ApplyForceArgs):
 
     When NOT to use:
     - Do not use for precise positioning (use set_model_state).
-    -  Gazebo 需要 gazebo_ros_pkgs 支持力接口
+    - 此工具尚未实现，需要 gazebo_ros_pkgs 支持
     """
-    # 注意：Gazebo 的力接口需要通过 /gazebo/ApplyBodyWrench 服务
-    # 这里返回提示信息，实际实现需要 ROS 服务
+    try:
+        _validate_vector(args.force, "force", size=3, allow_negative=True, max_val=10000.0)
+        _validate_vector(args.position, "position", size=3, allow_negative=True, max_val=1000.0)
+    except ValueError as e:
+        return _tool_error("apply_force", str(e))
+
     return {
         "task": "apply_force",
         "status": "warning",
         "model_name": args.model_name,
         "force": args.force,
-        "message": "apply_force 需要 gazebo_ros_pkgs 支持，请使用 set_model_state 移动物体",
+        "message": "apply_force 未实现（需要 gazebo_ros_pkgs 的 /gazebo/ApplyBodyWrench 服务）。请使用 set_model_state 移动物体。",
     }
 
 
@@ -876,34 +933,27 @@ def move_object(args: MoveObjectArgs):
     """
     原子化移动物体到目标位置。
 
-    相当于 set_model_state 的简化版本，
-    不设置速度。
+    相当于 set_model_state 的简化版本，不设置速度。
 
     When NOT to use:
     - Do not use for continuous motion (use multiple set_model_state calls).
     """
-    # 使用现有的 set_model_state 功能
-    from pydantic import create_model
+    try:
+        _validate_vector(args.position, "position", size=3, allow_negative=True, max_val=1000.0)
+        _validate_vector(args.orientation, "orientation", size=4, allow_negative=True, max_val=1.1)
+    except ValueError as e:
+        return _tool_error("move_object", str(e))
 
-    SetModelStateArgs = create_model(
-        "SetModelStateArgs",
-        model_name=(str, ...),
-        position=(list, ...),
-        orientation=(list, [0.0, 0.0, 0.0, 1.0]),
-        linear_velocity=(list, [0.0, 0.0, 0.0]),
-        angular_velocity=(list, [0.0, 0.0, 0.0]),
-        reference_frame=(str, "world"),
-    )
-
+    # 构建 SetModelStateArgs 并调用 set_model_state
     new_args = SetModelStateArgs(
         model_name=args.model_name,
         position=args.position,
         orientation=args.orientation,
+        linear_velocity=[0.0, 0.0, 0.0],
+        angular_velocity=[0.0, 0.0, 0.0],
+        reference_frame="world",
     )
-
-    # 调用现有的 set_model_state
-    from gazebo_mcp_server import set_model_state as gazebo_set_model_state
-    return gazebo_set_model_state(new_args)
+    return set_model_state(new_args)
 
 
 # ======================
@@ -938,16 +988,27 @@ def create_simple_object(args: CreateSimpleObjectArgs):
     When NOT to use:
     - Do not use for complex URDF/SDF models (use spawn_model).
     """
-    # 生成简单的 SDF
+    try:
+        _validate_vector(args.position, "position", size=3, allow_negative=True, max_val=1000.0)
+        _validate_vector(args.size, "size", size=None, allow_zero=False, allow_negative=False, max_val=10.0)
+    except ValueError as e:
+        return _tool_error("create_simple_object", str(e))
+
     shape_type = args.shape.lower()
     if shape_type == "box":
+        if len(args.size) < 3:
+            return _tool_error("create_simple_object", "box requires 3 size values [x, y, z]")
         geom = f"<box><size>{args.size[0]} {args.size[1]} {args.size[2]}</size></box>"
     elif shape_type == "sphere":
+        if len(args.size) < 1:
+            return _tool_error("create_simple_object", "sphere requires at least 1 size value [radius]")
         geom = f"<sphere><radius>{args.size[0]}</radius></sphere>"
     elif shape_type == "cylinder":
+        if len(args.size) < 2:
+            return _tool_error("create_simple_object", "cylinder requires at least 2 size values [radius, height]")
         geom = f"<cylinder><radius>{args.size[0]}</radius><height>{args.size[1]}</height></cylinder>"
     else:
-        return {"task": "create_simple_object", "status": "error", "message": f"Unknown shape: {shape_type}"}
+        return _tool_error("create_simple_object", f"Unknown shape: {shape_type}. Use box, sphere, or cylinder.")
 
     sdf = f"""<?xml version='1.0'?>
 <sdf version='1.6'>
@@ -963,28 +1024,15 @@ def create_simple_object(args: CreateSimpleObjectArgs):
   </model>
 </sdf>"""
 
-    # 使用 spawn_model
-    from pydantic import create_model
-
-    SpawnModelArgs = create_model(
-        "SpawnModelArgs",
-        model_name=(str, ...),
-        model_xml=(str, sdf),
-        model_path=(str, ""),
-        position=(list, ...),
-        orientation=(list, [0, 0, 0, 1]),
-        robot_namespace=(str, ""),
-    )
-
     new_args = SpawnModelArgs(
         model_name=args.name,
         model_xml=sdf,
         model_path="",
         position=args.position,
+        orientation=[0, 0, 0, 1],
+        robot_namespace="",
     )
-
-    from gazebo_mcp_server import spawn_model as gazebo_spawn_model
-    return gazebo_spawn_model(new_args)
+    return spawn_model(new_args)
 
 
 # ======================
