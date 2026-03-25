@@ -252,8 +252,13 @@ _ros_thread: threading.Thread | None = None
 
 def ensure_ros() -> GazeboMCPNode:
     global _ros_node, _ros_executor, _ros_thread
-    if _ros_node is not None:
-        return _ros_node
+    # Always create a fresh ROS node to avoid cross-query contamination.
+    # Cleanup any existing node first.
+    if _ros_node is not None or _ros_executor is not None or _ros_thread is not None:
+        try:
+            cleanup_ros()
+        except Exception:
+            pass
 
     if not rclpy.ok():
         rclpy.init()
@@ -293,19 +298,15 @@ def cleanup_ros():
 @mcp_server.tool()
 def initialize_ros_connection():
     """
-    Initialize (or reuse) ROS2 node connections required for Gazebo services/topics.
+    Initialize a fresh ROS2 node for Gazebo services/topics.
 
-    Call this before the first Gazebo tool invocation to ensure all service clients
-    and subscribers are available.
+    Always creates a clean ROS2 node, shutting down any existing connection first.
+    Safe to call at the start of each query to ensure a clean state.
 
     Returns:
     - task/status
     - node_name
     - message
-
-    When NOT to use:
-    - Do not call before every command in the same session; initialize once and reuse.
-    - Do not use this to reset simulation state (use reset_simulation/reset_world).
     """
     node = ensure_ros()
     return {
