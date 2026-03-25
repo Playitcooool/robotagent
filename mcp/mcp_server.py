@@ -173,9 +173,9 @@ def setup_simulation(gui: bool = False):
         else:
             simulation_instance = p.connect(p.DIRECT)
 
-        p.setAdditionalSearchPath(pybullet_data.getDataPath())
-        p.setGravity(0, 0, -9.8)
-        p.loadURDF("plane.urdf")
+        p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=simulation_instance)
+        p.setGravity(0, 0, -9.8, physicsClientId=simulation_instance)
+        p.loadURDF("plane.urdf", physicsClientId=simulation_instance)
         _ensure_stream_dir()
     else:
         print("PyBullet environment is already running.")
