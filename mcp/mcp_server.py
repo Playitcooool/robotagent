@@ -1018,7 +1018,6 @@ def unpause_simulation():
 # ======================
 class GetObjectStateArgs(BaseModel):
     object_id: int = Field(
-        default=1,
         description="物体 ID，从 check_simulation_state 获取",
     )
 
@@ -1076,7 +1075,6 @@ def get_object_state(args: GetObjectStateArgs):
 # ======================
 class SetObjectPositionArgs(BaseModel):
     object_id: int = Field(
-        default=1,
         description="物体 ID",
     )
     position: list[float] = Field(
