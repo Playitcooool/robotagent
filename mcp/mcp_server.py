@@ -1238,8 +1238,6 @@ def create_object(args: CreateObjectArgs):
     except ValueError as e:
         return _tool_error("create_object", str(e), "validation")
 
-    col_shape = None
-    vis_shape = None
     try:
         with with_simulation() as cid:
             half_extents = [s / 2 for s in args.size]
@@ -1275,18 +1273,7 @@ def create_object(args: CreateObjectArgs):
                 "message": f"Created {actual_type} at {args.position} with ID {object_id}",
             }
     except Exception as e:
-        # Cleanup created shapes on failure
-        if col_shape is not None:
-            try:
-                p.removeBody(col_shape)
-            except Exception:
-                pass
-        if vis_shape is not None and vis_shape != col_shape:
-            try:
-                p.removeBody(vis_shape)
-            except Exception:
-                pass
-        return _tool_error("create_object", f"PyBullet error: {e}", "pybullet")
+        return _tool_error("create_object", f"Failed to create object: {e}", "creation")
 
 
 # ======================
