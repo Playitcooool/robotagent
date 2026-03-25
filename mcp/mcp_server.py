@@ -228,26 +228,33 @@ def _publish_snapshot(task: str, *, done: bool = False, extra: dict[str, Any] | 
 
 
 def setup_simulation(gui: bool = False):
-    """初始化PyBullet环境，只在首次创建时运行"""
+    """初始化PyBullet环境，每次调用都创建干净的环境"""
     global simulation_instance, _plane_body_id
     with _sim_lock:
-        if simulation_instance is None or not p.isConnected(simulation_instance):
-            if gui:
-                simulation_instance = p.connect(p.GUI)
-            else:
-                simulation_instance = p.connect(p.DIRECT)
-
+        # 先清理旧环境（如果存在）
+        if simulation_instance is not None:
             try:
-                data_path_str = pybullet_data.getDataPath()
-                p.setAdditionalSearchPath(data_path_str, physicsClientId=simulation_instance)
+                if p.isConnected(simulation_instance):
+                    p.disconnect(simulation_instance)
             except Exception:
-                # pybullet_data 路径获取失败时继续，搜索路径可能已配置
                 pass
-            p.setGravity(0, 0, -9.8, physicsClientId=simulation_instance)
-            _plane_body_id = p.loadURDF("plane.urdf", physicsClientId=simulation_instance)
-            _ensure_stream_dir()
+            simulation_instance = None
+            _plane_body_id = None
+
+        if gui:
+            simulation_instance = p.connect(p.GUI)
         else:
-            print("PyBullet environment is already running.")
+            simulation_instance = p.connect(p.DIRECT)
+
+        try:
+            data_path_str = pybullet_data.getDataPath()
+            p.setAdditionalSearchPath(data_path_str, physicsClientId=simulation_instance)
+        except Exception:
+            # pybullet_data 路径获取失败时继续，搜索路径可能已配置
+            pass
+        p.setGravity(0, 0, -9.8, physicsClientId=simulation_instance)
+        _plane_body_id = p.loadURDF("plane.urdf", physicsClientId=simulation_instance)
+        _ensure_stream_dir()
 
 
 def ensure_simulation():
@@ -311,19 +318,16 @@ class InitializeSimulationArgs(BaseModel):
 @mcp_server.tool()
 def initialize_simulation(args: InitializeSimulationArgs):
     """
-    Initialize or reuse the global PyBullet world.
+    Initialize a fresh PyBullet world.
 
-    Use this tool before any motion/control tool when the simulator may be uninitialized.
-    Safe to call repeatedly; if a simulation is already running, it reuses the existing world.
+    Always creates a clean simulation environment, disconnecting any existing
+    PyBullet connection first. Safe to call at the start of each query to
+    ensure a clean state.
 
     Returns:
     - task/status/message
     - physicsClientId: 当前连接的客户端ID（用于调试）
     - also publishes a snapshot frame to the realtime stream directory.
-
-    When NOT to use:
-    - Do not call this before every single action in the same episode; initialize once and reuse.
-    - Do not use this as a cleanup/reset tool (use cleanup_simulation_tool when done).
     """
     try:
         setup_simulation(gui=args.gui)
