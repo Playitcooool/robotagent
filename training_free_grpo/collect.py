@@ -401,10 +401,12 @@ async def collect_trajectories_online(
                     print(
                         f"[collect] failed prompt={prompt_id} attempt={attempt_id} retry={retry_idx}: {e}"
                     )
-                    if is_stream_error(e):
-                        from tools.SubAgentTool import reset_cached_mcp_tools
+                    # Always reset MCP tools on failure to ensure fresh connection on retry
+                    # Stream errors indicate broken connection; simulation errors may leave
+                    # the MCP client in a partially initialized state
+                    from tools.SubAgentTool import reset_cached_mcp_tools
 
-                        reset_cached_mcp_tools()
+                    reset_cached_mcp_tools()
                     agent = None
                 finally:
                     if cleanup_after_attempt is not None:

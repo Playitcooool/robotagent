@@ -328,24 +328,25 @@ def initialize_simulation(args: InitializeSimulationArgs):
     - task/status/message
     - physicsClientId: 当前连接的客户端ID（用于调试）
     - also publishes a snapshot frame to the realtime stream directory.
+
+    Raises:
+        Exception: If simulation initialization fails. The ToolRetryMiddleware
+            will retry this call up to max_retries times.
     """
-    try:
-        setup_simulation(gui=args.gui)
-        _publish_snapshot("initialize_simulation", done=False, extra={"status": "running"})
-        asset_status = _pybullet_asset_status()
+    setup_simulation(gui=args.gui)
+    _publish_snapshot("initialize_simulation", done=False, extra={"status": "running"})
+    asset_status = _pybullet_asset_status()
 
-        with _sim_lock:
-            cid = simulation_instance
+    with _sim_lock:
+        cid = simulation_instance
 
-        return {
-            "task": "initialize_simulation",
-            "status": "success",
-            "message": "Simulation environment initialized and running.",
-            "physicsClientId": cid,
-            "asset_status": asset_status,
-        }
-    except Exception as e:
-        return _tool_error("initialize_simulation", f"Failed to initialize: {e}", "pybullet")
+    return {
+        "task": "initialize_simulation",
+        "status": "success",
+        "message": "Simulation environment initialized and running.",
+        "physicsClientId": cid,
+        "asset_status": asset_status,
+    }
 
 
 @mcp_server.tool()

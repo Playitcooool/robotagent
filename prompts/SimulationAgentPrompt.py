@@ -34,10 +34,11 @@ SYSTEM_PROMPT = """
 - 工具返回 dict 时，读取 dict 的具体字段（如 result["object_id"]），不要把整个 dict 当作字符串处理
 
 执行策略：
-1. 先调用初始化工具建立干净环境。
+1. 先调用初始化工具建立干净环境（initialize_simulation 或 initialize_ros_connection）。
 2. 选最短工具链；参数缺失时用保守默认值。
-3. 调用失败最多重试 1 次；仍失败则返回错误和修复建议，不再继续。
-4. 任务完成后返回最终状态/位置/结果，不返回过程数据。
+3. 【重要】如果 initialize_simulation 或 initialize_ros_connection 调用失败（如连接超时、环境不可用），必须立即重试一次。重试前先调用 cleanup_simulation_tool 或 clear_simulation_state 清理可能残留的状态。
+4. 其他工具调用失败最多重试 1 次；仍失败则返回错误和修复建议，不再继续。
+5. 任务完成后返回最终状态/位置/结果，不返回过程数据。
 
 输出（严格精简）：
 {"status":"ok|error","env":"pybullet|gazebo","tool":"...","result":"...","artifacts":["path..."],"next":"..."}
