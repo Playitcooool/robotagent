@@ -85,6 +85,7 @@ def write_experience(
     donts: List[str],
     score: float,
     tags: Optional[List[str]] = None,
+    agent_type: Optional[List[str]] = None,
     memory_json_path: str = MEMORY_JSON_PATH_DEFAULT,
 ) -> str:
     """Write a new experience to the memory bank.
@@ -101,6 +102,9 @@ def write_experience(
         donts: Concrete things to AVOID in similar situations.
         score: The overall quality score for this experience (0-10).
         tags: Optional tags/categories for this experience.
+        agent_type: List of agent types this experience applies to
+                     (e.g. ["main", "simulator", "data-analyzer"]).
+                     Used for filtering when injecting into subagent prompts.
         memory_json_path: Path to the external_memory.json file.
 
     Returns:
@@ -127,6 +131,7 @@ def write_experience(
             "dos": dos[:5] if dos else [],
             "donts": donts[:5] if donts else [],
             "tags": tags if tags else [],
+            "agent_type": agent_type if agent_type else [],
             "score": round(float(score), 2),
             "created_at": now,
             "updated_at": now,
@@ -150,6 +155,7 @@ def update_experience(
     dos: Optional[List[str]] = None,
     donts: Optional[List[str]] = None,
     tags: Optional[List[str]] = None,
+    agent_type: Optional[List[str]] = None,
     score: Optional[float] = None,
     memory_json_path: str = MEMORY_JSON_PATH_DEFAULT,
 ) -> str:
@@ -164,6 +170,7 @@ def update_experience(
         principles: Replacement principles list.
         dos: Replacement dos list.
         donts: Replacement donts list.
+        agent_type: Replacement agent_type list.
         tags: Replacement tags list.
         score: Updated score (0-10).
         memory_json_path: Path to the external_memory.json file.
@@ -191,6 +198,8 @@ def update_experience(
                     experiences[i]["donts"] = donts[:5]
                 if tags is not None:
                     experiences[i]["tags"] = tags
+                if agent_type is not None:
+                    experiences[i]["agent_type"] = agent_type
                 if score is not None:
                     experiences[i]["score"] = round(float(score), 2)
                 experiences[i]["updated_at"] = now
@@ -572,7 +581,7 @@ async def score_only(
 
 GRPO_COMPARE_USER_PROMPT_TEMPLATE = """## GRPO 经验提炼
 
-请对比以下两个轨迹，提炼出一条经验教训，写入经验库。
+请对比以下两个轨迹，提炼出一条经验教训，并智能地更新经验库。
 
 **Prompt**: {prompt}
 
@@ -582,12 +591,22 @@ GRPO_COMPARE_USER_PROMPT_TEMPLATE = """## GRPO 经验提炼
 **最低分轨迹 (overall_score={worst_score}, attempt_id={worst_attempt_id})**:
 {worst_messages}
 
-请分析两者的关键差异：
+## 执行步骤
+
+**Step 1**: 使用 read_experiences 工具读取现有经验，了解已有哪些经验。
+
+**Step 2**: 分析两者的关键差异：
 1. 最高分轨迹做对了什么？
 2. 最低分轨迹做错了什么？
 3. 从对比中提炼出一条可执行的经验（summary）、3-5条核心原则（principles）、应该做的事（dos）和应该避免的事（donts）。
+4. 分析轨迹消息中的 "agent" 字段，确定该经验适用于哪些代理类型（main、simulator、data-analyzer）。
 
-请使用 write_experience 工具将经验写入经验库（只需写入一条，从最高分和最低分的对比中提炼）。
+**Step 3**: 判断是否需要写入：
+- 如果提炼的经验与现有经验（尤其是相同 agent_type 的）高度相似（principles 重叠 ≥ 3 条），说明是重复经验，**跳过写入**，返回"经验已存在，无需重复写入"。
+- 如果存在相似但不完全相同的经验（principles 重叠 1-2 条），用 update_experience 更新已有经验，补充新的 principles。
+- 如果是全新经验，使用 write_experience 写入。
+
+**重要**：相同 agent_type 下，经验不宜过多（≤ 5 条）。如果已达到 5 条，新经验必须明显优于已有经验才能替换，否则跳过。
 """
 
 
@@ -599,10 +618,12 @@ async def grpo_summarize_and_update_memory(
     request_timeout_s: float | None = None,
 ) -> dict:
     """
-    Compare the best and worst trajectories and write one experience to memory.
+    Compare the best and worst trajectories and update experience memory.
 
-    This is the core GRPO step: after scoring all attempts for a prompt,
-    compare the best vs worst to extract actionable experience.
+    The judge agent will:
+    1. Read existing experiences
+    2. Compare best vs worst trajectories
+    3. Decide whether to write, update, or skip (deduplication)
     """
     import asyncio
     from langchain_core.messages import HumanMessage

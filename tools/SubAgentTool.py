@@ -109,7 +109,8 @@ async def init_subagents(
 
     # Build experience context for subagents (filtered by agent type)
     def _build_exp_context(exps: list, agent_filter: str) -> str:
-        filtered = [e for e in exps if e.get("prompt_id") == agent_filter]
+        # Filter by agent_type list containing agent_filter
+        filtered = [e for e in exps if agent_filter in e.get("agent_type", [])]
         if not filtered:
             return ""
         lines = ["", "【历史经验（请遵守）】"]
@@ -137,7 +138,7 @@ async def init_subagents(
         )
 
     # Rebuild analysis agent graph with current experiences
-    analysis_system = AnalysisAgentPrompt.SYSTEM_PROMPT + _build_exp_context(experiences, "analysis_agent")
+    analysis_system = AnalysisAgentPrompt.SYSTEM_PROMPT + _build_exp_context(experiences, "data-analyzer")
     analysis_graph = create_agent(
         model=_cached_analysis_chat,
         tools=_cached_analysis_tools,
@@ -214,7 +215,7 @@ async def init_subagents(
         )
 
     # Rebuild simulation agent graph with current experiences
-    sim_system = SimulationAgentPrompt.SYSTEM_PROMPT + _build_exp_context(experiences, "simulation_agent")
+    sim_system = SimulationAgentPrompt.SYSTEM_PROMPT + _build_exp_context(experiences, "simulator")
     simulation_graph = create_agent(
         model=_cached_simulation_chat,
         tools=_cached_mcp_tools,
@@ -267,6 +268,7 @@ def _load_agent_experiences() -> list:
             "principles": items,
             "dos": [高分要点],
             "donts": [],
+            "agent_type": exp_data.get("agent_type", []),
         }
         experiences.append(exp)
 
@@ -288,7 +290,7 @@ def build_experience_suffix(experiences: list, max_experiences: int = 10, agent_
 
     filtered = experiences
     if agent_filter:
-        filtered = [e for e in experiences if e.get("prompt_id") == agent_filter]
+        filtered = [e for e in experiences if agent_filter in e.get("agent_type", [])]
 
     lines = ["\n\n## 实际轨迹中的常见错误与高分要点（来自历史任务统计）"]
     for exp in filtered[-max_experiences:]:

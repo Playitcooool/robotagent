@@ -87,7 +87,7 @@ async def build_exp_agent(
 
     # Build system prompt with or without experience suffix
     if with_experiences and experiences:
-        exp_suffix = build_experience_suffix(experiences, agent_filter="main_agent")
+        exp_suffix = build_experience_suffix(experiences, agent_filter="main")
         full_system_prompt = system_prompt + exp_suffix
     else:
         full_system_prompt = system_prompt
