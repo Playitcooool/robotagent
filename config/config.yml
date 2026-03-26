@@ -1,12 +1,12 @@
-llm: "Jackrong:MLX-Qwen3.5-4B-Claude-4.6-Opus-Reasoning-Distilled-bf16"
+llm: "nightmedia:Qwen3.5-9B-Claude-4.6-HighIQ-INSTRUCT-mxfp8-mlx"
 model_url: "http://localhost:1234/v1"
 api_key: "no_need"
 
-analysis_llm: "Jackrong:MLX-Qwen3.5-4B-Claude-4.6-Opus-Reasoning-Distilled-bf16"
+analysis_llm: "nightmedia:Qwen3.5-9B-Claude-4.6-HighIQ-INSTRUCT-mxfp8-mlx"
 analysis_model_url: "http://localhost:1234/v1"
 analysis_api_key: "no_need"
 
-simulation_llm: "Jackrong:MLX-Qwen3.5-4B-Claude-4.6-Opus-Reasoning-Distilled-bf16"
+simulation_llm: "nightmedia:Qwen3.5-9B-Claude-4.6-HighIQ-INSTRUCT-mxfp8-mlx"
 simulation_model_url: "http://localhost:1234/v1"
 simulation_api_key: "no_need"
 
