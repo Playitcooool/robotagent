@@ -87,7 +87,7 @@ async def build_exp_agent(
 
     # Build system prompt with or without experience suffix
     if with_experiences and experiences:
-        exp_suffix = build_experience_suffix(experiences)
+        exp_suffix = build_experience_suffix(experiences, agent_filter="main_agent")
         full_system_prompt = system_prompt + exp_suffix
     else:
         full_system_prompt = system_prompt
@@ -108,8 +108,8 @@ async def build_exp_agent(
         subagents=subagents,
         middleware=[
             ToolRetryMiddleware(
-                max_retries=1,
-                backoff_factor=1.0,
+                max_retries=2,
+                backoff_factor=2.0,
                 initial_delay=1.0,
             )
         ],
@@ -150,8 +150,19 @@ def call_judge(llm: ChatOpenAI, prompt: str, max_retries: int = 3) -> dict:
             return json.loads(content)
         except json.JSONDecodeError as e:
             last_error = f"JSON decode error: {e}"
+        except asyncio.TimeoutError:
+            last_error = "deepseek_api_timeout"
+            print(f"  [WARN] DeepSeek API timeout on attempt {attempt + 1}")
+        except TimeoutError:
+            last_error = "deepseek_api_timeout"
+            print(f"  [WARN] DeepSeek API timeout on attempt {attempt + 1}")
         except Exception as e:
-            last_error = str(e)
+            err_str = str(e).lower()
+            if "timeout" in err_str or "timed out" in err_str:
+                last_error = "deepseek_api_timeout"
+                print(f"  [WARN] DeepSeek API timeout on attempt {attempt + 1}: {e}")
+            else:
+                last_error = str(e)
 
         if attempt < max_retries - 1:
             time_module.sleep(2**attempt)
@@ -162,7 +173,7 @@ def call_judge(llm: ChatOpenAI, prompt: str, max_retries: int = 3) -> dict:
         "correctness": 0.0,
         "clarity": 0.0,
         "robustness": 0.0,
-        "conciseness": 0.0,
+        "concisesness": 0.0,
         "brief_reason": last_error or "judge failed",
     }
 
@@ -236,8 +247,11 @@ def load_existing_results(out_dir: Path) -> tuple[list, set]:
 
 
 async def run_agent_query(
-    agent, query: dict, timeout_s: float = 1200.0, debug: bool = False,
-    max_retries: int = 2
+    agent,
+    query: dict,
+    timeout_s: float = 1200.0,
+    debug: bool = False,
+    max_retries: int = 2,
 ) -> tuple[str, str]:
     """Run agent on a single query, return (response_text, error)."""
     last_error = ""
@@ -246,7 +260,9 @@ async def run_agent_query(
             print(f"  [RETRY] attempt {attempt + 1}/{max_retries + 1}")
         try:
             result = await asyncio.wait_for(
-                agent.ainvoke({"messages": [{"role": "user", "content": query["prompt"]}]}),
+                agent.ainvoke(
+                    {"messages": [{"role": "user", "content": query["prompt"]}]}
+                ),
                 timeout=timeout_s,
             )
 
@@ -254,10 +270,18 @@ async def run_agent_query(
                 print(f"  [DEBUG] result type={type(result).__name__}")
                 if isinstance(result, dict):
                     msgs = result.get("messages", [])
-                    print(f"  [DEBUG] messages count={len(msgs)}, types={[type(m).__name__ for m in msgs]}")
+                    print(
+                        f"  [DEBUG] messages count={len(msgs)}, types={[type(m).__name__ for m in msgs]}"
+                    )
                     for i, m in enumerate(reversed(msgs[-5:])):
-                        content = m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
-                        print(f"  [DEBUG]   msg[-{i}] type={type(m).__name__} content={repr(str(content)[:60])}")
+                        content = (
+                            m.get("content", "")
+                            if isinstance(m, dict)
+                            else getattr(m, "content", "")
+                        )
+                        print(
+                            f"  [DEBUG]   msg[-{i}] type={type(m).__name__} content={repr(str(content)[:60])}"
+                        )
                 else:
                     print(f"  [DEBUG] result={repr(result)[:200]}")
 
@@ -267,7 +291,11 @@ async def run_agent_query(
                 messages = result.get("messages", [])
                 for msg in reversed(messages):
                     if type(msg).__name__ == "AIMessage":
-                        content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+                        content = (
+                            msg.get("content", "")
+                            if isinstance(msg, dict)
+                            else getattr(msg, "content", "")
+                        )
                         if content:
                             return str(content), ""
                     elif isinstance(msg, dict) and msg.get("role") == "assistant":
@@ -284,10 +312,11 @@ async def run_agent_query(
             return str(result), ""
 
         except asyncio.TimeoutError:
-            last_error = "timeout"
-            print(f"  [WARN] timeout on attempt {attempt + 1}")
+            last_error = "local_model_timeout"
+            print(f"  [WARN] local model timeout on attempt {attempt + 1}")
             if attempt < max_retries:
                 from tools.SubAgentTool import reset_cached_mcp_tools
+
                 reset_cached_mcp_tools()
         except Exception as e:
             last_error = str(e)
@@ -295,6 +324,7 @@ async def run_agent_query(
             if attempt < max_retries:
                 try:
                     from tools.SubAgentTool import reset_cached_mcp_tools
+
                     reset_cached_mcp_tools()
                 except Exception:
                     pass
@@ -479,9 +509,7 @@ async def main():
     parser.add_argument(
         "--timeout", type=int, default=1200, help="单个query超时时间（秒），默认1200"
     )
-    parser.add_argument(
-        "--debug", action="store_true", help="打印详细调试信息"
-    )
+    parser.add_argument("--debug", action="store_true", help="打印详细调试信息")
     args = parser.parse_args()
 
     config = load_config()
@@ -516,7 +544,7 @@ async def main():
         api_key=judge_api_key or "dummy",
         model=judge_model,
         temperature=0,
-        timeout=judge_cfg.get("timeout", 300),
+        timeout=judge_cfg.get("timeout", 600),
     )
 
     # Build two agents at startup (rebuilt each query to ensure clean state)
@@ -565,7 +593,9 @@ async def main():
             )
 
             # Run query
-            response, error = await run_agent_query(agent, query, timeout_s=float(args.timeout), debug=args.debug)
+            response, error = await run_agent_query(
+                agent, query, timeout_s=float(args.timeout), debug=args.debug
+            )
 
             if error:
                 print(f"  [ERROR] {error}")
