@@ -708,7 +708,7 @@ def parse_args() -> argparse.Namespace:
         default="output/training_free_grpo/external_memory.md",
     )
     parser.add_argument("--system_prompt", type=str, default="")
-    parser.add_argument("--samples_per_prompt", type=int, default=3)
+    parser.add_argument("--samples_per_prompt", type=int, default=4)
     parser.add_argument("--max_prompts", type=int, default=0)
     parser.add_argument("--max_retries", type=int, default=3)
     parser.add_argument("--backoff_factor", type=float, default=2.0)
