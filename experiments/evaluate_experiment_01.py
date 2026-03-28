@@ -135,7 +135,7 @@ def create_academic_agent(base_url: str, model: str, api_key: str):
         base_url=base_url,
         model=model,
         api_key=api_key,
-        temperature=0.2,
+        temperature=0.7,
         request_timeout=600,
     )
 
