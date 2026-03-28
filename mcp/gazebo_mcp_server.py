@@ -280,13 +280,28 @@ def ensure_ros() -> GazeboMCPNode:
 
 
 def cleanup_ros():
+    """Shutdown ROS2 resources with retries. Raises on final failure."""
     global _ros_node, _ros_executor, _ros_thread
-    if _ros_executor is not None:
-        _ros_executor.shutdown(timeout_sec=2.0)
-    if _ros_node is not None:
-        _ros_node.destroy_node()
-    if rclpy.ok():
-        rclpy.shutdown()
+    last_error = None
+    success = False
+    for attempt in range(3):
+        try:
+            if _ros_executor is not None:
+                _ros_executor.shutdown(timeout_sec=2.0)
+            if _ros_node is not None:
+                _ros_node.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
+            success = True
+            break
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                import time
+                time.sleep(0.1 * (attempt + 1))
+                continue
+            raise RuntimeError(f"cleanup_ros failed after 3 attempts: {last_error}") from last_error
+    # Always clear globals after cleanup attempt (success or failure)
     _ros_node = None
     _ros_executor = None
     _ros_thread = None

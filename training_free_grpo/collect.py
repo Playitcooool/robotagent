@@ -209,21 +209,37 @@ def extract_messages(agent_result: Dict[str, Any]) -> List[Dict[str, Any]]:
                     item["agent"] = "simulator"
                 elif name == "task":
                     # task 工具会委托给 simulator 或 data-analyzer 子 agent
-                    # 从返回的 JSON content 中解析 env 字段判断类型
+                    # 优先从 JSON 的 env 字段判断；JSON 解析失败时从 markdown 内容推断
+                    content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    content_lower = content_str.lower()
+                    agent_assigned = False
+
+                    # 优先：尝试解析 JSON env 字段
                     try:
-                        content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
-                        # 去掉可能的 markdown 代码块标记
-                        content_str = content_str.strip().lstrip("```json").lstrip("```").rstrip("`").strip()
-                        task_result = json.loads(content_str)
+                        stripped = content_str.strip().lstrip("```json").lstrip("```").rstrip("`").strip()
+                        task_result = json.loads(stripped)
                         env = task_result.get("env", "")
                         if env in ("pybullet", "gazebo"):
                             item["agent"] = "simulator"
+                            agent_assigned = True
                         elif env == "analysis":
+                            item["agent"] = "data-analyzer"
+                            agent_assigned = True
+                    except (json.JSONDecodeError, Exception):
+                        pass
+
+                    # Fallback：从 markdown 内容关键词推断
+                    if not agent_assigned:
+                        sim_keywords = ["pybullet", "gazebo", "push_cube", "grab_and_place",
+                                        "initialize_simulation", "cleanup_simulation",
+                                        "set_object_position", "get_object_state",
+                                        "step_simulation", "path_planning", "simulation"]
+                        if any(kw in content_lower for kw in sim_keywords):
+                            item["agent"] = "simulator"
+                        elif any(kw in content_lower for kw in ["analyze", "analysis", "data-analyzer", "code", "trajectory", "experiment"]):
                             item["agent"] = "data-analyzer"
                         else:
                             item["agent"] = "main"
-                    except (json.JSONDecodeError, Exception):
-                        item["agent"] = "main"
                 else:
                     item["agent"] = "main"
             if tool_call_id:
@@ -345,7 +361,9 @@ async def collect_trajectories_online(
                             f"[collect] init_hook done prompt={prompt_id} attempt={attempt_id}"
                         )
                     except Exception as e:
-                        print(f"[collect] init_before_attempt failed: {e}")
+                        print(f"[collect] init_before_attempt failed: {e}, retrying...")
+                        await asyncio.sleep(1.0)
+                        await maybe_wait_for(init_before_attempt(), cleanup_timeout_s)
 
                 try:
                     attempt_since_rebuild += 1
@@ -827,9 +845,11 @@ async def async_main() -> None:
         mcp_client = Client(mcp_cleanup_url)
 
         async def cleanup_hook() -> None:
+            # cleanup + init 合并为一步：initialize_simulation 内部已处理旧连接断开
             await mcp_client.call_tool("cleanup_simulation_tool")
 
         async def init_hook() -> None:
+            # initialize_simulation 内部调用 setup_simulation，会先断开旧连接再创建新连接
             await mcp_client.call_tool("initialize_simulation", {"args": {}})
 
         async with mcp_client:

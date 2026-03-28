@@ -228,16 +228,22 @@ def _publish_snapshot(task: str, *, done: bool = False, extra: dict[str, Any] | 
 
 
 def setup_simulation(gui: bool = False):
-    """初始化PyBullet环境，每次调用都创建干净的环境"""
+    """初始化PyBullet环境，每次调用都创建干净的环境。失败时抛出异常。"""
     global simulation_instance, _plane_body_id
     with _sim_lock:
         # 先清理旧环境（如果存在）
         if simulation_instance is not None:
-            try:
-                if p.isConnected(simulation_instance):
-                    p.disconnect(simulation_instance)
-            except Exception:
-                pass
+            for attempt in range(3):
+                try:
+                    if p.isConnected(simulation_instance):
+                        p.disconnect(simulation_instance)
+                    break
+                except Exception as e:
+                    if attempt < 2:
+                        import time
+                        time.sleep(0.1 * (attempt + 1))
+                        continue
+                    raise RuntimeError(f"Failed to disconnect old PyBullet instance: {e}") from e
             simulation_instance = None
             _plane_body_id = None
 
@@ -246,14 +252,19 @@ def setup_simulation(gui: bool = False):
         else:
             simulation_instance = p.connect(p.DIRECT)
 
+        # 验证连接成功
+        if not p.isConnected(simulation_instance):
+            raise RuntimeError(f"PyBullet connection failed (client_id={simulation_instance})")
+
         try:
             data_path_str = pybullet_data.getDataPath()
             p.setAdditionalSearchPath(data_path_str, physicsClientId=simulation_instance)
-        except Exception:
-            # pybullet_data 路径获取失败时继续，搜索路径可能已配置
-            pass
+        except Exception as e:
+            raise RuntimeError(f"Failed to set PyBullet data path: {e}") from e
         p.setGravity(0, 0, -9.8, physicsClientId=simulation_instance)
         _plane_body_id = p.loadURDF("plane.urdf", physicsClientId=simulation_instance)
+        if _plane_body_id < 0:
+            raise RuntimeError("Failed to load plane.urdf")
         _ensure_stream_dir()
 
 
@@ -271,16 +282,23 @@ def with_simulation():
 
 
 def cleanup_simulation():
-    """关闭PyBullet环境，释放所有资源。"""
+    """关闭PyBullet环境，释放所有资源。重试disconnect直到成功。"""
     global simulation_instance, _plane_body_id
     with _sim_lock:
         if simulation_instance is not None:
-            try:
-                if p.isConnected(simulation_instance):
-                    p.disconnect(simulation_instance)
-            except Exception:
-                # Best-effort cleanup; always clear local state.
-                pass
+            # 重试disconnect，因为PyBullet偶发报错
+            for attempt in range(3):
+                try:
+                    if p.isConnected(simulation_instance):
+                        p.disconnect(simulation_instance)
+                    break  # 成功断开
+                except Exception as e:
+                    if attempt < 2:
+                        import time
+                        time.sleep(0.1 * (attempt + 1))
+                        continue
+                    # 最后一次尝试失败，不再静默——让调用方知道清理失败
+                    raise RuntimeError(f"Failed to disconnect PyBullet after 3 attempts: {e}") from e
             simulation_instance = None
             _plane_body_id = None
             # 清理帧文件
@@ -291,8 +309,6 @@ def cleanup_simulation():
                     LATEST_FRAME_FILE.unlink()
             except Exception:
                 pass
-        else:
-            print("No simulation environment to close.")
 
 
 def step(n: int = 240, cid: int | None = None):
