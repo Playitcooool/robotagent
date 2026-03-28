@@ -18,8 +18,6 @@ os.environ.setdefault("no_proxy", "localhost,127.0.0.1,host.docker.internal")
 
 import argparse
 import json
-import os
-import re
 import sys
 import yaml
 import asyncio
@@ -34,9 +32,7 @@ root_dir = current_dir.parent
 sys.path.insert(0, str(root_dir))
 
 import matplotlib.pyplot as plt
-import seaborn as sns
 from langchain_openai import ChatOpenAI
-from langchain_core.tools import tool
 from deepagents import create_deep_agent
 from tools.GeneralTool import search
 
@@ -139,7 +135,7 @@ def create_academic_agent(base_url: str, model: str, api_key: str):
         base_url=base_url,
         model=model,
         api_key=api_key,
-        temperature=0.8,
+        temperature=0.2,
         request_timeout=600,
     )
 
@@ -185,6 +181,27 @@ async def call_agent(agent, query: str) -> str:
         return ""
 
 
+def extract_json(text: str) -> dict | None:
+    """从文本中提取第一个有效的 JSON 对象（支持嵌套）"""
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    end = start
+    for i, ch in enumerate(text[start:], start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    try:
+        return json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+
+
 def call_judge(llm: ChatOpenAI, query: str, answer: str, max_retries: int = 3):
     """调用LLM Judge评估回答质量"""
     import time
@@ -221,21 +238,21 @@ Agent回答：{answer}
                     for block in content
                 )
 
-            # 提取JSON
-            json_match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
-            if json_match:
-                result = json.loads(json_match.group())
-                # 确保有所有必要字段
-                result.setdefault("relevance", 0)
-                result.setdefault("accuracy", 0)
-                result.setdefault("completeness", 0)
-                result.setdefault("citation", 0)
-                result.setdefault("overall_score", 0)
-                result.setdefault("pros", [])
-                result.setdefault("cons", [])
-                result.setdefault("brief_reason", "")
-                return result
-            return json.loads(content)
+            # 提取JSON（支持嵌套）
+            parsed = extract_json(content)
+            if parsed is None:
+                # 尝试直接解析整个content
+                parsed = json.loads(content.strip())
+            # 确保有所有必要字段
+            parsed.setdefault("relevance", 0)
+            parsed.setdefault("accuracy", 0)
+            parsed.setdefault("completeness", 0)
+            parsed.setdefault("citation", 0)
+            parsed.setdefault("overall_score", 0)
+            parsed.setdefault("pros", [])
+            parsed.setdefault("cons", [])
+            parsed.setdefault("brief_reason", "")
+            return parsed
         except json.JSONDecodeError as e:
             last_error = f"JSON decode error: {e}"
             print(
@@ -288,7 +305,6 @@ async def evaluate_academic_agent(
     queries: list,
     agent,
     llm,
-    model_name: str,
     out_dir: Path,
     delay_between_queries: float = 3.0,
 ):
@@ -375,7 +391,7 @@ def generate_charts(results: list, out_dir: Path):
     avg_scores = {d: mean([s.get(d, 0) for s in scores]) for d in dimensions}
     pct_scores = {d: (v / 5.0 * 100) for d, v in avg_scores.items()}
 
-    fig, ax = plt.subplots(figsize=(12, 6))
+    _, ax = plt.subplots(figsize=(12, 6))
     labels = ["Relevance\n(相关度)", "Accuracy\n(准确性)", "Completeness\n(完整性)", "Citation\n(引用率)", "Overall\n(综合得分)"]
     vals = [pct_scores[d] for d in dimensions]
     colors = ["#3498db", "#e74c3c", "#f39c12", "#9b59b6", "#2ecc71"]
@@ -404,7 +420,7 @@ def generate_charts(results: list, out_dir: Path):
         s.get("overall_score", 0) for s in scores if s.get("overall_score", 0) > 0
     ]
     if overall_scores:
-        fig, ax = plt.subplots(figsize=(10, 6))
+        _, ax = plt.subplots(figsize=(10, 6))
         ax.hist(overall_scores, bins=5, edgecolor="black", alpha=0.7, color="#3498db")
         ax.set_xlabel("Overall Score")
         ax.set_ylabel("Count")
@@ -435,7 +451,7 @@ def generate_charts(results: list, out_dir: Path):
 
     if categories:
         cat_scores = {k: mean(v) for k, v in categories.items() if v}
-        fig, ax = plt.subplots(figsize=(8, 5))
+        _, ax = plt.subplots(figsize=(8, 5))
         bars = ax.barh(
             list(cat_scores.keys()), list(cat_scores.values()), color="#2ecc71"
         )
@@ -498,10 +514,9 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 评估
-    model_name = agent_model
     results = asyncio.run(
         evaluate_academic_agent(
-            queries, agent, llm, model_name, out_dir, delay_between_queries=0
+            queries, agent, llm, out_dir, delay_between_queries=0
         )
     )
 
