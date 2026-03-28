@@ -21,7 +21,7 @@ os.environ.setdefault("no_proxy", "localhost,127.0.0.1,host.docker.internal")
 
 使用方式:
     python evaluate_experiment_04.py \
-        --test-queries experiments/data/test_queries.jsonl \
+        --test-queries data/test_queries.jsonl \
         --out-dir results/exp04
 """
 

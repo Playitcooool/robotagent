@@ -11,6 +11,11 @@
         --out-dir results/exp01_academic_agent
 """
 
+import os
+
+os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,host.docker.internal")
+os.environ.setdefault("no_proxy", "localhost,127.0.0.1,host.docker.internal")
+
 import argparse
 import json
 import os

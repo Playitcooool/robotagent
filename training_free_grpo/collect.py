@@ -29,7 +29,7 @@ from training_free_grpo.experience_tools import (
 REBUILD_AGENT_EVERY = 1  # 每N次attempt重建一次agent，确保每次attempt独立
 CLEANUP_SIMULATION_PER_ATTEMPT = False  # False = 保持仿真环境持久化，init一次后复用
 DEFAULT_REQUEST_TIMEOUT_S = 600.0
-DEFAULT_ATTEMPT_TIMEOUT_S = 2000
+DEFAULT_ATTEMPT_TIMEOUT_S = 600
 DEFAULT_CLEANUP_TIMEOUT_S = 60.0
 
 
