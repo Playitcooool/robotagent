@@ -207,6 +207,23 @@ def extract_messages(agent_result: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "get_observation",
                 }:
                     item["agent"] = "simulator"
+                elif name == "task":
+                    # task 工具会委托给 simulator 或 data-analyzer 子 agent
+                    # 从返回的 JSON content 中解析 env 字段判断类型
+                    try:
+                        content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
+                        # 去掉可能的 markdown 代码块标记
+                        content_str = content_str.strip().lstrip("```json").lstrip("```").rstrip("`").strip()
+                        task_result = json.loads(content_str)
+                        env = task_result.get("env", "")
+                        if env in ("pybullet", "gazebo"):
+                            item["agent"] = "simulator"
+                        elif env == "analysis":
+                            item["agent"] = "data-analyzer"
+                        else:
+                            item["agent"] = "main"
+                    except (json.JSONDecodeError, Exception):
+                        item["agent"] = "main"
                 else:
                     item["agent"] = "main"
             if tool_call_id:
