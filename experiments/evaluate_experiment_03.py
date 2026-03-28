@@ -6,13 +6,12 @@
 
 使用方式:
     python evaluate_experiment_03.py \
-        --trajectories ../trajectories.jsonl \
+        --scores output/training_free_grpo/trajectory_scores.jsonl \
         --out-dir results/exp03
 """
 
 import argparse
 import json
-import re
 from pathlib import Path
 from collections import defaultdict
 from statistics import mean
@@ -63,55 +62,6 @@ def load_trajectories(path: Path):
                 continue
     return rows
 
-
-def determine_success(traj: dict) -> bool:
-    """判断任务是否成功"""
-    response = traj.get("response", "")
-    messages = traj.get("messages", [])
-
-    success_keywords = ["成功", "完成", "success", "completed"]
-    fail_keywords = ["失败", "错误", "error", "fail", "未完成"]
-
-    response_lower = response.lower() if response else ""
-
-    for kw in fail_keywords:
-        if kw.lower() in response_lower:
-            for succ_kw in success_keywords:
-                if succ_kw.lower() in response_lower:
-                    return True
-            return False
-
-    for kw in success_keywords:
-        if kw in response:
-            return True
-
-    tool_results = []
-    for msg in messages:
-        if msg.get("role") == "tool" and msg.get("name") == "task":
-            content = msg.get("content", "")
-            tool_results.append(content)
-
-    for result in tool_results:
-        if isinstance(result, str):
-            result_lower = result.lower()
-            error_match = re.search(r'error["\s:]+([0-9.]+)', result_lower)
-            if error_match:
-                error = float(error_match.group(1))
-                if error < 0.05:
-                    return True
-                elif error > 0.2:
-                    return False
-
-            if '"status":"ok"' in result or '"status":"success"' in result:
-                return True
-            if '"status":"error"' in result or '"status":"fail"' in result:
-                return False
-
-    pos_match = re.search(r'位置[：:]\s*\[?([0-9.,\s\-e]+)\]?', response)
-    if pos_match:
-        return True
-
-    return None
 
 
 def generate_charts(results: list, summary: dict, out_dir: Path):
@@ -248,21 +198,21 @@ def generate_charts(results: list, summary: dict, out_dir: Path):
 
 def main():
     parser = argparse.ArgumentParser(description="分析任务尝试次数与成功率关系")
-    parser.add_argument("--trajectories", required=True, help="轨迹数据JSONL文件")
+    parser.add_argument("--scores", required=True, help="collect.py 生成的 trajectory_scores.jsonl")
     parser.add_argument("--out-dir", required=True, help="输出目录")
     args = parser.parse_args()
 
-    # 加载数据
-    traj_path = Path(args.trajectories)
-    trajectories = load_trajectories(traj_path)
-    print(f"Loaded {len(trajectories)} trajectories")
+    # 加载数据（trajectory_scores.jsonl，直接包含 score）
+    scores_path = Path(args.scores)
+    scores = load_trajectories(scores_path)
+    print(f"Loaded {len(scores)} score records")
 
     # 按prompt_id分组
     by_prompt = defaultdict(list)
-    for traj in trajectories:
-        pid = traj.get("prompt_id")
+    for record in scores:
+        pid = record.get("prompt_id")
         if pid is not None:
-            by_prompt[pid].append(traj)
+            by_prompt[pid].append(record)
 
     print(f"Found {len(by_prompt)} unique prompts")
 
@@ -271,23 +221,26 @@ def main():
 
     # 统计每个prompt的尝试次数
     prompt_stats = []
-    for pid, trajs in by_prompt.items():
+    for pid, records in by_prompt.items():
         if pid in completed_ids:
             continue
-        sorted_trajs = sorted(trajs, key=lambda x: x.get("attempt_id", 0))
+        sorted_records = sorted(records, key=lambda x: x.get("attempt_id", 0))
 
         attempts = []
-        for t in sorted_trajs:
-            success = determine_success(t)
+        for r in sorted_records:
+            score_data = r.get("score", {})
+            overall_score = score_data.get("overall_score") if isinstance(score_data, dict) else None
+            # overall_score 范围 0-10，>= 5 视为成功
+            success = (overall_score is not None and overall_score >= 5.0)
             attempts.append({
-                "attempt_id": t.get("attempt_id"),
+                "attempt_id": r.get("attempt_id"),
+                "overall_score": overall_score,
                 "success": success,
-                "response_preview": t.get("response", "")[:100]
             })
 
         prompt_stats.append({
             "prompt_id": pid,
-            "prompt": trajs[0].get("prompt", ""),
+            "prompt": records[0].get("prompt", ""),
             "total_attempts": len(attempts),
             "attempts": attempts
         })
@@ -315,7 +268,7 @@ def main():
     # 汇总统计
     summary = {
         "total_prompts": len(results),
-        "avg_attempts_per_task": mean([r["total_attempts"] for r in results]),
+        "avg_attempts_per_task": mean([r["total_attempts"] for r in results]) if results else 0,
     }
 
     for n in [1, 2, 3, 4, 5]:
