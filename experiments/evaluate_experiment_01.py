@@ -33,7 +33,7 @@ sys.path.insert(0, str(root_dir))
 
 import matplotlib.pyplot as plt
 from langchain_openai import ChatOpenAI
-from deepagents import create_deep_agent
+from langchain.agents import create_agent
 from tools.GeneralTool import search
 
 # 设置中文字体
@@ -135,12 +135,12 @@ def create_academic_agent(base_url: str, model: str, api_key: str):
         base_url=base_url,
         model=model,
         api_key=api_key,
-        temperature=0.7,
+        temperature=0.8,
         request_timeout=600,
     )
 
     # 创建 agent，带有 search 工具
-    agent = create_deep_agent(
+    agent = create_agent(
         model=chat,
         tools=[search],
         system_prompt=AGENT_SYSTEM_PROMPT,
@@ -320,7 +320,9 @@ async def evaluate_academic_agent(
     start_index = len(results)
 
     total = len(queries)
-    print(f"Total queries: {total}, Already completed: {len(completed_ids)}, Remaining: {total - start_index}")
+    print(
+        f"Total queries: {total}, Already completed: {len(completed_ids)}, Remaining: {total - start_index}"
+    )
 
     for i, q in enumerate(queries, 1):
         query_id = q.get("id", f"query_{i}")
@@ -392,7 +394,13 @@ def generate_charts(results: list, out_dir: Path):
     pct_scores = {d: (v / 5.0 * 100) for d, v in avg_scores.items()}
 
     _, ax = plt.subplots(figsize=(12, 6))
-    labels = ["Relevance\n(相关度)", "Accuracy\n(准确性)", "Completeness\n(完整性)", "Citation\n(引用率)", "Overall\n(综合得分)"]
+    labels = [
+        "Relevance\n(相关度)",
+        "Accuracy\n(准确性)",
+        "Completeness\n(完整性)",
+        "Citation\n(引用率)",
+        "Overall\n(综合得分)",
+    ]
     vals = [pct_scores[d] for d in dimensions]
     colors = ["#3498db", "#e74c3c", "#f39c12", "#9b59b6", "#2ecc71"]
     bars = ax.bar(labels, vals, color=colors)
@@ -515,9 +523,7 @@ def main():
 
     # 评估
     results = asyncio.run(
-        evaluate_academic_agent(
-            queries, agent, llm, out_dir, delay_between_queries=0
-        )
+        evaluate_academic_agent(queries, agent, llm, out_dir, delay_between_queries=0)
     )
 
     # 生成统计
@@ -554,11 +560,21 @@ def main():
     print(f"Total queries: {summary['total']}")
     print(f"Evaluated: {summary.get('evaluated', 0)}")
     if valid_scores:
-        print(f"Avg relevance:   {summary['avg_relevance']:.2f}/5  ({summary['avg_relevance_pct']:.1f}%)")
-        print(f"Avg accuracy:    {summary['avg_accuracy']:.2f}/5  ({summary['avg_accuracy_pct']:.1f}%)")
-        print(f"Avg completeness:{summary['avg_completeness']:.2f}/5  ({summary['avg_completeness_pct']:.1f}%)")
-        print(f"Avg citation:    {summary['avg_citation']:.2f}/5  ({summary['avg_citation_pct']:.1f}%)")
-        print(f"Avg overall:     {summary['avg_overall_score']:.2f}/5  ({summary['avg_overall_score_pct']:.1f}%)")
+        print(
+            f"Avg relevance:   {summary['avg_relevance']:.2f}/5  ({summary['avg_relevance_pct']:.1f}%)"
+        )
+        print(
+            f"Avg accuracy:    {summary['avg_accuracy']:.2f}/5  ({summary['avg_accuracy_pct']:.1f}%)"
+        )
+        print(
+            f"Avg completeness:{summary['avg_completeness']:.2f}/5  ({summary['avg_completeness_pct']:.1f}%)"
+        )
+        print(
+            f"Avg citation:    {summary['avg_citation']:.2f}/5  ({summary['avg_citation_pct']:.1f}%)"
+        )
+        print(
+            f"Avg overall:     {summary['avg_overall_score']:.2f}/5  ({summary['avg_overall_score_pct']:.1f}%)"
+        )
 
     # 生成图表
     generate_charts(results, out_dir)
