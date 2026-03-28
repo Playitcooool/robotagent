@@ -5,9 +5,9 @@ sequenceDiagram
   participant U as 用户
   participant FE as 前端(Vue3)
   participant BE as 后端(FastAPI)
-  participant Main as 主代理(MLX-Qwen3.5-4B)
-  participant Sim as 仿真代理(MLX-Qwen3.5-4B)
-  participant Anal as 分析代理(MLX-Qwen3.5-4B)
+  participant Main as 主代理(Qwen3.5-9B)
+  participant Sim as 仿真代理(Qwen3.5-9B)
+  participant Anal as 分析代理(Qwen3.5-9B)
   participant MCP as MCP 服务
   participant SIM as 共享帧目录
   participant RAG as 向量知识库(Qdrant)

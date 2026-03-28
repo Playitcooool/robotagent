@@ -35,12 +35,12 @@ mcp/.sim_stream)]
   end
 
   subgraph MainAgent[主代理]
-    main_llm[MLX-Qwen3.5-4B<br/>Claude-4.6-Opus-Reasoning<br/>OMLX本地部署]
+    main_llm[Qwen3.5-9B-Claude-4.6-HighIQ<br/>Ollama 本地部署]
   end
 
   subgraph SubAgents[子代理]
-    sim_agent[仿真代理<br/>同主代理模型<br/>OMLX本地部署]
-    anal_agent[分析代理<br/>同主代理模型<br/>OMLX本地部署]
+    sim_agent[仿真代理<br/>同主代理模型<br/>Ollama 本地部署]
+    anal_agent[分析代理<br/>同主代理模型<br/>Ollama 本地部署]
   end
 
   browser --> ui --> api

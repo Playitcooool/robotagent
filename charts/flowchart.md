@@ -1,31 +1,32 @@
-# 流程图（聊天 + 工具 + 实时仿真）
+# 流程图（Agent 任务处理流程）
 
 ```mermaid
 flowchart TD
-    start([开始]) --> login{已登录?}
-    login -- 否 --> do_login[登录/注册]
-    do_login --> chat
-    login -- 是 --> chat[发送聊天请求]
+    start([用户输入任务]) --> auth[后端鉴权与会话加载]
+    auth --> parse[主 Agent 理解任务]
+    parse --> route{任务类型判断}
 
-    chat --> auth[后端鉴权]
-    auth --> call_model[调用模型/代理]
-    call_model --> tool_needed{需要工具?}
+    route -->|仿真任务| sim[仿真代理]
+    route -->|数据分析| anal[分析代理]
+    route -->|信息检索| rag[检索增强]
+    route -->|直接回答| direct[直接回复]
 
-    tool_needed -- 否 --> reply[返回聊天回复]
-    tool_needed -- 是 --> call_tool[调用 MCP 工具]
+    sim --> mcp[调用 MCP 工具]
+    anal --> tools[数据分析工具]
+    rag --> qdrant[查询向量知识库]
 
-    call_tool --> write_frames[写入 latest.png/json]
-    write_frames --> sse[后端 SSE 推送帧]
-    sse --> render[前端渲染画面]
-    render --> reply
+    mcp --> frames[写入最新帧状态]
+    frames --> sse[SSE 推送前端]
+    sse --> render[前端实时渲染]
 
-    reply --> end([结束])
+    tools --> summarize[结果汇总]
+    qdrant --> summarize
+    direct --> summarize
 
-  start --> login
-  login -- 否 --> do_login --> chat
-  login -- 是 --> chat
-  chat --> auth --> call_model
-  call_model --> tool_needed
-  tool_needed -- 否 --> reply --> end
-  tool_needed -- 是 --> call_tool --> write_frames --> sse --> render --> reply --> end
+    summarize --> resp[主 Agent 生成回复]
+    resp --> end([返回用户])
+
+    style sim fill:#e3f2fd,stroke:#1976d2
+    style anal fill:#fff3e0,stroke:#f57c00
+    style rag fill:#e8f5e9,stroke:#388e3c
 ```
