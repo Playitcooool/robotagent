@@ -235,37 +235,6 @@ def save_memory_bank(path: str, memory_bank: Dict[str, Any]) -> None:
         json.dump(memory_bank, f, ensure_ascii=False, indent=2)
 
 
-def render_memory_markdown(memory_bank: Dict[str, Any]) -> str:
-    """Render memory bank as markdown (legacy format, for backward compat)."""
-    lines: List[str] = ["# Training-Free GRPO Online Memory", ""]
-    experiences = memory_bank.get("experiences", [])
-    for idx, item in enumerate(experiences, start=1):
-        score = item.get("score", 0.0)
-        lines.extend(
-            [
-                f"## Experience {idx}",
-                f"- id: {item.get('id', 'N/A')}",
-                f"- prompt_id: {item.get('prompt_id')}",
-                f"- overall_score: {score}",
-                "",
-                "### Summary",
-                str(item.get("summary", "")),
-                "",
-                "### Principles",
-            ]
-        )
-        for p in item.get("principles", []):
-            lines.append(f"- {p}")
-        lines.extend(["", "### Dos"])
-        for d in item.get("dos", []):
-            lines.append(f"- {d}")
-        lines.extend(["", "### Donts"])
-        for d in item.get("donts", []):
-            lines.append(f"- {d}")
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
-
-
 def build_online_system_prompt(
     base_prompt: str,
     experiences: List[Dict[str, Any]],
@@ -304,7 +273,6 @@ async def collect_trajectories_online(
     mirror_output_path: Optional[str],
     score_path: str,
     memory_json_path: str,
-    memory_md_path: str,
     samples_per_prompt: int,
     rebuild_agent_every: int,
     base_system_prompt: str,
@@ -611,9 +579,6 @@ async def collect_trajectories_online(
         # Reload memory so subsequent prompts can see the newly learned experiences
         memory_bank = load_memory_bank(memory_json_path)
 
-        # Persist updated memory as markdown
-        with open(memory_md_path, "w", encoding="utf-8") as f:
-            f.write(render_memory_markdown(memory_bank))
         print(
             f"[memory] updated after prompt={prompt_id}; total={len(memory_bank['experiences'])}"
         )
@@ -701,11 +666,6 @@ def parse_args() -> argparse.Namespace:
         "--memory_json_path",
         type=str,
         default="output/training_free_grpo/external_memory.json",
-    )
-    parser.add_argument(
-        "--memory_md_path",
-        type=str,
-        default="output/training_free_grpo/external_memory.md",
     )
     parser.add_argument("--system_prompt", type=str, default="")
     parser.add_argument("--samples_per_prompt", type=int, default=4)
@@ -795,7 +755,6 @@ async def async_main() -> None:
         os.path.dirname(args.mirror_output_path),
         os.path.dirname(args.score_path),
         os.path.dirname(args.memory_json_path),
-        os.path.dirname(args.memory_md_path),
     ]:
         if path:
             ensure_dir(path)
@@ -864,7 +823,6 @@ async def async_main() -> None:
                 mirror_output_path=args.mirror_output_path,
                 score_path=args.score_path,
                 memory_json_path=args.memory_json_path,
-                memory_md_path=args.memory_md_path,
                 samples_per_prompt=args.samples_per_prompt,
                 rebuild_agent_every=REBUILD_AGENT_EVERY,
                 base_system_prompt=base_system_prompt,
@@ -887,7 +845,6 @@ async def async_main() -> None:
             mirror_output_path=args.mirror_output_path,
             score_path=args.score_path,
             memory_json_path=args.memory_json_path,
-            memory_md_path=args.memory_md_path,
             samples_per_prompt=args.samples_per_prompt,
             rebuild_agent_every=REBUILD_AGENT_EVERY,
             base_system_prompt=base_system_prompt,
