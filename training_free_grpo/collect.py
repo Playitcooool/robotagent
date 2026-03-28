@@ -27,7 +27,7 @@ from training_free_grpo.experience_tools import (
 
 # Collection runtime behavior (intended for single-trajectory isolation)
 REBUILD_AGENT_EVERY = 1  # 每N次attempt重建一次agent，确保每次attempt独立
-CLEANUP_SIMULATION_PER_ATTEMPT = False  # False = 保持仿真环境持久化，init一次后复用
+CLEANUP_SIMULATION_PER_ATTEMPT = True  # True = 每次 attempt 前初始化仿真环境
 DEFAULT_REQUEST_TIMEOUT_S = 600.0
 DEFAULT_ATTEMPT_TIMEOUT_S = 600
 DEFAULT_CLEANUP_TIMEOUT_S = 60.0
@@ -363,6 +363,7 @@ async def collect_trajectories_online(
                         print(f"[collect] init_before_attempt failed: {e}")
 
                 try:
+                    attempt_since_rebuild += 1
                     if (
                         agent is None
                         or rebuild_agent_every > 0
@@ -391,7 +392,6 @@ async def collect_trajectories_online(
                     print(
                         f"[collect] agent.ainvoke done prompt={prompt_id} attempt={attempt_id}"
                     )
-                    attempt_since_rebuild += 1
                     break
                 except asyncio.TimeoutError:
                     print(
