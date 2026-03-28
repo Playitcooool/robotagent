@@ -680,7 +680,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base_url", type=str, default=config["model_url"])
     parser.add_argument("--model", type=str, default=config["llm"])
     parser.add_argument("--api_key", type=str, default=config["api_key"])
-    parser.add_argument("--prompts", type=str, default="SFT/data.txt")
+    parser.add_argument("--prompts", type=str, default="training_free_grpo/data.txt")
     parser.add_argument(
         "--output_path",
         type=str,
