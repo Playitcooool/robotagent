@@ -498,7 +498,7 @@ def push_cube_step(args: PushCubeStepArgs):
             "message": f"Cube pushed along vector {args.push_vector}.",
         }
     except Exception as e:
-        return _tool_error("push_cube_step", f"PyBullet error: {e}", "pybullet")
+        raise RuntimeError(f"push_cube_step failed: {e}") from e
 
 
 # ======================
@@ -587,7 +587,7 @@ def grab_and_place_step(args: GrabAndPlaceStepArgs):
             "message": f"Object placed at target location {args.target_position}.",
         }
     except Exception as e:
-        return _tool_error("grab_and_place_step", f"PyBullet error: {e}", "pybullet")
+        raise RuntimeError(f"grab_and_place_step failed: {e}") from e
 
 
 # 路径规划工具
@@ -679,7 +679,7 @@ def path_planning(args: PathPlanningArgs):
             "message": "Robot arm moved to target position.",
         }
     except Exception as e:
-        return _tool_error("path_planning", f"PyBullet error: {e}", "pybullet")
+        raise RuntimeError(f"path_planning failed: {e}") from e
 
 
 # 增加摩擦力和弹性
@@ -739,7 +739,7 @@ def adjust_physics(args: FrictionAndElasticityArgs):
                 "message": "Friction and elasticity adjusted for the cube.",
             }
     except Exception as e:
-        return _tool_error("adjust_physics", f"PyBullet error: {e}", "pybullet")
+        raise RuntimeError(f"adjust_physics failed: {e}") from e
 
 
 # 多物体抓取工具
@@ -810,7 +810,7 @@ def multi_object_grab_and_place(args: MultiObjectGrabArgs):
                 "message": f"{len(cubes)} objects moved to the target position." + (f" ({len(errors)} errors)" if errors else ""),
             }
     except Exception as e:
-        return _tool_error("multi_object_grab_and_place", f"PyBullet error: {e}", "pybullet")
+        raise RuntimeError(f"multi_object_grab_and_place failed: {e}") from e
 
 
 # 模拟视觉传感器
@@ -873,7 +873,7 @@ def simulate_vision_sensor(args: VisionSensorArgs):
                 "message": "Captured image from the vision sensor.",
             }
     except Exception as e:
-        return _tool_error("simulate_vision_sensor", f"PyBullet error: {e}", "pybullet")
+        raise RuntimeError(f"simulate_vision_sensor failed: {e}") from e
 
 
 # ======================
@@ -994,7 +994,7 @@ def reset_simulation(args: ResetSimulationArgs):
             "kept_ids": kept_ids,
         }
     except Exception as e:
-        return _tool_error("reset_simulation", f"PyBullet error: {e}", "pybullet")
+        raise RuntimeError(f"reset_simulation failed: {e}") from e
 
 
 # ======================
@@ -1083,12 +1083,7 @@ def get_object_state(args: GetObjectStateArgs):
                 "message": f"Object {object_id} state retrieved.",
             }
     except Exception as e:
-        return {
-            "task": "get_object_state",
-            "status": "error",
-            "object_id": object_id,
-            "message": f"Failed to get object state: {str(e)}",
-        }
+        raise RuntimeError(f"get_object_state failed: {e}") from e
 
 
 # ======================
@@ -1153,12 +1148,7 @@ def set_object_position(args: SetObjectPositionArgs):
                 "message": f"Object {object_id} moved to {args.position}",
             }
     except Exception as e:
-        return {
-            "task": "set_object_position",
-            "status": "error",
-            "object_id": object_id,
-            "message": f"Failed to set object position: {str(e)}",
-        }
+        raise RuntimeError(f"set_object_position failed: {e}") from e
 
 
 # ======================
@@ -1193,7 +1183,7 @@ def step_simulation(args: StepSimulationArgs):
             "message": f"Executed {steps} simulation steps.",
         }
     except Exception as e:
-        return _tool_error("step_simulation", f"PyBullet error: {e}", "pybullet")
+        raise RuntimeError(f"step_simulation failed: {e}") from e
 
 
 # ======================
@@ -1292,7 +1282,7 @@ def create_object(args: CreateObjectArgs):
                 "message": f"Created {actual_type} at {args.position} with ID {object_id}",
             }
     except Exception as e:
-        return _tool_error("create_object", f"Failed to create object: {e}", "creation")
+        raise RuntimeError(f"create_object failed: {e}") from e
 
 
 # ======================
@@ -1334,12 +1324,7 @@ def delete_object(args: DeleteObjectArgs):
                 "message": f"Deleted object {object_id}",
             }
     except Exception as e:
-        return {
-            "task": "delete_object",
-            "status": "error",
-            "object_id": object_id,
-            "message": f"Failed to delete object: {str(e)}",
-        }
+        raise RuntimeError(f"delete_object failed: {e}") from e
 
 
 # ======================
@@ -1372,7 +1357,7 @@ def get_simulation_info():
                 "message": "Simulation info retrieved.",
             }
     except Exception as e:
-        return _tool_error("get_simulation_info", f"PyBullet error: {e}", "pybullet")
+        raise RuntimeError(f"get_simulation_info failed: {e}") from e
 
 
 # ======================
@@ -1411,7 +1396,7 @@ def set_gravity(args: SetGravityArgs):
             "message": f"Gravity set to {args.gravity}",
         }
     except Exception as e:
-        return _tool_error("set_gravity", f"PyBullet error: {e}", "pybullet")
+        raise RuntimeError(f"set_gravity failed: {e}") from e
 
 
 # ======================

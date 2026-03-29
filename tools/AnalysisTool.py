@@ -33,6 +33,11 @@ OUT_DIR = REPO_ROOT / "output" / "analysis"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+class ToolError(Exception):
+    """Raised when a tool encounters a recoverable error that should trigger retry."""
+    pass
+
+
 def _resolve_repo_path(path: str) -> Path:
     raw = Path(path)
     candidate = raw if raw.is_absolute() else (REPO_ROOT / raw)
@@ -65,20 +70,20 @@ def _write_fig_file(fig, filename: Optional[str] = None) -> Path:
 def summarize_csv(path: str, max_rows: int = 5) -> str:
     """Read a CSV file and return a short summary: head and describe()."""
     if pd is None:
-        return "Error: pandas is not installed in the environment."
+        raise ToolError("pandas is not installed in the environment.")
 
     try:
         csv_path = _resolve_repo_path(path)
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+    except ValueError as e:
+        raise ToolError(str(e)) from e
 
     if not csv_path.exists():
-        return json.dumps({"error": f"file not found: {path}"})
+        raise ToolError(f"file not found: {path}")
 
     try:
         df = pd.read_csv(csv_path)
     except Exception as e:
-        return json.dumps({"error": f"failed to read CSV: {e}"})
+        raise ToolError(f"failed to read CSV: {e}") from e
 
     head = df.head(max(1, max_rows)).to_dict(orient="records")
     try:
@@ -103,29 +108,25 @@ def summarize_csv(path: str, max_rows: int = 5) -> str:
 def describe_stats(path: str, column: Optional[str] = None) -> str:
     """Return descriptive statistics for a CSV or a specific column."""
     if pd is None:
-        return "Error: pandas is not installed in the environment."
+        raise ToolError("pandas is not installed in the environment.")
 
     try:
         csv_path = _resolve_repo_path(path)
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+    except ValueError as e:
+        raise ToolError(str(e)) from e
 
     if not csv_path.exists():
-        return json.dumps({"error": f"file not found: {path}"})
+        raise ToolError(f"file not found: {path}")
 
     try:
         df = pd.read_csv(csv_path)
     except Exception as e:
-        return json.dumps({"error": f"failed to read CSV: {e}"})
+        raise ToolError(f"failed to read CSV: {e}") from e
 
     if column:
         if column not in df.columns:
-            return json.dumps(
-                {
-                    "error": f"column not found: {column}",
-                    "available_columns": [str(c) for c in df.columns.tolist()],
-                },
-                ensure_ascii=False,
+            raise ToolError(
+                f"column not found: {column}, available: {[str(c) for c in df.columns.tolist()]}"
             )
 
         series = df[column]
@@ -158,32 +159,32 @@ def plot_histogram(
 ) -> Tuple[str, str]:
     """Plot a histogram for one numeric column from CSV."""
     if pd is None:
-        return "Error: pandas is not installed.", ""
+        raise ToolError("pandas is not installed in the environment.")
     if plt is None:
-        return "Error: matplotlib is not installed.", ""
+        raise ToolError("matplotlib is not installed in the environment.")
 
     try:
         csv_path = _resolve_repo_path(path)
-    except Exception as e:
-        return f"Error: {e}", ""
+    except ValueError as e:
+        raise ToolError(str(e)) from e
 
     if not csv_path.exists():
-        return f"Error: file not found: {path}", ""
+        raise ToolError(f"file not found: {path}")
 
     try:
         df = pd.read_csv(csv_path)
     except Exception as e:
-        return f"Error reading CSV: {e}", ""
+        raise ToolError(f"failed to read CSV: {e}") from e
 
     if column not in df.columns:
-        return f"Error: column not found: {column}", ""
+        raise ToolError(f"column not found: {column}")
 
     fig = None
     try:
         fig, ax = plt.subplots(figsize=(7, 4))
         data = pd.to_numeric(df[column], errors="coerce").dropna()
         if data.empty:
-            return f"Error: no numeric values in column: {column}", ""
+            raise ToolError(f"no numeric values in column: {column}")
 
         ax.hist(data, bins=max(1, bins), color="#4C72B0", edgecolor="white")
         ax.set_xlabel(column)
@@ -203,8 +204,10 @@ def plot_histogram(
             ),
             str(out_path),
         )
+    except ToolError:
+        raise
     except Exception as e:
-        return f"Error plotting histogram: {e}", ""
+        raise ToolError(f"plotting histogram failed: {e}") from e
     finally:
         if fig is not None:
             plt.close(fig)
@@ -218,33 +221,33 @@ def plot_correlation_matrix(
 ) -> Tuple[str, str]:
     """Plot a correlation matrix for numeric columns."""
     if pd is None:
-        return "Error: pandas is not installed.", ""
+        raise ToolError("pandas is not installed in the environment.")
     if plt is None:
-        return "Error: matplotlib is not installed.", ""
+        raise ToolError("matplotlib is not installed in the environment.")
 
     try:
         csv_path = _resolve_repo_path(path)
-    except Exception as e:
-        return f"Error: {e}", ""
+    except ValueError as e:
+        raise ToolError(str(e)) from e
 
     if not csv_path.exists():
-        return f"Error: file not found: {path}", ""
+        raise ToolError(f"file not found: {path}")
 
     try:
         df = pd.read_csv(csv_path)
     except Exception as e:
-        return f"Error reading CSV: {e}", ""
+        raise ToolError(f"failed to read CSV: {e}") from e
 
     try:
         if columns:
             selected = [c.strip() for c in columns.split(",") if c.strip()]
             df = df[selected]
     except Exception as e:
-        return f"Error selecting columns: {e}", ""
+        raise ToolError(f"selecting columns failed: {e}") from e
 
     numeric = df.select_dtypes(include=["number"])
     if numeric.empty or numeric.shape[1] < 2:
-        return "Error: need at least two numeric columns for correlation.", ""
+        raise ToolError("need at least two numeric columns for correlation")
 
     fig = None
     try:
@@ -277,8 +280,10 @@ def plot_correlation_matrix(
             ),
             str(out_path),
         )
+    except ToolError:
+        raise
     except Exception as e:
-        return f"Error plotting correlation matrix: {e}", ""
+        raise ToolError(f"plotting correlation matrix failed: {e}") from e
     finally:
         if fig is not None:
             plt.close(fig)
@@ -294,25 +299,25 @@ def plot_time_series(
 ) -> Tuple[str, str]:
     """Plot a time series for one value column by date column."""
     if pd is None:
-        return "Error: pandas is not installed.", ""
+        raise ToolError("pandas is not installed in the environment.")
     if plt is None:
-        return "Error: matplotlib is not installed.", ""
+        raise ToolError("matplotlib is not installed in the environment.")
 
     try:
         csv_path = _resolve_repo_path(path)
-    except Exception as e:
-        return f"Error: {e}", ""
+    except ValueError as e:
+        raise ToolError(str(e)) from e
 
     if not csv_path.exists():
-        return f"Error: file not found: {path}", ""
+        raise ToolError(f"file not found: {path}")
 
     try:
         df = pd.read_csv(csv_path)
     except Exception as e:
-        return f"Error reading CSV: {e}", ""
+        raise ToolError(f"failed to read CSV: {e}") from e
 
     if date_column not in df.columns or value_column not in df.columns:
-        return f"Error: missing columns. Available: {df.columns.tolist()}", ""
+        raise ToolError(f"missing columns. Available: {df.columns.tolist()}")
 
     fig = None
     try:
@@ -326,7 +331,7 @@ def plot_time_series(
         df[value_column] = pd.to_numeric(df[value_column], errors="coerce")
         df = df.dropna(subset=[date_column, value_column]).sort_values(by=date_column)
         if df.empty:
-            return "Error: no valid rows after datetime/value parsing.", ""
+            raise ToolError("no valid rows after datetime/value parsing")
 
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.plot(
@@ -353,8 +358,10 @@ def plot_time_series(
             ),
             str(out_path),
         )
+    except ToolError:
+        raise
     except Exception as e:
-        return f"Error plotting time series: {e}", ""
+        raise ToolError(f"plotting time series failed: {e}") from e
     finally:
         if fig is not None:
             plt.close(fig)

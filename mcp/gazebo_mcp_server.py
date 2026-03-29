@@ -437,7 +437,7 @@ def spawn_model(args: SpawnModelArgs):
             "message": result.status_message,
         }
     except Exception as e:
-        return _tool_error("spawn_model", f"Service call failed: {e}")
+        raise RuntimeError(f"spawn_model service call failed: {e}") from e
 
 
 @mcp_server.tool()
@@ -635,7 +635,7 @@ def set_model_state(args: SetModelStateArgs):
             "message": result.status_message,
         }
     except Exception as e:
-        return _tool_error("set_model_state", f"Service call failed: {e}")
+        raise RuntimeError(f"set_model_state service call failed: {e}") from e
 
 
 # ======================

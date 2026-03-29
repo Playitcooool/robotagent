@@ -42,6 +42,12 @@ except Exception:
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+
+class ToolError(Exception):
+    """Raised when a tool encounters a recoverable error that should trigger retry."""
+    pass
+
+
 QDRANT_HOST = os.environ.get("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
 QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "markdown_chunks")
@@ -626,22 +632,22 @@ def list_workspace_files(glob_pattern: str = "**/*", max_results: int = 200) -> 
 def read_workspace_file(path: str, max_chars: int = 12000) -> str:
     """Read a text file under the repository workspace safely."""
     if not path:
-        return "Error: path is required."
+        raise ToolError("path is required.")
 
     try:
         candidate = _resolve_repo_path(path)
-    except Exception as e:
-        return f"Error: {e}"
+    except ValueError as e:
+        raise ToolError(str(e)) from e
 
     if not candidate.exists():
-        return "Error: file does not exist."
+        raise ToolError(f"file does not exist: {path}")
     if candidate.is_dir():
-        return "Error: path is a directory."
+        raise ToolError(f"path is a directory, not a file: {path}")
 
     try:
         content = candidate.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
-        return f"Error reading file: {e}"
+        raise ToolError(f"reading file failed: {e}") from e
 
     safe_max = max(1, max_chars)
     snippet = content[:safe_max]
@@ -667,7 +673,7 @@ def search_workspace_text(
 ) -> str:
     """Search for plain text in workspace files and return matched lines."""
     if not pattern:
-        return "Error: pattern is required."
+        raise ToolError("pattern is required.")
 
     safe_limit = max(1, min(max_results, 1000))
     safe_line_chars = max(20, max_line_chars)
@@ -717,12 +723,12 @@ def search_workspace_text(
 def http_get(url: str, max_chars: int = 3000, timeout: float = 8.0) -> str:
     """Perform a safe HTTP GET request and return status, headers, and body snippet."""
     if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
-        return "Error: only http/https URLs are allowed."
+        raise ToolError("only http/https URLs are allowed.")
 
     try:
         resp = requests.get(url, timeout=timeout)
     except Exception as e:
-        return f"Error fetching URL: {e}"
+        raise ToolError(f"fetching URL failed: {e}") from e
 
     body = resp.text or ""
     safe_max = max(1, max_chars)
@@ -749,10 +755,10 @@ def _get_tavily_client():
 
 
 def _web_search_impl(query: str, max_results: int = 5, timeout: float = 8.0) -> str:
-    """Core web search implementation (no decorator)."""
+    """Core web search implementation (no decorator). Raises ToolError on failure."""
     q = " ".join((query or "").split())
     if not q:
-        return json.dumps({"query": "", "results": [], "error": "query is required"}, ensure_ascii=False, indent=2)
+        raise ToolError("query is required")
     limit = max(1, min(max_results, 10))
 
     try:
@@ -765,11 +771,7 @@ def _web_search_impl(query: str, max_results: int = 5, timeout: float = 8.0) -> 
             include_raw_content=False,
         )
     except Exception as e:
-        return json.dumps(
-            {"query": q, "results": [], "error": f"Tavily search failed: {e}"},
-            ensure_ascii=False,
-            indent=2,
-        )
+        raise ToolError(f"Tavily search failed: {e}") from e
 
     results = []
     for item in (results_raw.get("results") or [])[:limit]:
@@ -825,10 +827,10 @@ def academic_search(query: str, max_results: int = 5, timeout: float = 15.0) -> 
 
 
 def _academic_search_impl(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
-    """Core academic search implementation (no decorator)."""
+    """Core academic search implementation (no decorator). Raises ToolError on failure."""
     q = " ".join((query or "").split())
     if not q:
-        return "Error: query is required."
+        raise ToolError("query is required")
 
     limit = max(1, min(max_results, 10))
     all_results = []
@@ -1134,7 +1136,7 @@ def format_json(json_str: str, sort_keys: bool = False) -> str:
     try:
         parsed = json.loads(json_str)
     except Exception as e:
-        return f"Error parsing JSON: {e}"
+        raise ToolError(f"JSON parse error: {e}") from e
 
     return json.dumps(parsed, ensure_ascii=False, indent=2, sort_keys=sort_keys)
 
