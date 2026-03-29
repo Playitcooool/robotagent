@@ -581,7 +581,7 @@ async def score_only(
 
 GRPO_COMPARE_USER_PROMPT_TEMPLATE = """## GRPO 经验提炼
 
-请对比以下两个轨迹，提炼出一条经验教训，并智能地更新经验库。
+请从两个轨迹中分别为每种代理类型提炼经验教训，并智能更新经验库。
 
 **Prompt**: {prompt}
 
@@ -593,20 +593,26 @@ GRPO_COMPARE_USER_PROMPT_TEMPLATE = """## GRPO 经验提炼
 
 ## 执行步骤
 
-**Step 1**: 使用 read_experiences 工具读取现有经验，了解已有哪些经验。
+**Step 1**: 使用 read_experiences 工具读取现有经验。
 
-**Step 2**: 分析两者的关键差异：
-1. 最高分轨迹做对了什么？
-2. 最低分轨迹做错了什么？
-3. 从对比中提炼出一条可执行的经验（summary）、3-5条核心原则（principles）、应该做的事（dos）和应该避免的事（donts）。
-4. 分析轨迹消息中的 "agent" 字段，确定该经验适用于哪些代理类型（main、simulator、data-analyzer）。
+**Step 2**: 识别轨迹中出现的所有代理类型（从消息的 "agent" 字段）。可能的类型：main、simulator、data-analyzer。每个代理类型的消息需要单独分析。
 
-**Step 3**: 判断是否需要写入：
-- 如果提炼的经验与现有经验（尤其是相同 agent_type 的）高度相似（principles 重叠 ≥ 3 条），说明是重复经验，**跳过写入**，返回"经验已存在，无需重复写入"。
-- 如果存在相似但不完全相同的经验（principles 重叠 1-2 条），用 update_experience 更新已有经验，补充新的 principles。
-- 如果是全新经验，使用 write_experience 写入。
+**Step 3**: 对每个代理类型分别提炼经验：
+1. 提取该代理类型在最高分轨迹中的关键行为（做对了什么）
+2. 提取该代理类型在最低分轨迹中的关键行为（做错了什么）
+3. 从对比中为该代理类型提炼：summary、3-5条 principles、dos、donts
+4. 确定该经验适用的 agent_type（必须与消息中的 agent 字段一致）
 
-**重要**：相同 agent_type 下，经验不宜过多（≤ 5 条）。如果已达到 5 条，新经验必须明显优于已有经验才能替换，否则跳过。
+**Step 4**: 为每个代理类型分别判断写入策略：
+- 如果提炼的经验与现有经验（相同 agent_type）高度相似（principles 重叠 ≥ 3 条），**跳过写入**
+- 如果存在相似但不完全相同（principles 重叠 1-2 条），用 update_experience 更新
+- 如果是全新经验，用 write_experience 写入，agent_type 参数必须填写正确的代理类型
+- 相同 agent_type 下经验不宜超过 5 条
+
+**重要**：
+- 必须为每个出现的代理类型分别生成经验
+- 如果某个代理类型在两个轨迹中行为差异不明显（无可借鉴的经验），可以跳过该类型的写入
+- write_experience 的 agent_type 参数必须是列表形式，如 ["simulator"] 或 ["main"]
 """
 
 
