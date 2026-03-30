@@ -4,8 +4,10 @@ import json
 import os
 import re
 import time
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from itertools import chain
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -81,6 +83,13 @@ _tfidf_matrix = None
 
 CORPUS_CACHE_TTL_SECONDS = int(os.environ.get("RAG_CORPUS_CACHE_TTL_SECONDS", "600"))
 MAX_ABSTRACT_CHARS = 900
+
+
+def _truncate_abstract(text: str) -> str:
+    """Truncate abstract to MAX_ABSTRACT_CHARS, appending '...' if truncated."""
+    if not text:
+        return ""
+    return text[:MAX_ABSTRACT_CHARS] + ("..." if len(text) > MAX_ABSTRACT_CHARS else "")
 
 ROBOTICS_TERMS = [
     "robotics",
@@ -893,9 +902,7 @@ def _academic_search_impl(
                 url = work.get("id", "")
 
             # Get abstract
-            abstract = work.get("abstract", "") or ""
-            if abstract:
-                abstract = abstract[:MAX_ABSTRACT_CHARS] + ("..." if len(abstract) > MAX_ABSTRACT_CHARS else "")
+            abstract = _truncate_abstract(work.get("abstract", "") or "")
 
             # Get citation count
             cited_by_count = work.get("cited_by_count", 0)
@@ -951,7 +958,6 @@ def _academic_search_impl(
             "sortBy": "relevance",
         }
 
-        # Collect existing identifiers from OpenAlex results for deduplication
         existing_ids: Set[str] = set()
         existing_titles_lower: Set[str] = set()
         for r in all_results:
@@ -966,7 +972,6 @@ def _academic_search_impl(
             resp.raise_for_status()
 
             # Parse XML response
-            import xml.etree.ElementTree as ET
             root = ET.fromstring(resp.text)
 
             # Define namespace
@@ -1007,7 +1012,7 @@ def _academic_search_impl(
                         "authors": author_names,
                         "year": year,
                         "venue": "arXiv",
-                        "abstract": summary[:MAX_ABSTRACT_CHARS] + ("..." if len(summary) > MAX_ABSTRACT_CHARS else ""),
+                        "abstract": _truncate_abstract(summary),
                         "url": f"https://arxiv.org/abs/{arxiv_id}",
                         "pdf_url": pdf_url,
                         "citations": 0,
@@ -1019,14 +1024,13 @@ def _academic_search_impl(
                         arxiv_ids_collected.append(arxiv_id)
                     existing_titles_lower.add(title_lower)
 
-            # Fetch real citation counts from OpenAlex for arXiv papers
             if arxiv_ids_collected:
                 id_str = "|".join(arxiv_ids_collected)
                 try:
                     cite_resp = requests.get(
                         "https://api.openalex.org/works",
                         params={"filter": f"arxiv:{id_str}", "per_page": len(arxiv_ids_collected)},
-                        timeout=timeout,
+                        timeout=min(timeout, 5.0),  # cap at 5s so slow enrichment doesn't consume entire budget
                     )
                     cite_resp.raise_for_status()
                     cite_data = cite_resp.json()
@@ -1038,8 +1042,7 @@ def _academic_search_impl(
                             citation_map[w_arxiv] = work.get("cited_by_count", 0)
                     for r in arxiv_results:
                         aid = r.get("arxiv_id", "")
-                        if aid in citation_map:
-                            r["citations"] = citation_map[aid]
+                        r["citations"] = citation_map.get(aid, r["citations"])
                 except Exception as exc:
                     import sys
                     print(f"[WARNING] arXiv citation enrichment failed: {exc}", file=sys.stderr)
@@ -1187,8 +1190,9 @@ def search(
                     "arxiv_id": item.get("arxiv_id", ""),
                     "source": item.get("source", "academic"),
                 })
-        except Exception:
-            pass
+        except Exception as exc:
+            import sys
+            print(f"[WARNING] Academic search failed: {exc}", file=sys.stderr)
 
         try:
             web_data = web_future.result(timeout=timeout * 2)
@@ -1207,13 +1211,14 @@ def search(
                         "arxiv_id": "",
                         "source": "tavily",
                     })
-        except Exception:
-            pass
+        except Exception as exc:
+            import sys
+            print(f"[WARNING] Web search failed: {exc}", file=sys.stderr)
 
     # Merge: academic results first, then web results (de-duplicate by title)
     seen_titles: Set[str] = set()
     merged: List[Dict[str, Any]] = []
-    for r in academic_results + web_results:
+    for r in chain(academic_results, web_results):
         title_key = r.get("title", "").strip().lower()
         if title_key and title_key not in seen_titles:
             seen_titles.add(title_key)
