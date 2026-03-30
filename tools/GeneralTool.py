@@ -1078,13 +1078,30 @@ def _academic_search_impl(
 
 # Academic keywords - queries containing these are routed to academic_search
 _ACADEMIC_KEYWORDS = {
+    # Explicit academic markers
     "paper", "arxiv", "publication", "conference", "journal", "doi",
     "cite", "citation", "research", "thesis", "dissertation",
-    "author", "author:", "by ", "icra", "iros", "rss", "coRL",
+    "author", "author:", "icra", "iros", "rss", "corl", "coRL",
     "ieee", "acm", "springer", "elsevier", "arxiv.org",
     "proposed method", "we propose", "this paper", "our work",
     "methodology", "experiments show", "we show",
-    "year:", "vol.", "volume", "proceedings",
+    "year:", "vol.", "volume", "proceedings", "preprint",
+    # Core robotics / AI / ML terminology
+    "robot", "robots", "robotics", "manipulation", "grasping",
+    "reinforcement learning", "imitation learning", "behavior cloning",
+    "diffusion model", "diffusion policy", "foundation model",
+    "vision language", "vlm", "rl", "il", "lfd",
+    "trajectory", "motion planning", "path planning",
+    "control theory", "optimal control", "lqr", "mpc",
+    "locomotion", "navigation", "autonomous", "slAM", "sensor",
+    "perception", "object detection", "semantic segmentation",
+    "neural network", "deep learning", "transformer", "attention",
+    "reward function", "reward shaping", "domain randomization",
+    "sim-to-real", "sim2real", "zero-shot", "few-shot",
+    "language model", "llm", "multimodal", "vision model",
+    "contact model", "physics-based", "dynamics model",
+    "task planning", "task decomposition", "hierarchical planning",
+    "humanoid", "bimanual", "mobile manipulation",
 }
 
 _WEB_KEYWORDS = {
