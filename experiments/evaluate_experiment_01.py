@@ -602,16 +602,27 @@ def main():
     # 加载完整配置（包含模型配置）
     full_config = load_config_full()
 
-    # 初始化 Agent LLM (从根级别读取)
-    agent_base_url = full_config.get("model_url", "https://api.deepseek.com")
-    agent_model = full_config.get("llm", "deepseek-chat")
-    agent_api_key = full_config.get("api_key", "")
+    # 初始化 Agent LLM（优先环境变量，其次配置文件）
+    agent_base_url = os.environ.get("AGENT_MODEL_URL") or full_config.get(
+        "model_url", "https://api.deepseek.com"
+    )
+    agent_model = os.environ.get("AGENT_MODEL") or full_config.get(
+        "llm", "deepseek-chat"
+    )
+    agent_api_key = os.environ.get("AGENT_API_KEY") or full_config.get("api_key", "")
 
-    # 初始化 LLM Judge
+    # 初始化 LLM Judge（优先环境变量，其次配置文件）
+    judge_api_base = os.environ.get("JUDGE_API_BASE") or judge_config.get(
+        "api_base", "https://api.deepseek.com"
+    )
+    judge_api_key = os.environ.get("JUDGE_API_KEY") or judge_config.get("api_key", "")
+    judge_model = os.environ.get("JUDGE_MODEL") or judge_config.get(
+        "model", "deepseek-chat"
+    )
     llm = ChatOpenAI(
-        model=judge_config.get("model", "deepseek-chat"),
-        base_url=judge_config.get("api_base", "https://api.deepseek.com"),
-        api_key=judge_config.get("api_key", ""),
+        model=judge_model,
+        base_url=judge_api_base,
+        api_key=judge_api_key or "dummy",
         timeout=judge_config.get("timeout", 300),
         max_retries=judge_config.get("max_retries", 3),
     )
@@ -619,7 +630,7 @@ def main():
     # 加载查询
     queries = load_queries(Path(args.queries))
     print(
-        f"Using Judge: {judge_config.get('model', 'deepseek-chat')} @ {judge_config.get('api_base', 'https://api.deepseek.com')}"
+        f"Using Judge: {judge_model} @ {judge_api_base}"
     )
 
     # 创建输出目录
