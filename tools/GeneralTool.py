@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -1147,8 +1148,8 @@ def search(
 
     limit = max(1, min(max_results, 20))
 
-    if _should_use_academic(q):
-        engine = "academic (openalex + arxiv)"
+    # Always fetch both academic and web results concurrently
+    def fetch_academic():
         raw = _academic_search_impl(
             query=q,
             max_results=limit,
@@ -1156,13 +1157,24 @@ def search(
             year_from=year_from,
             year_to=year_to,
         )
+        return json.loads(raw)
+
+    def fetch_web():
+        return json.loads(_web_search_impl(query=q, max_results=limit, timeout=timeout))
+
+    academic_results: List[Dict[str, Any]] = []
+    web_results: List[Dict[str, Any]] = []
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        academic_future = executor.submit(fetch_academic)
+        web_future = executor.submit(fetch_web)
+
         try:
-            data = json.loads(raw)
-            results = []
-            for item in data.get("results", []):
+            academic_data = academic_future.result(timeout=timeout * 2)
+            for item in academic_data.get("results", []):
                 if item.get("type") == "error":
                     continue
-                results.append({
+                academic_results.append({
                     "type": item.get("type", "paper"),
                     "title": item.get("title", "Unknown"),
                     "authors": item.get("authors", ""),
@@ -1176,38 +1188,44 @@ def search(
                     "source": item.get("source", "academic"),
                 })
         except Exception:
-            results = []
-    else:
-        engine = "web (tavily)"
-        raw = _web_search_impl(query=q, max_results=limit, timeout=timeout)
+            pass
+
         try:
-            data = json.loads(raw)
-            if data.get("error"):
-                return json.dumps(
-                    {"query": q, "results": [], "error": data["error"], "engine": engine},
-                    ensure_ascii=False, indent=2
-                )
-            results = []
-            for item in data.get("results", []):
-                results.append({
-                    "type": "web",
-                    "title": item.get("title", "Unknown"),
-                    "authors": "",
-                    "year": "",
-                    "venue": item.get("source", ""),
-                    "abstract": item.get("snippet", ""),
-                    "url": item.get("url", ""),
-                    "pdf_url": "",
-                    "citations": 0,
-                    "arxiv_id": "",
-                    "source": "tavily",
-                })
+            web_data = web_future.result(timeout=timeout * 2)
+            if not web_data.get("error"):
+                for item in web_data.get("results", []):
+                    web_results.append({
+                        "type": "web",
+                        "title": item.get("title", "Unknown"),
+                        "authors": "",
+                        "year": "",
+                        "venue": item.get("source", ""),
+                        "abstract": item.get("snippet", ""),
+                        "url": item.get("url", ""),
+                        "pdf_url": "",
+                        "citations": 0,
+                        "arxiv_id": "",
+                        "source": "tavily",
+                    })
         except Exception:
-            results = []
+            pass
+
+    # Merge: academic results first, then web results (de-duplicate by title)
+    seen_titles: Set[str] = set()
+    merged: List[Dict[str, Any]] = []
+    for r in academic_results + web_results:
+        title_key = r.get("title", "").strip().lower()
+        if title_key and title_key not in seen_titles:
+            seen_titles.add(title_key)
+            merged.append(r)
+        if len(merged) >= limit:
+            break
+
+    engine = "academic + web (concurrent)"
 
     # Build citations
-    citations = []
-    for i, r in enumerate(results[:limit], 1):
+    citations: List[str] = []
+    for i, r in enumerate(merged[:limit], 1):
         title = r.get("title", "Unknown")[:80]
         year = r.get("year", "N/A")
         src = r.get("source", "unknown")
@@ -1226,12 +1244,12 @@ def search(
     payload = {
         "query": q,
         "engine": engine,
-        "returned": len(results),
-        "results": results[:limit],
+        "returned": len(merged),
+        "results": merged[:limit],
         "citations": "\n".join(citations) if citations else "No results found",
     }
-    if not results:
-        payload["warning"] = "no results found"
+    if not merged:
+        payload["warning"] = "no results found from either source"
 
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
