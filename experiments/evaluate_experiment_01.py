@@ -608,12 +608,9 @@ def main():
     parser.add_argument("--delay", type=float, default=0, help="每次Judge打分之间的延迟（秒），避免API限流")
     args = parser.parse_args()
 
-    # 加载配置
-    config = load_config()
-    judge_config = config.get("judge", {})
-
-    # 加载完整配置（包含模型配置）
+    # 加载完整配置（包含 judge 配置和模型配置）
     full_config = load_config_full()
+    judge_config = full_config.get("judge", {})
 
     # 初始化 Agent LLM（优先环境变量，其次配置文件）
     agent_base_url = os.environ.get("AGENT_MODEL_URL") or full_config.get(
