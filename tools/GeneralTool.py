@@ -6,7 +6,7 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
 from langchain_core.tools import tool
@@ -79,6 +79,7 @@ _tfidf_vectorizer = None
 _tfidf_matrix = None
 
 CORPUS_CACHE_TTL_SECONDS = int(os.environ.get("RAG_CORPUS_CACHE_TTL_SECONDS", "600"))
+MAX_ABSTRACT_CHARS = 900
 
 ROBOTICS_TERMS = [
     "robotics",
@@ -816,23 +817,41 @@ def web_search(query: str, max_results: int = 5, timeout: float = 8.0) -> str:
 
 
 @tool(response_format="content")
-def academic_search(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
+def academic_search(
+    query: str,
+    max_results: int = 5,
+    timeout: float = 15.0,
+    year_from: Optional[int] = None,
+    year_to: Optional[int] = None,
+) -> str:
     """
     Search academic papers from OpenAlex and arXiv.
 
     IMPORTANT: Every factual claim in your answer must cite a source from results
     using [number] notation, e.g. [1], [2]. Always include a reference list at the end.
     """
-    return _academic_search_impl(query=query, max_results=max_results, timeout=timeout)
+    return _academic_search_impl(
+        query=query,
+        max_results=max_results,
+        timeout=timeout,
+        year_from=year_from,
+        year_to=year_to,
+    )
 
 
-def _academic_search_impl(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
+def _academic_search_impl(
+    query: str,
+    max_results: int = 5,
+    timeout: float = 15.0,
+    year_from: Optional[int] = None,
+    year_to: Optional[int] = None,
+) -> str:
     """Core academic search implementation (no decorator). Raises ToolError on failure."""
     q = " ".join((query or "").split())
     if not q:
         raise ToolError("query is required")
 
-    limit = max(1, min(max_results, 10))
+    limit = max(1, min(max_results, 20))
     all_results = []
 
     # 1. Search OpenAlex API (published papers)
@@ -841,8 +860,13 @@ def _academic_search_impl(query: str, max_results: int = 5, timeout: float = 15.
         "search": q,
         "per_page": limit,
         "sort": "relevance_score:desc",
-        "filter": "type:paper",
     }
+    filters = ["type:paper"]
+    if year_from is not None:
+        filters.append(f"from_publication_date:{year_from}-01-01")
+    if year_to is not None:
+        filters.append(f"to_publication_date:{year_to}-12-31")
+    openalex_params["filter"] = ",".join(filters)
 
     try:
         resp = requests.get(openalex_endpoint, params=openalex_params, timeout=timeout)
@@ -870,7 +894,7 @@ def _academic_search_impl(query: str, max_results: int = 5, timeout: float = 15.
             # Get abstract
             abstract = work.get("abstract", "") or ""
             if abstract:
-                abstract = abstract[:500] + ("..." if len(abstract) > 500 else "")
+                abstract = abstract[:MAX_ABSTRACT_CHARS] + ("..." if len(abstract) > MAX_ABSTRACT_CHARS else "")
 
             # Get citation count
             cited_by_count = work.get("cited_by_count", 0)
@@ -900,6 +924,7 @@ def _academic_search_impl(query: str, max_results: int = 5, timeout: float = 15.
                 "pdf_url": pdf_url,
                 "citations": cited_by_count,
                 "arxiv_id": arxiv_id,
+                "doi": doi,
                 "source": "openalex",
             })
     except Exception as e:
@@ -913,12 +938,29 @@ def _academic_search_impl(query: str, max_results: int = 5, timeout: float = 15.
     if len(all_results) < limit:
         arxiv_limit = limit - len(all_results)
         arxiv_endpoint = "http://export.arxiv.org/api/query"
+        arxiv_query_parts = [f"ti:{q}+OR+abs:{q}"]
+        if year_from is not None:
+            arxiv_query_parts.append(f"submittedDateFrom:[{year_from}0101]")
+        if year_to is not None:
+            arxiv_query_parts.append(f"submittedDateTo:[{year_to}1231]")
         arxiv_params = {
-            "search_query": f"all:{q}",
+            "search_query": "+AND+".join(arxiv_query_parts),
             "start": 0,
             "max_results": arxiv_limit,
             "sortBy": "relevance",
         }
+
+        # Collect existing identifiers from OpenAlex results for deduplication
+        existing_ids: Set[str] = set()
+        existing_titles_lower: Set[str] = set()
+        for r in all_results:
+            if r.get("type") == "error":
+                continue
+            existing_titles_lower.add(r.get("title", "").lower())
+            if r.get("arxiv_id"):
+                existing_ids.add(f"arxiv:{r['arxiv_id']}")
+            if r.get("doi"):
+                existing_ids.add(f"doi:{r['doi']}")
 
         try:
             resp = requests.get(arxiv_endpoint, params=arxiv_params, timeout=timeout)
@@ -930,6 +972,9 @@ def _academic_search_impl(query: str, max_results: int = 5, timeout: float = 15.
 
             # Define namespace
             ns = {'atom': 'http://www.w3.org/2005/Atom'}
+
+            arxiv_results: List[Dict[str, Any]] = []
+            arxiv_ids_collected: List[str] = []
 
             for entry in root.findall('atom:entry', ns)[:arxiv_limit]:
                 title = entry.find('atom:title', ns).text or "Unknown"
@@ -950,23 +995,56 @@ def _academic_search_impl(query: str, max_results: int = 5, timeout: float = 15.
                 published = entry.find('atom:published', ns).text or ""
                 year = published[:4] if published else "N/A"
 
-                # Check if already added (avoid duplicates)
-                is_dup = any(r.get('title', '').lower() == title.lower() for r in all_results)
+                # Check if already added (avoid duplicates by title, arXiv ID, or DOI)
+                title_lower = title.strip().lower()
+                is_dup = title_lower in existing_titles_lower
+                if arxiv_id and f"arxiv:{arxiv_id}" in existing_ids:
+                    is_dup = True
 
                 if not is_dup:
-                    all_results.append({
+                    result = {
                         "type": "paper",
                         "title": title.strip(),
                         "authors": author_names,
                         "year": year,
                         "venue": "arXiv",
-                        "abstract": summary[:500] + ("..." if len(summary) > 500 else ""),
+                        "abstract": summary[:MAX_ABSTRACT_CHARS] + ("..." if len(summary) > MAX_ABSTRACT_CHARS else ""),
                         "url": f"https://arxiv.org/abs/{arxiv_id}",
                         "pdf_url": pdf_url,
                         "citations": 0,
                         "arxiv_id": arxiv_id,
                         "source": "arxiv",
-                    })
+                    }
+                    arxiv_results.append(result)
+                    if arxiv_id:
+                        arxiv_ids_collected.append(arxiv_id)
+                    existing_titles_lower.add(title_lower)
+
+            # Fetch real citation counts from OpenAlex for arXiv papers
+            if arxiv_ids_collected:
+                id_str = "|".join(arxiv_ids_collected)
+                try:
+                    cite_resp = requests.get(
+                        "https://api.openalex.org/works",
+                        params={"filter": f"arxiv:{id_str}", "per_page": len(arxiv_ids_collected)},
+                        timeout=timeout,
+                    )
+                    cite_resp.raise_for_status()
+                    cite_data = cite_resp.json()
+                    citation_map: Dict[str, int] = {}
+                    for work in cite_data.get("results", []):
+                        w_ids = work.get("ids", {})
+                        w_arxiv = w_ids.get("arxiv", "")
+                        if w_arxiv:
+                            citation_map[w_arxiv] = work.get("cited_by_count", 0)
+                    for r in arxiv_results:
+                        aid = r.get("arxiv_id", "")
+                        if aid in citation_map:
+                            r["citations"] = citation_map[aid]
+                except Exception:
+                    pass  # Silently skip citation enrichment on failure
+
+            all_results.extend(arxiv_results)
         except Exception as e:
             all_results.append({
                 "type": "error",
@@ -1030,7 +1108,13 @@ def _should_use_academic(query: str) -> bool:
 
 
 @tool(response_format="content")
-def search(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
+def search(
+    query: str,
+    max_results: int = 5,
+    timeout: float = 15.0,
+    year_from: Optional[int] = None,
+    year_to: Optional[int] = None,
+) -> str:
     """
     Unified search tool that automatically routes queries to the most appropriate engine:
     - Academic search (OpenAlex + arXiv) for research papers, publications, methodologies
@@ -1045,11 +1129,17 @@ def search(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
     if not q:
         return json.dumps({"query": "", "results": [], "error": "query is required"}, ensure_ascii=False, indent=2)
 
-    limit = max(1, min(max_results, 10))
+    limit = max(1, min(max_results, 20))
 
     if _should_use_academic(q):
         engine = "academic (openalex + arxiv)"
-        raw = _academic_search_impl(query=q, max_results=limit, timeout=timeout)
+        raw = _academic_search_impl(
+            query=q,
+            max_results=limit,
+            timeout=timeout,
+            year_from=year_from,
+            year_to=year_to,
+        )
         try:
             data = json.loads(raw)
             results = []
