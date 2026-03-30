@@ -93,7 +93,7 @@ def _truncate_abstract(text: str) -> str:
 
 
 def _http_get_with_retry(url: str, params: dict, timeout: float, max_retries: int = 3) -> requests.Response:
-    """GET request with simple exponential-backoff retry."""
+    """GET request with linear-backoff retry (1s, 2s, 3s). Retries on connection error, timeout, and HTTP errors."""
     for attempt in range(max_retries):
         try:
             resp = requests.get(url, params=params, timeout=timeout)
@@ -102,8 +102,7 @@ def _http_get_with_retry(url: str, params: dict, timeout: float, max_retries: in
         except requests.RequestException:
             if attempt == max_retries - 1:
                 raise
-            time.sleep(1 * (attempt + 1))  # 1s, 2s, 3s...
-    raise RuntimeError("unreachable")
+            time.sleep(attempt + 1)
 
 ROBOTICS_TERMS = [
     "robotics",
@@ -1042,7 +1041,7 @@ def _academic_search_impl(
                     cite_resp = _http_get_with_retry(
                         "https://api.openalex.org/works",
                         {"filter": f"arxiv:{id_str}", "per_page": len(arxiv_ids_collected)},
-                        min(timeout, 5.0),
+                        min(timeout, 5.0),  # cap so slow enrichment doesn't consume entire budget
                     )
                     cite_data = cite_resp.json()
                     citation_map: Dict[str, int] = {}
