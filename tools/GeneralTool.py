@@ -1215,10 +1215,10 @@ def search(
             import sys
             print(f"[WARNING] Web search failed: {exc}", file=sys.stderr)
 
-    # Merge: academic results first, then web results (de-duplicate by title)
+    # Merge: web results first, then academic results (de-duplicate by title)
     seen_titles: Set[str] = set()
     merged: List[Dict[str, Any]] = []
-    for r in chain(academic_results, web_results):
+    for r in chain(web_results, academic_results):
         title_key = r.get("title", "").strip().lower()
         if title_key and title_key not in seen_titles:
             seen_titles.add(title_key)
@@ -1226,7 +1226,7 @@ def search(
         if len(merged) >= limit:
             break
 
-    engine = "academic + web (concurrent)"
+    engine = "web + academic (concurrent)"
 
     # Build citations
     citations: List[str] = []
