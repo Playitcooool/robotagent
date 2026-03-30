@@ -959,8 +959,6 @@ def _academic_search_impl(
             existing_titles_lower.add(r.get("title", "").lower())
             if r.get("arxiv_id"):
                 existing_ids.add(f"arxiv:{r['arxiv_id']}")
-            if r.get("doi"):
-                existing_ids.add(f"doi:{r['doi']}")
 
         try:
             resp = requests.get(arxiv_endpoint, params=arxiv_params, timeout=timeout)
@@ -1041,8 +1039,9 @@ def _academic_search_impl(
                         aid = r.get("arxiv_id", "")
                         if aid in citation_map:
                             r["citations"] = citation_map[aid]
-                except Exception:
-                    pass  # Silently skip citation enrichment on failure
+                except Exception as exc:
+                    import sys
+                    print(f"[WARNING] arXiv citation enrichment failed: {exc}", file=sys.stderr)
 
             all_results.extend(arxiv_results)
         except Exception as e:
