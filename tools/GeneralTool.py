@@ -1039,12 +1039,11 @@ def _academic_search_impl(
             if arxiv_ids_collected:
                 id_str = "|".join(arxiv_ids_collected)
                 try:
-                    cite_resp = requests.get(
+                    cite_resp = _http_get_with_retry(
                         "https://api.openalex.org/works",
-                        params={"filter": f"arxiv:{id_str}", "per_page": len(arxiv_ids_collected)},
-                        timeout=min(timeout, 5.0),  # cap at 5s so slow enrichment doesn't consume entire budget
+                        {"filter": f"arxiv:{id_str}", "per_page": len(arxiv_ids_collected)},
+                        min(timeout, 5.0),
                     )
-                    cite_resp.raise_for_status()
                     cite_data = cite_resp.json()
                     citation_map: Dict[str, int] = {}
                     for work in cite_data.get("results", []):
