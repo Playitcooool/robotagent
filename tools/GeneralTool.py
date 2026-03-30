@@ -91,6 +91,20 @@ def _truncate_abstract(text: str) -> str:
         return ""
     return text[:MAX_ABSTRACT_CHARS] + ("..." if len(text) > MAX_ABSTRACT_CHARS else "")
 
+
+def _http_get_with_retry(url: str, params: dict, timeout: float, max_retries: int = 3) -> requests.Response:
+    """GET request with simple exponential-backoff retry."""
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, params=params, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except requests.RequestException:
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(1 * (attempt + 1))  # 1s, 2s, 3s...
+    raise RuntimeError("unreachable")
+
 ROBOTICS_TERMS = [
     "robotics",
     "manipulation",
@@ -879,8 +893,7 @@ def _academic_search_impl(
     openalex_params["filter"] = ",".join(filters)
 
     try:
-        resp = requests.get(openalex_endpoint, params=openalex_params, timeout=timeout)
-        resp.raise_for_status()
+        resp = _http_get_with_retry(openalex_endpoint, openalex_params, timeout)
         openalex_data = resp.json()
 
         for work in openalex_data.get("results", []):
@@ -968,8 +981,7 @@ def _academic_search_impl(
                 existing_ids.add(f"arxiv:{r['arxiv_id']}")
 
         try:
-            resp = requests.get(arxiv_endpoint, params=arxiv_params, timeout=timeout)
-            resp.raise_for_status()
+            resp = _http_get_with_retry(arxiv_endpoint, arxiv_params, timeout)
 
             # Parse XML response
             root = ET.fromstring(resp.text)
