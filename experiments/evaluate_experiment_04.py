@@ -187,7 +187,7 @@ def build_judge_prompt(query: dict, response: str, mode: str) -> str:
 **模式**: {mode}
 
 **响应内容**:
-{response[:1500] if response else '（无响应）'}
+{response if response else '（无响应）'}
 
 **评分标准说明**：
 
@@ -520,7 +520,7 @@ async def main():
         "--experiences-only", action="store_true", help="只运行有经验版本"
     )
     parser.add_argument(
-        "--timeout", type=int, default=1200, help="单个query超时时间（秒），默认1200"
+        "--timeout", type=int, default=600, help="单个query超时时间（秒），默认600"
     )
     parser.add_argument("--debug", action="store_true", help="打印详细调试信息")
     args = parser.parse_args()
