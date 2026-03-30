@@ -6,9 +6,22 @@
 创建带有 search 工具的 agent，使用外部LLM Judge (DeepSeek) 进行评估。
 
 使用方式:
+    # Agentic RAG 模式（默认，带搜索）
     python evaluate_experiment_01.py \
         --queries data/rag_queries.jsonl \
         --out-dir results/exp01_academic_agent
+
+    # Baseline 模式（无搜索）
+    python evaluate_experiment_01.py \
+        --queries data/rag_queries.jsonl \
+        --out-dir results/exp01_baseline \
+        --baseline
+
+    # 只对分数为0的记录重新打分
+    python evaluate_experiment_01.py \
+        --queries data/rag_queries.jsonl \
+        --out-dir results/exp01_academic_agent \
+        --rescore --delay 3
 """
 
 import os
