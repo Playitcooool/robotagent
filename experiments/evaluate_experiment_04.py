@@ -173,7 +173,7 @@ def call_judge(llm: ChatOpenAI, prompt: str, max_retries: int = 3) -> dict:
         "correctness": 0.0,
         "clarity": 0.0,
         "robustness": 0.0,
-        "concisesness": 0.0,
+        "conciseness": 0.0,
         "brief_reason": last_error or "judge failed",
     }
 
@@ -618,7 +618,7 @@ async def main():
                     "correctness": 0.0,
                     "clarity": 0.0,
                     "robustness": 0.0,
-                    "concisesness": 0.0,
+                    "conciseness": 0.0,
                     "brief_reason": f"运行错误: {error}",
                 }
             else:
