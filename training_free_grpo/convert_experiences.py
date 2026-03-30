@@ -10,7 +10,10 @@
 
 import argparse
 import json
+import asyncio
 from pathlib import Path
+
+from langchain_openai import ChatOpenAI
 
 
 def normalize_text(text: str) -> str:
@@ -86,6 +89,61 @@ def build_items(experiences: list[dict], max_items: int = 50) -> list[str]:
     return items[:max_items]
 
 
+async def summarize_items_with_llm(items: list[str], agent_type: str, max_items: int = 15) -> list[str]:
+    """
+    调用 LLM 将多条行为准则提炼为更少、更精炼的条目。
+    """
+    if len(items) <= max_items:
+        return items
+
+    import yaml
+    cfg_path = Path(__file__).parent.parent / "config" / "config.yml"
+    with open(cfg_path) as f:
+        cfg = yaml.safe_load(f)
+    judge_cfg = cfg.get("judge") or {}
+
+    chat = ChatOpenAI(
+        base_url=judge_cfg.get("api_base", "https://api.deepseek.com"),
+        model=judge_cfg.get("model", "deepseek-chat"),
+        api_key=judge_cfg.get("api_key", ""),
+        temperature=0.0,
+    )
+
+    items_text = "\n".join(f"- {item}" for item in items)
+    prompt = f"""你是一个机器人任务规划专家。以下是来自 {agent_type} 智能体历史任务的{len(items)}条行为准则，请提炼为最多{max_items}条最核心、最有指导价值的原则。
+
+要求：
+1. 去除重复和高度相似的条目
+2. 保留针对性强、可操作的原则
+3. 每条不超过30字
+4. 返回 JSON 数组格式，如 ["原则1", "原则2", ...]
+
+原始准则：
+{items_text}
+
+精简后的准则："""
+
+    response = await chat.ainvoke(prompt)
+    text = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+
+    # Try to parse JSON
+    try:
+        # Try extracting JSON from markdown code blocks
+        import re
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if match:
+            parsed = json.loads(match.group(0))
+        else:
+            parsed = json.loads(text)
+        if isinstance(parsed, list) and all(isinstance(x, str) for x in parsed):
+            return parsed[:max_items]
+    except Exception:
+        pass
+
+    # Fallback: return original items truncated
+    return items[:max_items]
+
+
 def build_high_score_points(experiences: list[dict], threshold: float = 7.5) -> str:
     """从高分经验的 summary 提炼核心要点。"""
     high = [e for e in experiences if e.get("score", 0) >= threshold]
@@ -136,6 +194,8 @@ def convert(
     min_score: float = 6.0,
     max_items: int = 50,
     high_score_threshold: float = 7.5,
+    use_llm: bool = True,
+    llm_max_items: int = 15,
 ) -> None:
     with open(input_path, encoding="utf-8") as f:
         data = json.load(f)
@@ -164,6 +224,24 @@ def convert(
         }
         print(f"[convert] {key}: {len(exps)} experiences -> {len(items)} items")
 
+    # LLM summarization (run concurrently for all agent types)
+    if use_llm and any(len(data["items"]) > llm_max_items for data in result.values()):
+        async def summarize_all():
+            tasks = {}
+            for key, data in result.items():
+                atype = data["agent_type"][0]
+                items = data["items"]
+                if len(items) > llm_max_items:
+                    tasks[key] = summarize_items_with_llm(items, atype, max_items=llm_max_items)
+            if tasks:
+                print(f"[convert] LLM summarizing {len(tasks)} agent types...")
+                summarized = await asyncio.gather(*tasks.values())
+                for i, key in enumerate(tasks.keys()):
+                    result[key]["items"] = summarized[i]
+                    print(f"[convert] {key}: {len(summarized[i])} refined items")
+
+        asyncio.run(summarize_all())
+
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
@@ -177,6 +255,9 @@ if __name__ == "__main__":
     parser.add_argument("--min-score", type=float, default=6.0)
     parser.add_argument("--max-items", type=int, default=50)
     parser.add_argument("--high-score-threshold", type=float, default=7.5)
+    parser.add_argument("--use-llm", action="store_true", default=True, help="Use LLM to summarize items (default: True)")
+    parser.add_argument("--no-llm", dest="use_llm", action="store_false", help="Skip LLM summarization")
+    parser.add_argument("--llm-max-items", type=int, default=15, help="Max items after LLM summarization (default: 15)")
     args = parser.parse_args()
 
     convert(
@@ -185,4 +266,6 @@ if __name__ == "__main__":
         min_score=args.min_score,
         max_items=args.max_items,
         high_score_threshold=args.high_score_threshold,
+        use_llm=args.use_llm,
+        llm_max_items=args.llm_max_items,
     )

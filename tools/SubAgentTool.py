@@ -255,16 +255,16 @@ def _load_agent_experiences() -> list:
     # (mimics the external_memory.json structure)
     experiences = []
     for agent_key, exp_data in data.items():
-        header = exp_data.get("header", "")
         items = exp_data.get("items", [])
         高分要点 = exp_data.get("高分要点", "")
 
         # Build a "fake" experience entry for each agent
-        # _build_exp_context will format: "总结: {summary}" + "原则: {principles}"
+        # build_experience_suffix outputs:
+        #   硬编码header + summary (留空避免重复) + principles (items) + dos (高分要点)
         exp = {
             "prompt_id": agent_key,
             "score": 10.0,
-            "summary": header,
+            "summary": "",  # 避免重复输出 header，build_experience_suffix 已有硬编码 header
             "principles": items,
             "dos": [高分要点],
             "donts": [],
