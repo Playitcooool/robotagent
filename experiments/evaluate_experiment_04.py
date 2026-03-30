@@ -614,6 +614,11 @@ async def main():
                 print(f"  [ERROR] {error}")
                 score_data = {
                     "overall_score": 0.0,
+                    "task_completion": 0.0,
+                    "correctness": 0.0,
+                    "clarity": 0.0,
+                    "robustness": 0.0,
+                    "concisesness": 0.0,
                     "brief_reason": f"运行错误: {error}",
                 }
             else:
@@ -629,7 +634,7 @@ async def main():
                 "difficulty": query.get("difficulty", "unknown"),
                 "prompt": query["prompt"],
                 "mode": mode,
-                "response": response[:500] if response else "",
+                "response": response if response else "",
                 "error": error,
                 "score": score_data,
             }
@@ -676,9 +681,9 @@ async def main():
         "total_queries": len(queries),
         "total_results": len(results),
         "difficulty_counts": {
-            "easy": sum(1 for q in queries if q.get("difficulty") == "easy"),
-            "medium": sum(1 for q in queries if q.get("difficulty") == "medium"),
-            "hard": sum(1 for q in queries if q.get("difficulty") == "hard"),
+            "easy": sum(1 for r in results if r.get("difficulty") == "easy"),
+            "medium": sum(1 for r in results if r.get("difficulty") == "medium"),
+            "hard": sum(1 for r in results if r.get("difficulty") == "hard"),
         },
         "improvements": {
             "mean": round(mean(improvements), 3) if improvements else 0,
