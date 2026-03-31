@@ -78,7 +78,11 @@ def register_sim_routes(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="frame not found",
             )
-        return FileResponse(sim_frame_file, media_type="image/png")
+        return FileResponse(
+            sim_frame_file,
+            media_type="image/png",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
     @app.get("/api/sim/stream")
     async def stream_sim_frames(request: Request, since: float = 0.0):

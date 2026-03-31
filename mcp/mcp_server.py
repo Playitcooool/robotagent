@@ -196,22 +196,22 @@ def _publish_realtime_frame(
     rgb = _capture_rgb_frame()
     png_bytes = _encode_png_rgb(rgb)
 
-    tmp_frame = LATEST_FRAME_FILE.with_suffix(".png.tmp")
-    with open(tmp_frame, "wb") as f:
-        f.write(png_bytes)
-    os.replace(tmp_frame, LATEST_FRAME_FILE)
-
+    ts = time.time()
     payload = {
         "run_id": run_id,
         "task": task,
         "step": int(step_idx),
         "total_steps": int(total_steps),
         "done": bool(done),
-        "timestamp": time.time(),
+        "timestamp": ts,
     }
     if extra:
         payload.update(extra)
 
+    tmp_frame = LATEST_FRAME_FILE.with_suffix(".png.tmp")
+    with open(tmp_frame, "wb") as f:
+        f.write(png_bytes)
+    os.replace(tmp_frame, LATEST_FRAME_FILE)
     _write_json_atomic(LATEST_META_FILE, payload)
 
 
