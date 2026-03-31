@@ -92,8 +92,8 @@ def _truncate_abstract(text: str) -> str:
     return text[:MAX_ABSTRACT_CHARS] + ("..." if len(text) > MAX_ABSTRACT_CHARS else "")
 
 
-def _http_get_with_retry(url: str, params: dict, timeout: float, max_retries: int = 3) -> requests.Response:
-    """GET request with linear-backoff retry (1s, 2s, 3s). Retries on connection error, timeout, and HTTP errors."""
+def _http_get_with_retry(url: str, params: dict, timeout: float, max_retries: int = 5) -> requests.Response:
+    """GET request with exponential-backoff retry (1s, 2s, 4s, 8s, 16s). Retries on connection error, timeout, and HTTP errors."""
     for attempt in range(max_retries):
         try:
             resp = requests.get(url, params=params, timeout=timeout)
@@ -102,7 +102,7 @@ def _http_get_with_retry(url: str, params: dict, timeout: float, max_retries: in
         except requests.RequestException:
             if attempt == max_retries - 1:
                 raise
-            time.sleep(attempt + 1)
+            time.sleep(2 ** attempt)
 
 ROBOTICS_TERMS = [
     "robotics",
@@ -778,7 +778,7 @@ def _get_tavily_client():
     return _tavily_client
 
 
-def _web_search_impl(query: str, max_results: int = 5, timeout: float = 8.0) -> str:
+def _web_search_impl(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
     """Core web search implementation (no decorator). Retries with exponential backoff on failure."""
     q = " ".join((query or "").split())
     if not q:
@@ -786,7 +786,7 @@ def _web_search_impl(query: str, max_results: int = 5, timeout: float = 8.0) -> 
     limit = max(1, min(max_results, 10))
 
     last_error = None
-    for attempt in range(3):
+    for attempt in range(5):
         try:
             client = _get_tavily_client()
             results_raw = client.search(
@@ -799,8 +799,8 @@ def _web_search_impl(query: str, max_results: int = 5, timeout: float = 8.0) -> 
             break  # success
         except Exception as e:
             last_error = e
-            if attempt < 2:
-                time.sleep(2 ** attempt)  # exponential backoff: 1s, 2s
+            if attempt < 4:
+                time.sleep(2 ** attempt)  # exponential backoff: 1s, 2s, 4s, 8s
                 continue
             # exhausted retries → build empty result instead of raising
             results_raw = {"results": [], "answer": ""}
@@ -876,7 +876,7 @@ def academic_search(
 def _academic_search_impl(
     query: str,
     max_results: int = 5,
-    timeout: float = 15.0,
+    timeout: float = 30.0,
     year_from: Optional[int] = None,
     year_to: Optional[int] = None,
 ) -> str:
@@ -1053,7 +1053,7 @@ def _academic_search_impl(
                     cite_resp = _http_get_with_retry(
                         "https://api.openalex.org/works",
                         {"filter": f"arxiv:{id_str}", "per_page": len(arxiv_ids_collected)},
-                        min(timeout, 5.0),  # cap so slow enrichment doesn't consume entire budget
+                        min(timeout, 10.0),  # cap so slow enrichment doesn't consume entire budget
                     )
                     cite_data = cite_resp.json()
                     citation_map: Dict[str, int] = {}
@@ -1154,7 +1154,7 @@ def _should_use_academic(query: str) -> bool:
 def search(
     query: str,
     max_results: int = 5,
-    timeout: float = 15.0,
+    timeout: float = 30.0,
     year_from: Optional[int] = None,
     year_to: Optional[int] = None,
 ) -> str:
