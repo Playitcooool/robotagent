@@ -47,6 +47,7 @@ from backend.stream_utils import (
 )
 from backend.routes_auth import register_auth_routes
 from backend.routes_sim import register_sim_routes
+from backend.utils.retry import with_retry_async
 
 os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
 # Chat history Redis should be separated from agent checkpoint Redis.
@@ -128,10 +129,26 @@ app = FastAPI()
 async def startup_event():
     global active_agent, chat_redis, auth_redis  # 关联全局变量
     try:
-        chat_redis = Redis.from_url(CHAT_REDIS_URL, decode_responses=True)
+        # Redis connection with retry (指数退避 + jitter)
+        async def connect_chat_redis():
+            return Redis.from_url(CHAT_REDIS_URL, decode_responses=True)
+        chat_redis = await with_retry_async(
+            connect_chat_redis,
+            max_retries=5,
+            base_delay=0.5,
+            retryable_exceptions=(ConnectionError, OSError),
+        )
         await chat_redis.ping()
         logger.info(f"Chat history Redis 已连接: {CHAT_REDIS_URL}")
-        auth_redis = Redis.from_url(AUTH_REDIS_URL, decode_responses=True)
+
+        async def connect_auth_redis():
+            return Redis.from_url(AUTH_REDIS_URL, decode_responses=True)
+        auth_redis = await with_retry_async(
+            connect_auth_redis,
+            max_retries=5,
+            base_delay=0.5,
+            retryable_exceptions=(ConnectionError, OSError),
+        )
         await auth_redis.ping()
         logger.info(f"Auth Redis 已连接: {AUTH_REDIS_URL}")
 
