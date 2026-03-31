@@ -105,6 +105,11 @@
 <script>
 import { ref, computed, onMounted, watch, onBeforeUnmount, nextTick } from 'vue'
 
+// Constants
+const TOAST_DURATION = 2000
+const SNIPPET_MAX_LENGTH = 80
+const TITLE_TRUNCATE_LENGTH = 18
+
 export default {
   name: 'Sidebar',
   props: {
@@ -305,7 +310,7 @@ export default {
 
     function showToast (msg) {
       toast.value = msg
-      setTimeout(() => { toast.value = '' }, 2000)
+      setTimeout(() => { toast.value = '' }, TOAST_DURATION)
     }
 
     onMounted(load)
@@ -315,7 +320,7 @@ export default {
       if (loadController) loadController.abort()
     })
 
-    function snippet (t) { return (t || '').slice(0, 80) + (t && t.length > 80 ? '…' : '') }
+    function snippet (t) { return (t || '').slice(0, SNIPPET_MAX_LENGTH) + (t && t.length > SNIPPET_MAX_LENGTH ? '…' : '') }
 
     function formatTime (ts) {
       if (!ts) return ''
@@ -331,7 +336,7 @@ export default {
     function sessionTitle (s) {
       const t = (s?.title || s?.preview || '').trim()
       if (!t) return props.lang === 'zh' ? '新对话' : 'New Chat'
-      return t.length > 18 ? `${t.slice(0, 18)}...` : t
+      return t.length > TITLE_TRUNCATE_LENGTH ? `${t.slice(0, TITLE_TRUNCATE_LENGTH)}...` : t
     }
 
     return {

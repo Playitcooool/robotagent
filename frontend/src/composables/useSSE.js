@@ -1,5 +1,9 @@
 import { ref } from 'vue'
 
+// Constants (matching App.vue constants)
+const FRAME_CLOSE_DELAY = 800
+const STREAM_RECONNECT_DELAY = 1000
+
 export function useSSE (authToken) {
   const liveFrame = ref(null)
   const simStreamActive = ref(false)
@@ -37,7 +41,7 @@ export function useSSE (authToken) {
               if (liveFrameEventSource === eventSource) {
                 stopLiveFrameStream()
               }
-            }, 800)
+            }, FRAME_CLOSE_DELAY)
           }
         }
       } catch (e) {
@@ -49,12 +53,13 @@ export function useSSE (authToken) {
       eventSource.close()
       // 清空引用后再重连
       liveFrameEventSource = null
-      if (authToken.value && simStreamActive.value) {
+      const tokenAtError = authToken.value
+      if (tokenAtError && simStreamActive.value) {
         setTimeout(() => {
           if (liveFrameEventSource === null && authToken.value && simStreamActive.value) {
             startLiveFrameStream()
           }
-        }, 1000)
+        }, STREAM_RECONNECT_DELAY)
       }
     }
 

@@ -111,6 +111,15 @@ const AUTH_TOKEN_KEY = 'robotagent_auth_token'
 const THEME_KEY = 'robotagent_theme'
 const LANG_KEY = 'robotagent_lang'
 
+// Stream and animation constants
+const STREAM_RECONNECT_DELAY = 1000
+const FRAME_CLOSE_DELAY = 800
+const TYPEWRITER_THRESHOLD_THINKING = 50
+const TYPEWRITER_THRESHOLD_TEXT = 100
+const TYPEWRITER_CHARS_PER_FRAME = 50
+const TYPEWRITER_FRAME_DELAY = 20
+const CHECK_THINK_INTERVAL = 50
+
 // Translations
 const translations = {
   zh: {
@@ -318,7 +327,7 @@ export default {
                 if (liveFrameEventSource === eventSource) {
                   stopLiveFrameStream()
                 }
-              }, 800)
+              }, FRAME_CLOSE_DELAY)
             }
           }
         } catch (e) {
@@ -334,7 +343,7 @@ export default {
             if (liveFrameEventSource === null) {
               startLiveFrameStream()
             }
-          }, 1000)
+          }, STREAM_RECONNECT_DELAY)
         }
       }
 
@@ -342,7 +351,7 @@ export default {
     }
 
     function startTypewriter (msgId, idx, fullText, field = 'text') {
-      const threshold = field === 'thinking' ? 50 : 100
+      const threshold = field === 'thinking' ? TYPEWRITER_THRESHOLD_THINKING : TYPEWRITER_THRESHOLD_TEXT
       if (fullText.length < threshold) {
         conversation.value[idx][field] = fullText
         return
@@ -361,8 +370,6 @@ export default {
         clearInterval(assistantTypewriters[msgId].interval)
       }
 
-      const charsPerFrame = 50
-      const frameDelay = 20
       const interval = setInterval(() => {
         const i = conversation.value.findIndex(m => m.id === msgId)
         if (i === -1) {
@@ -372,21 +379,21 @@ export default {
           return
         }
         if (field === 'text') {
-          ta.textDisplayed = Math.min(ta.textDisplayed + charsPerFrame, ta.textTotal)
+          ta.textDisplayed = Math.min(ta.textDisplayed + TYPEWRITER_CHARS_PER_FRAME, ta.textTotal)
           conversation.value[i].text = fullText.slice(0, ta.textDisplayed)
           if (ta.textDisplayed >= ta.textTotal) {
             clearInterval(interval)
             delete assistantTypewriters[msgId]
           }
         } else {
-          ta.thinkingDisplayed = Math.min(ta.thinkingDisplayed + charsPerFrame, ta.thinkingTotal)
+          ta.thinkingDisplayed = Math.min(ta.thinkingDisplayed + TYPEWRITER_CHARS_PER_FRAME, ta.thinkingTotal)
           conversation.value[i].thinking = fullText.slice(0, ta.thinkingDisplayed)
           if (ta.thinkingDisplayed >= ta.thinkingTotal) {
             clearInterval(interval)
             delete assistantTypewriters[msgId]
           }
         }
-      }, frameDelay)
+      }, TYPEWRITER_FRAME_DELAY)
       assistantTypewriters[msgId] = { interval }
     }
 
@@ -505,7 +512,6 @@ export default {
       }
 
       try {
-        console.log('[SSE] sending fetch to /api/chat/send')
         const res = await apiFetch('/api/chat/send', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -516,20 +522,19 @@ export default {
         })
 
         if (!res.ok) {
-          console.log('[SSE] response not ok:', res.status, res.statusText)
+          const errMsg = `[请求错误] ${res.status} ${res.statusText}`
           const idxErr = conversation.value.findIndex(m => m.id === mainMessageId)
           if (idxErr !== -1) {
             conversation.value[idxErr].loading = false
-            conversation.value[idxErr].text = errText
+            conversation.value[idxErr].text = errMsg
             conversation.value[idxErr].thinkingDone = true
           } else {
-            conversation.value.push({ id: Date.now() + 2, role: 'assistant', text: errText })
+            conversation.value.push({ id: Date.now() + 2, role: 'assistant', text: errMsg })
           }
           return
         }
 
         if (!res.body || !res.body.getReader) {
-          console.log('[SSE] no body or no getReader, reading as text')
           const textBody = await res.text()
           const idxNoStream = conversation.value.findIndex(m => m.id === mainMessageId)
           const txt = textBody || '[后端返回空响应]'
@@ -546,17 +551,13 @@ export default {
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
         let buf = ''
-        console.log('[SSE] start reading stream')
 
         while (true) {
           const { done, value } = await reader.read()
           if (done) {
-            console.log('[SSE] stream done')
             break
           }
-          console.log('[SSE] chunk received, size=', value ? value.length : 0, 'buf=', buf.length)
           buf += decoder.decode(value, { stream: true })
-          console.log('[SSE] buf after decode, len=', buf.length)
 
           const lines = buf.split('\n')
           buf = lines.pop()
@@ -565,15 +566,11 @@ export default {
             if (!line.trim()) continue
             let obj = null
             try {
-              console.log('[SSE] raw line:', JSON.stringify(line))
               obj = JSON.parse(line)
-              console.log('[SSE] parsed obj:', JSON.stringify(obj))
             } catch (err) {
-              console.log('[SSE] JSON parse error:', err.message, 'line:', line.slice(0, 100))
               continue
             }
 
-            console.log('[SSE]', obj.type, obj.text ? obj.text.slice(0, 50) : '', obj.source)
             if (obj.type === 'delta') {
               maybeStartSimStream(obj.source)
               const msgId = ensureAgentMessage(obj.source)
@@ -581,7 +578,6 @@ export default {
               const chunk = String(obj.text || '')
               if (!chunk) continue
 
-              console.log('[SSE] delta handling: msgId=', msgId, 'idx=', idx, 'chunk=', chunk)
               let st = assistantStreams[msgId]
               if (!st) {
                 st = assistantStreams[msgId] = { text: '', thinking: '', thinkingTruncated: false, loadingKind: 'thinking', webSearchResults: [], ragReferences: [] }
@@ -597,15 +593,12 @@ export default {
               }
 
               if (idx !== -1) {
-                console.log('[SSE] updating existing msg at idx', idx, 'text=', conversation.value[idx].text)
                 if (conversation.value[idx].loading) {
                   conversation.value[idx].loading = false
                 }
                 conversation.value[idx].loadingKind = st.loadingKind || 'thinking'
                 conversation.value[idx].text = st.text
-                console.log('[SSE] after update text=', conversation.value[idx].text)
               } else {
-                console.log('[SSE] pushing new msg with text=', st.text)
                 conversation.value.push({ id: msgId, role: 'assistant', agent: normalizeSource(obj.source), text: st.text, thinking: st.thinking || '', thinkingDone: false, thinkingTruncated: Boolean(st.thinkingTruncated), loadingKind: st.loadingKind || 'thinking', webSearchResults: st.webSearchResults || [], ragReferences: st.ragReferences || [] })
               }
             } else if (obj.type === 'thinking') {
@@ -779,7 +772,7 @@ export default {
                   delete assistantStreams[msgId]
 
                   // Thinking typewriter: animate thinking if >= 50 chars
-                  if (finalThinking.length >= 50) {
+                  if (finalThinking.length >= TYPEWRITER_THRESHOLD_THINKING) {
                     conversation.value[idxDone].thinkingDone = false
                     conversation.value[idxDone].thinking = ''
                     startTypewriter(msgId, idxDone, finalThinking, 'thinking')
@@ -791,14 +784,14 @@ export default {
                         conversation.value[i].thinkingDone = true
                         clearInterval(checkThinkDone)
                       }
-                    }, 50)
+                    }, CHECK_THINK_INTERVAL)
                   } else {
                     conversation.value[idxDone].thinking = finalThinking
                     conversation.value[idxDone].thinkingDone = true
                   }
 
                   // Text typewriter: animate text if >= 100 chars
-                  if (finalText.length >= 100) {
+                  if (finalText.length >= TYPEWRITER_THRESHOLD_TEXT) {
                     conversation.value[idxDone].text = ''
                     startTypewriter(msgId, idxDone, finalText, 'text')
                   } else {

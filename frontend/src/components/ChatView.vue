@@ -98,13 +98,13 @@
                     <div class="web-sources-title">
                       {{ m.webSearchResults[0]?.source === 'arxiv' || m.webSearchResults[0]?.source === 'openalex' ? '学术论文' : '搜索结果与出处' }}
                       <button
-                        v-if="m.webSearchResults.length > 5"
+                        v-if="m.webSearchResults.length > SEARCH_RESULTS_COLLAPSE"
                         class="collapse-toggle-btn"
                         @click="toggleSearchCollapse(m.id)"
                         :aria-expanded="!collapsedSearchIds.has(m.id)"
                         :aria-label="collapsedSearchIds.has(m.id) ? '展开' : '收起'"
                       >
-                        {{ collapsedSearchIds.has(m.id) ? `展开 ${m.webSearchResults.length - 5} 条` : '收起' }}
+                        {{ collapsedSearchIds.has(m.id) ? `展开 ${m.webSearchResults.length - SEARCH_RESULTS_COLLAPSE} 条` : '收起' }}
                       </button>
                     </div>
                     <ul>
@@ -181,13 +181,13 @@
                 <div class="web-sources-title">
                   {{ m.webSearchResults[0]?.source === 'arxiv' || m.webSearchResults[0]?.source === 'openalex' ? '学术论文' : '搜索结果与出处' }}
                   <button
-                    v-if="m.webSearchResults.length > 5"
+                    v-if="m.webSearchResults.length > SEARCH_RESULTS_COLLAPSE"
                     class="collapse-toggle-btn"
                     @click="toggleSearchCollapse(m.id)"
                     :aria-expanded="!collapsedSearchIds.has(m.id)"
                     :aria-label="collapsedSearchIds.has(m.id) ? '展开' : '收起'"
                   >
-                    {{ collapsedSearchIds.has(m.id) ? `展开 ${m.webSearchResults.length - 5} 条` : '收起' }}
+                    {{ collapsedSearchIds.has(m.id) ? `展开 ${m.webSearchResults.length - SEARCH_RESULTS_COLLAPSE} 条` : '收起' }}
                   </button>
                 </div>
                 <ul>
@@ -291,6 +291,12 @@ import markdownItHighlightjs from 'markdown-it-highlightjs'
 import hljs from 'highlight.js'
 import ThinkingTrace from './ThinkingTrace.vue'
 import PlanningPanel from './PlanningPanel.vue'
+
+// Cache and UI constants
+const MARKDOWN_CACHE_MAX = 200
+const RENDERED_CACHE_MAX = 100
+const SEARCH_RESULTS_COLLAPSE = 5
+const TEXTAREA_MAX_HEIGHT = 220
 
 const md = new MarkdownIt({
   html: false,
@@ -406,7 +412,7 @@ export default {
       if (markdownCache.has(raw)) return markdownCache.get(raw)
       const rendered = md.render(preprocessMarkdown(raw))
       markdownCache.set(raw, rendered)
-      while (markdownCache.size > 200) {
+      while (markdownCache.size > MARKDOWN_CACHE_MAX) {
         const oldestKey = markdownCache.keys().next().value
         markdownCache.delete(oldestKey)
       }
@@ -431,7 +437,7 @@ export default {
       // No cache — render immediately
       const html = renderMarkdown(raw)
       renderedCache.set(msgId, { raw, html })
-      if (renderedCache.size > 100) {
+      if (renderedCache.size > RENDERED_CACHE_MAX) {
         const firstKey = renderedCache.keys().next().value
         renderedCache.delete(firstKey)
       }
@@ -560,14 +566,14 @@ export default {
     }
 
     function isSearchCollapsed (m) {
-      return collapsedSearchIds.value.has(m.id) && m.webSearchResults.length > 5
+      return collapsedSearchIds.value.has(m.id) && m.webSearchResults.length > SEARCH_RESULTS_COLLAPSE
     }
 
     function getDisplayedSearchResults (m) {
       if (!m.webSearchResults || !m.webSearchResults.length) return []
-      // If collapsed (has id in set) and more than 5 results, show only first 5
-      if (collapsedSearchIds.value.has(m.id) && m.webSearchResults.length > 5) {
-        return m.webSearchResults.slice(0, 5)
+      // If collapsed (has id in set) and more than SEARCH_RESULTS_COLLAPSE results, show only first SEARCH_RESULTS_COLLAPSE
+      if (collapsedSearchIds.value.has(m.id) && m.webSearchResults.length > SEARCH_RESULTS_COLLAPSE) {
+        return m.webSearchResults.slice(0, SEARCH_RESULTS_COLLAPSE)
       }
       return m.webSearchResults
     }
@@ -624,7 +630,7 @@ export default {
       const el = textareaRef.value
       if (!el) return
       el.style.height = 'auto'
-      const nextHeight = Math.min(el.scrollHeight, 220)
+      const nextHeight = Math.min(el.scrollHeight, TEXTAREA_MAX_HEIGHT)
       el.style.height = `${nextHeight}px`
     }
 

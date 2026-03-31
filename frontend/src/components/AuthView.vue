@@ -9,19 +9,19 @@
     </div>
 
     <form @submit.prevent="submit">
-      <label>
+      <label for="auth-username">
         用户名
-        <input v-model.trim="username" type="text" autocomplete="username" placeholder="3-32位，字母/数字/._-" />
+        <input id="auth-username" v-model.trim="username" type="text" autocomplete="username" placeholder="3-32位，字母/数字/._-" />
       </label>
 
-      <label>
+      <label for="auth-password">
         密码
-        <input v-model="password" type="password" autocomplete="current-password" placeholder="至少6位" />
+        <input id="auth-password" v-model="password" type="password" autocomplete="current-password" placeholder="至少6位" />
       </label>
 
-      <label v-if="mode === 'register'">
+      <label v-if="mode === 'register'" for="auth-confirm-password">
         确认密码
-        <input v-model="confirmPassword" type="password" autocomplete="new-password" placeholder="再次输入密码" />
+        <input id="auth-confirm-password" v-model="confirmPassword" type="password" autocomplete="new-password" placeholder="再次输入密码" />
       </label>
 
       <p v-if="errorText" class="error">{{ errorText }}</p>

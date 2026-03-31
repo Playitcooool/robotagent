@@ -8,12 +8,12 @@
         </div>
         <div v-if="imgError" class="img-error">
           <span>图片加载失败</span>
-          <button class="retry-btn" @click="retryImage">重试</button>
+          <button class="retry-btn" @click="retryImage" aria-label="重新加载图片">重试</button>
         </div>
         <img
           ref="imgRef"
           :src="liveFrame.image_url"
-          alt="simulation frame"
+          :alt="liveFrame.task ? `仿真画面: ${liveFrame.task}` : '仿真画面'"
           @load="onImgLoad"
           @error="onImgError"
           :class="{ hidden: imgLoading || imgError }"
