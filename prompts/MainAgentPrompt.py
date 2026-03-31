@@ -54,3 +54,30 @@ RAG 调用与引用规范：
 - 计划写在调用工具之前，不要写完计划就停下等确认。
 - 一旦开始执行，默认连续执行到完成，不输出"请回复继续"。
 """
+
+
+def build_system_prompt_with_context(
+    system_prompt: str,
+    context: str,
+    experience_suffix: str = ""
+) -> str:
+    """
+    Build system prompt by combining base prompt, context, and experience.
+
+    Args:
+        system_prompt: Base system prompt (e.g., SYSTEM_PROMPT).
+        context: Content from robot_context.md.
+        experience_suffix: Optional experience suffix from build_experience_suffix.
+
+    Returns:
+        Combined system prompt.
+    """
+    parts = [system_prompt]
+    if context:
+        parts.append("\n\n## 项目级 Context\n")
+        parts.append(context)
+        parts.append("\n")
+    if experience_suffix:
+        parts.append(experience_suffix)
+    return "".join(parts)
+

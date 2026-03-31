@@ -10,6 +10,8 @@ from pathlib import Path
 import ast
 from deepagents import create_deep_agent
 from tools.SubAgentTool import init_subagents, _load_agent_experiences, build_experience_suffix
+from prompts.context_loader import ContextLoader
+from prompts.MainAgentPrompt import build_system_prompt_with_context
 import logging
 import json
 import yaml
@@ -77,6 +79,7 @@ DEBUG_STREAM_FIELDS = os.environ.get("DEBUG_STREAM_FIELDS", "0") == "1"
 active_agent = None  # 全局agent，启动事件中初始化
 chat_redis: Optional[Redis] = None
 auth_redis: Optional[Redis] = None
+context_loader: Optional[ContextLoader] = None  # Context 文件加载器
 CHAT_REDIS_URL = os.environ["CHAT_REDIS_URL"]
 AUTH_REDIS_URL = os.environ["AUTH_REDIS_URL"]
 CHAT_HISTORY_PREFIX = "robotagent:chat:messages"
@@ -127,7 +130,7 @@ app = FastAPI()
 # ========== 7. 启动事件（正确初始化agent） ==========
 @app.on_event("startup")
 async def startup_event():
-    global active_agent, chat_redis, auth_redis  # 关联全局变量
+    global active_agent, chat_redis, auth_redis, context_loader  # 关联全局变量
     try:
         # Redis connection with retry (指数退避 + jitter)
         async def connect_chat_redis():
@@ -151,6 +154,10 @@ async def startup_event():
         )
         await auth_redis.ping()
         logger.info(f"Auth Redis 已连接: {AUTH_REDIS_URL}")
+
+        # 初始化 ContextLoader（加载 robot_context.md）
+        context_loader = ContextLoader()
+        logger.info("ContextLoader 已初始化")
 
         # 加载所有工具
         all_tools = get_tools()
@@ -201,7 +208,15 @@ async def startup_event():
         else:
             exp_suffix = ""
 
-        runtime_system_prompt = MainAgentPrompt.SYSTEM_PROMPT + exp_suffix + prompt_suffix
+        # 加载 robot_context.md
+        context = context_loader.load_context() if context_loader else ""
+        logger.info(f"已加载 robot_context.md: {len(context)} 字符" if context else "未找到 robot_context.md")
+
+        runtime_system_prompt = build_system_prompt_with_context(
+            MainAgentPrompt.SYSTEM_PROMPT,
+            context,
+            exp_suffix
+        ) + prompt_suffix
 
         # 创建带工具的agent（核心修正）
         DB_URI = "redis://localhost:6379"
