@@ -92,8 +92,8 @@ def _truncate_abstract(text: str) -> str:
     return text[:MAX_ABSTRACT_CHARS] + ("..." if len(text) > MAX_ABSTRACT_CHARS else "")
 
 
-def _http_get_with_retry(url: str, params: dict, timeout: float, max_retries: int = 5) -> requests.Response:
-    """GET request with exponential-backoff retry (1s, 2s, 4s, 8s, 16s). Retries on connection error, timeout, and HTTP errors."""
+def _http_get_with_retry(url: str, params: dict, timeout: float, max_retries: int = 2) -> requests.Response:
+    """GET request with exponential-backoff retry (1s, 2s). Retries on connection error, timeout, and HTTP errors."""
     for attempt in range(max_retries):
         try:
             resp = requests.get(url, params=params, timeout=timeout)
@@ -876,7 +876,7 @@ def academic_search(
 def _academic_search_impl(
     query: str,
     max_results: int = 5,
-    timeout: float = 30.0,
+    timeout: float = 20.0,
     year_from: Optional[int] = None,
     year_to: Optional[int] = None,
 ) -> str:
@@ -888,195 +888,73 @@ def _academic_search_impl(
     limit = max(1, min(max_results, 20))
     all_results = []
 
-    # 1. Search OpenAlex API (published papers)
-    openalex_endpoint = "https://api.openalex.org/works"
-    openalex_params = {
-        "search": q,
-        "per_page": limit,
-        "sort": "relevance_score:desc",
-    }
-    filters = ["type:paper"]
+    # Search arXiv API
+    arxiv_limit = limit
+    arxiv_endpoint = "http://export.arxiv.org/api/query"
+    arxiv_query_parts = [f"ti:{q}+OR+abs:{q}"]
     if year_from is not None:
-        filters.append(f"from_publication_date:{year_from}-01-01")
+        arxiv_query_parts.append(f"submittedDateFrom:[{year_from}0101]")
     if year_to is not None:
-        filters.append(f"to_publication_date:{year_to}-12-31")
-    openalex_params["filter"] = ",".join(filters)
+        arxiv_query_parts.append(f"submittedDateTo:[{year_to}1231]")
+    arxiv_params = {
+        "search_query": "+AND+".join(arxiv_query_parts),
+        "start": 0,
+        "max_results": arxiv_limit,
+        "sortBy": "relevance",
+    }
 
     try:
-        resp = _http_get_with_retry(openalex_endpoint, openalex_params, timeout)
-        openalex_data = resp.json()
+        resp = _http_get_with_retry(arxiv_endpoint, arxiv_params, timeout)
 
-        for work in openalex_data.get("results", []):
-            # Extract authors
-            authors = work.get("authorships", [])[:3]
-            author_names = ", ".join([a.get("author", {}).get("display_name", "Unknown") for a in authors])
+        # Parse XML response
+        root = ET.fromstring(resp.text)
 
-            # Get publication year
-            year = work.get("publication_year", "N/A")
+        # Define namespace
+        ns = {'atom': 'http://www.w3.org/2005/Atom'}
 
-            # Get venue
-            venue_data = work.get("host_venue", {})
-            venue = venue_data.get("display_name", "") or venue_data.get("publisher", "")
+        arxiv_results: List[Dict[str, Any]] = []
 
-            # Get DOI and URL
-            doi = work.get("doi", "")
-            url = work.get("doi", "")
-            if not url:
-                url = work.get("id", "")
+        for entry in root.findall('atom:entry', ns)[:arxiv_limit]:
+            title = entry.find('atom:title', ns).text or "Unknown"
+            summary = entry.find('atom:summary', ns).text or ""
+            authors = [a.find('atom:name', ns).text for a in entry.findall('atom:author', ns)]
+            author_names = ", ".join(authors[:3])
 
-            # Get abstract
-            abstract = _truncate_abstract(work.get("abstract", "") or "")
-
-            # Get citation count
-            cited_by_count = work.get("cited_by_count", 0)
-
-            # Try to get PDF URL from open access
-            pdf_url = ""
-            oa = work.get("open_access", {})
-            if oa.get("is_oa", False):
-                pdf_url = oa.get("pdf_url", "")
-
-            # Check if also on arXiv
+            # Get arXiv ID and PDF
             arxiv_id = ""
-            ids = work.get("ids", {})
-            if "arxiv" in ids:
-                arxiv_id = ids.get("arxiv", "")
-                if not pdf_url:
-                    pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+            pdf_url = ""
+            for link in entry.findall('atom:link', ns):
+                if link.get('title') == 'pdf':
+                    pdf_url = link.get('href', '')
+                    arxiv_id = pdf_url.split('/')[-1].replace('.pdf', '')
+                    break
 
-            all_results.append({
+            # Extract year from published date
+            published = entry.find('atom:published', ns).text or ""
+            year = published[:4] if published else "N/A"
+
+            arxiv_results.append({
                 "type": "paper",
-                "title": work.get("title", "Unknown Title"),
+                "title": title.strip(),
                 "authors": author_names,
                 "year": year,
-                "venue": venue,
-                "abstract": abstract,
-                "url": url,
+                "venue": "arXiv",
+                "abstract": _truncate_abstract(summary),
+                "url": f"https://arxiv.org/abs/{arxiv_id}",
                 "pdf_url": pdf_url,
-                "citations": cited_by_count,
+                "citations": 0,
                 "arxiv_id": arxiv_id,
-                "doi": doi,
-                "source": "openalex",
+                "source": "arxiv",
             })
+
+        all_results.extend(arxiv_results)
     except Exception as e:
         err_msg = str(e) or repr(e)
         all_results.append({
             "type": "error",
-            "source": "openalex",
-            "error": f"OpenAlex search failed: {err_msg}"
+            "source": "arxiv",
+            "error": f"arXiv search failed: {err_msg}"
         })
-
-    # 2. Search arXiv API as supplement
-    if len(all_results) < limit:
-        arxiv_limit = limit - len(all_results)
-        arxiv_endpoint = "http://export.arxiv.org/api/query"
-        arxiv_query_parts = [f"ti:{q}+OR+abs:{q}"]
-        if year_from is not None:
-            arxiv_query_parts.append(f"submittedDateFrom:[{year_from}0101]")
-        if year_to is not None:
-            arxiv_query_parts.append(f"submittedDateTo:[{year_to}1231]")
-        arxiv_params = {
-            "search_query": "+AND+".join(arxiv_query_parts),
-            "start": 0,
-            "max_results": arxiv_limit,
-            "sortBy": "relevance",
-        }
-
-        existing_ids: Set[str] = set()
-        existing_titles_lower: Set[str] = set()
-        for r in all_results:
-            if r.get("type") == "error":
-                continue
-            existing_titles_lower.add(r.get("title", "").lower())
-            if r.get("arxiv_id"):
-                existing_ids.add(f"arxiv:{r['arxiv_id']}")
-
-        try:
-            resp = _http_get_with_retry(arxiv_endpoint, arxiv_params, timeout)
-
-            # Parse XML response
-            root = ET.fromstring(resp.text)
-
-            # Define namespace
-            ns = {'atom': 'http://www.w3.org/2005/Atom'}
-
-            arxiv_results: List[Dict[str, Any]] = []
-            arxiv_ids_collected: List[str] = []
-
-            for entry in root.findall('atom:entry', ns)[:arxiv_limit]:
-                title = entry.find('atom:title', ns).text or "Unknown"
-                summary = entry.find('atom:summary', ns).text or ""
-                authors = [a.find('atom:name', ns).text for a in entry.findall('atom:author', ns)]
-                author_names = ", ".join(authors[:3])
-
-                # Get arXiv ID and PDF
-                arxiv_id = ""
-                pdf_url = ""
-                for link in entry.findall('atom:link', ns):
-                    if link.get('title') == 'pdf':
-                        pdf_url = link.get('href', '')
-                        arxiv_id = pdf_url.split('/')[-1].replace('.pdf', '')
-                        break
-
-                # Extract year from published date
-                published = entry.find('atom:published', ns).text or ""
-                year = published[:4] if published else "N/A"
-
-                # Check if already added (avoid duplicates by title, arXiv ID, or DOI)
-                title_lower = title.strip().lower()
-                is_dup = title_lower in existing_titles_lower
-                if arxiv_id and f"arxiv:{arxiv_id}" in existing_ids:
-                    is_dup = True
-
-                if not is_dup:
-                    result = {
-                        "type": "paper",
-                        "title": title.strip(),
-                        "authors": author_names,
-                        "year": year,
-                        "venue": "arXiv",
-                        "abstract": _truncate_abstract(summary),
-                        "url": f"https://arxiv.org/abs/{arxiv_id}",
-                        "pdf_url": pdf_url,
-                        "citations": 0,
-                        "arxiv_id": arxiv_id,
-                        "source": "arxiv",
-                    }
-                    arxiv_results.append(result)
-                    if arxiv_id:
-                        arxiv_ids_collected.append(arxiv_id)
-                    existing_titles_lower.add(title_lower)
-
-            if arxiv_ids_collected:
-                id_str = "|".join(arxiv_ids_collected)
-                try:
-                    cite_resp = _http_get_with_retry(
-                        "https://api.openalex.org/works",
-                        {"filter": f"arxiv:{id_str}", "per_page": len(arxiv_ids_collected)},
-                        min(timeout, 10.0),  # cap so slow enrichment doesn't consume entire budget
-                    )
-                    cite_data = cite_resp.json()
-                    citation_map: Dict[str, int] = {}
-                    for work in cite_data.get("results", []):
-                        w_ids = work.get("ids", {})
-                        w_arxiv = w_ids.get("arxiv", "")
-                        if w_arxiv:
-                            citation_map[w_arxiv] = work.get("cited_by_count", 0)
-                    for r in arxiv_results:
-                        aid = r.get("arxiv_id", "")
-                        r["citations"] = citation_map.get(aid, r["citations"])
-                except Exception as exc:
-                    import sys
-                    print(f"[WARNING] arXiv citation enrichment failed: {exc}", file=sys.stderr)
-
-            all_results.extend(arxiv_results)
-        except Exception as e:
-            err_msg = str(e) or repr(e)
-            all_results.append({
-                "type": "error",
-                "source": "arxiv",
-                "error": f"arXiv search failed: {err_msg}"
-            })
 
     # Build citations for traceability
     citations = []
@@ -1103,52 +981,6 @@ def _academic_search_impl(
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-# Academic keywords - queries containing these are routed to academic_search
-_ACADEMIC_KEYWORDS = {
-    # Explicit academic markers
-    "paper", "arxiv", "publication", "conference", "journal", "doi",
-    "cite", "citation", "research", "thesis", "dissertation",
-    "author", "author:", "icra", "iros", "rss", "corl", "coRL",
-    "ieee", "acm", "springer", "elsevier", "arxiv.org",
-    "proposed method", "we propose", "this paper", "our work",
-    "methodology", "experiments show", "we show",
-    "year:", "vol.", "volume", "proceedings", "preprint",
-    # Core robotics / AI / ML terminology
-    "robot", "robots", "robotics", "manipulation", "grasping",
-    "reinforcement learning", "imitation learning", "behavior cloning",
-    "diffusion model", "diffusion policy", "foundation model",
-    "vision language", "vlm", "rl", "il", "lfd",
-    "trajectory", "motion planning", "path planning",
-    "control theory", "optimal control", "lqr", "mpc",
-    "locomotion", "navigation", "autonomous", "slAM", "sensor",
-    "perception", "object detection", "semantic segmentation",
-    "neural network", "deep learning", "transformer", "attention",
-    "reward function", "reward shaping", "domain randomization",
-    "sim-to-real", "sim2real", "zero-shot", "few-shot",
-    "language model", "llm", "multimodal", "vision model",
-    "contact model", "physics-based", "dynamics model",
-    "task planning", "task decomposition", "hierarchical planning",
-    "humanoid", "bimanual", "mobile manipulation",
-}
-
-_WEB_KEYWORDS = {
-    "news", "event", "release", "announce", "2024", "2025", "2026",
-    "latest", "recent", "today", "yesterday", "breaking",
-    "price", "buy", "amazon", "shop", "product",
-    "weather", "stock", "currency", "exchange rate",
-}
-
-
-def _should_use_academic(query: str) -> bool:
-    """Route query to academic or web search based on keywords."""
-    q = query.lower()
-    academic_score = sum(1 for kw in _ACADEMIC_KEYWORDS if kw in q)
-    web_score = sum(1 for kw in _WEB_KEYWORDS if kw in q)
-    # Explicit academic markers
-    if any(m in q for m in ["arxiv:", "doi:", "paper on", "paper about", "论文", "发表", "学术"]):
-        return True
-    return academic_score > web_score
-
 
 @tool(response_format="content")
 def search(
@@ -1160,7 +992,7 @@ def search(
 ) -> str:
     """
     Unified search tool that automatically routes queries to the most appropriate engine:
-    - Academic search (OpenAlex + arXiv) for research papers, publications, methodologies
+    - Academic search (arXiv) for research papers, publications, methodologies
     - Web search (Tavily) for news, products, current events, general knowledge
 
     IMPORTANT: Every factual claim in your answer must cite a source from results
