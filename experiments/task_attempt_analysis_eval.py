@@ -5,9 +5,9 @@
 分析在不同尝试次数下任务成功率的演变。
 
 使用方式:
-    python experiments/evaluate_experiment_03.py \
+    python task_attempt_analysis_eval.py \
         --scores output/training_free_grpo/trajectory_scores.jsonl \
-        --out-dir experiments/results/exp03
+        --out-dir experiments/results/task_attempt_analysis
 """
 
 import argparse

@@ -20,9 +20,9 @@ os.environ.setdefault("no_proxy", "localhost,127.0.0.1,host.docker.internal")
 - 分析: 计算经验带来的提升率，按难度分组分析泛化边界
 
 使用方式:
-    python evaluate_experiment_04.py \
+    python experience_transferability_eval.py \
         --test-queries data/test_queries.jsonl \
-        --out-dir results/exp04
+        --out-dir results/experience_transferability
 """
 
 import argparse

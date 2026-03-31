@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 """
-实验1评估脚本: Agentic 学术搜索问答系统质量评估
+学术搜索 RAG 评估脚本: Agentic 学术搜索问答系统质量评估
 
 评估使用 Agent + Academic Search 回答机器人领域问题的质量。
 创建带有 search 工具的 agent，使用外部LLM Judge (DeepSeek) 进行评估。
 
 使用方式:
     # Agentic RAG 模式（默认，带搜索）
-    python evaluate_experiment_01.py \
+    python academic_rag_eval.py \
         --queries data/rag_queries.jsonl \
-        --out-dir results/exp01_academic_agent
+        --out-dir results/academic_rag_agent
 
     # Baseline 模式（无搜索）
-    python evaluate_experiment_01.py \
+    python academic_rag_eval.py \
         --queries data/rag_queries.jsonl \
-        --out-dir results/exp01_baseline \
+        --out-dir results/academic_baseline \
         --baseline
 
     # 只对分数为0的记录重新打分
-    python evaluate_experiment_01.py \
+    python academic_rag_eval.py \
         --queries data/rag_queries.jsonl \
-        --out-dir results/exp01_academic_agent \
+        --out-dir results/academic_rag_agent \
         --rescore --delay 3
 """
 
