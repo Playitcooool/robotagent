@@ -779,23 +779,34 @@ def _get_tavily_client():
 
 
 def _web_search_impl(query: str, max_results: int = 5, timeout: float = 8.0) -> str:
-    """Core web search implementation (no decorator). Raises ToolError on failure."""
+    """Core web search implementation (no decorator). Retries with exponential backoff on failure."""
     q = " ".join((query or "").split())
     if not q:
         raise ToolError("query is required")
     limit = max(1, min(max_results, 10))
 
-    try:
-        client = _get_tavily_client()
-        results_raw = client.search(
-            query=q,
-            max_results=limit,
-            timeout_seconds=timeout,
-            include_answer=True,
-            include_raw_content=False,
-        )
-    except Exception as e:
-        raise ToolError(f"Tavily search failed: {e}") from e
+    last_error = None
+    for attempt in range(3):
+        try:
+            client = _get_tavily_client()
+            results_raw = client.search(
+                query=q,
+                max_results=limit,
+                timeout_seconds=timeout,
+                include_answer=True,
+                include_raw_content=False,
+            )
+            break  # success
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(2 ** attempt)  # exponential backoff: 1s, 2s
+                continue
+            # exhausted retries → build empty result instead of raising
+            results_raw = {"results": [], "answer": ""}
+
+    # Build result from what we have (may be empty after retries)
+    results_raw = results_raw if isinstance(results_raw, dict) else {"results": [], "answer": ""}
 
     results = []
     for item in (results_raw.get("results") or [])[:limit]:
@@ -948,10 +959,11 @@ def _academic_search_impl(
                 "source": "openalex",
             })
     except Exception as e:
+        err_msg = str(e) or repr(e)
         all_results.append({
             "type": "error",
             "source": "openalex",
-            "error": f"OpenAlex search failed: {e}"
+            "error": f"OpenAlex search failed: {err_msg}"
         })
 
     # 2. Search arXiv API as supplement
@@ -1059,10 +1071,11 @@ def _academic_search_impl(
 
             all_results.extend(arxiv_results)
         except Exception as e:
+            err_msg = str(e) or repr(e)
             all_results.append({
                 "type": "error",
                 "source": "arxiv",
-                "error": f"arXiv search failed: {e}"
+                "error": f"arXiv search failed: {err_msg}"
             })
 
     # Build citations for traceability
@@ -1202,11 +1215,12 @@ def search(
                 })
         except Exception as exc:
             import sys
-            print(f"[WARNING] Academic search failed: {exc}", file=sys.stderr)
+            err = str(exc) or repr(exc) or "unknown error"
+            print(f"[WARNING] Academic search failed: {err}", file=sys.stderr)
 
         try:
             web_data = web_future.result(timeout=timeout * 2)
-            if not web_data.get("error"):
+            if isinstance(web_data, dict) and not web_data.get("error"):
                 for item in web_data.get("results", []):
                     web_results.append({
                         "type": "web",
@@ -1223,7 +1237,8 @@ def search(
                     })
         except Exception as exc:
             import sys
-            print(f"[WARNING] Web search failed: {exc}", file=sys.stderr)
+            err = str(exc) or repr(exc) or "unknown error"
+            print(f"[WARNING] Web search failed: {err}", file=sys.stderr)
 
     # Merge: web results first, then academic results (de-duplicate by title)
     seen_titles: Set[str] = set()
