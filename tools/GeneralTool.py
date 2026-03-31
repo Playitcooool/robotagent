@@ -93,7 +93,7 @@ def _truncate_abstract(text: str) -> str:
 
 
 def _http_get_with_retry(url: str, params: dict, timeout: float, max_retries: int = 2) -> requests.Response:
-    """GET request with exponential-backoff retry (1s, 2s). Retries on connection error, timeout, and HTTP errors."""
+    """GET request with exponential-backoff retry. Retries on connection error, timeout, and HTTP errors."""
     for attempt in range(max_retries):
         try:
             resp = requests.get(url, params=params, timeout=timeout)
@@ -859,7 +859,7 @@ def academic_search(
     year_to: Optional[int] = None,
 ) -> str:
     """
-    Search academic papers from OpenAlex and arXiv.
+    Search academic papers from arXiv.
 
     IMPORTANT: Every factual claim in your answer must cite a source from results
     using [number] notation, e.g. [1], [2]. Always include a reference list at the end.
@@ -890,7 +890,7 @@ def _academic_search_impl(
 
     # Search arXiv API
     arxiv_limit = limit
-    arxiv_endpoint = "http://export.arxiv.org/api/query"
+    arxiv_endpoint = "https://export.arxiv.org/api/query"
     arxiv_query_parts = [f"ti:{q}+OR+abs:{q}"]
     if year_from is not None:
         arxiv_query_parts.append(f"submittedDateFrom:[{year_from}0101]")
