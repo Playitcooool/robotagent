@@ -22,16 +22,6 @@ redis>=5.0.0
 # MCP (Model Context Protocol)
 fastmcp>=0.1.0
 
-# PyBullet (Simulation)
-pybullet>=3.2.0
-
-# ROS2 / Gazebo (optional - for simulation)
-# rclpy>=6.0.0
-# geometry_msgs>=4.0.0
-# gazebo_msgs>=4.0.0
-# sensor_msgs>=4.0.0
-# std_srvs>=4.0.0
-
 # PDF Processing
 arxiv>=1.4.0
 pymupdf>=1.23.0

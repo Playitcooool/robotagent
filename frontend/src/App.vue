@@ -226,8 +226,13 @@ export default {
         showShortcutHelp.value = false
       }
     }
+    const hasLiveFrame = computed(() => {
+      return Boolean(liveFrame.value && liveFrame.value.image_url)
+    })
+
     const showToolPanel = computed(() => {
-      if (simStreamActive.value) return true
+      // Only show panel when we actually have frame data
+      if (hasLiveFrame.value) return true
       const msgs = Array.isArray(conversation.value) ? conversation.value : []
       if (msgs.length === 0) return false
       const hasUser = msgs.some(m => String(m?.role || '') === 'user')
@@ -875,6 +880,7 @@ export default {
       authUser,
       conversation,
       liveFrame,
+      hasLiveFrame,
       planningState,
       currentSessionId,
       showToolPanel,
