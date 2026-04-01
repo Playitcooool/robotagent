@@ -1,25 +1,22 @@
 # 数据流图（Mermaid, Level 0）
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#E3EDF7', 'primaryTextColor': '#2C3E50', 'primaryBorderColor': '#5D7B9D', 'lineColor': '#5D7B9D', 'fontFamily': 'Arial', 'fontSize': '14px'}}}%%
 flowchart LR
-  user[用户]:::ext
-  frontend[前端 Vue3]:::proc
-  backend[后端 FastAPI]:::proc
-  mcp[MCP PyBullet 服务]:::proc
+  user[user]:::ext
+  frontend[frontend]:::proc
+  backend[backend]:::proc
+  mcp[mcp]:::proc
 
   subgraph 模型服务
-    main_agent[主代理<br/>Qwen3.5-9B-Claude-4.6-HighIQ<br/>Ollama本地部署]
-    sub_agent[子代理<br/>同主代理模型<br/>Ollama本地部署]
+    main_agent[main_agent]:::proc
+    sub_agent[sub_agent]:::proc
   end
 
-  redis_chat[(Redis DB1
-聊天记录)]:::store
-  redis_auth[(Redis DB2
-用户/会话)]:::store
-  qdrant[(Qdrant
-向量知识库)]:::store
-  sim_dir[(共享帧目录
-mcp/.sim_stream)]:::store
+  redis_chat[(Redis DB1 聊天记录<br/>{session_id, role, content})]:::store
+  redis_auth[(Redis DB2 用户/会话<br/>{token, user_id, expires_at})]:::store
+  qdrant[(qdrant)]:::store
+  sim_dir[(sim_dir<br/>mcp/.sim_stream<br/>latest.png/json)]:::store
 
   user -->|登录/聊天/查看| frontend
   frontend -->|API 请求| backend
@@ -34,7 +31,15 @@ mcp/.sim_stream)]:::store
   backend -->|实时帧| frontend
   frontend -->|画面展示| user
 
-  classDef ext fill:#fff3cd,stroke:#555,stroke-width:1px;
-  classDef proc fill:#e8f0fe,stroke:#1a73e8,stroke-width:1px;
-  classDef store fill:#e6f4ea,stroke:#137333,stroke-width:1px;
+  backend -.->|401 鉴权失败| frontend
+  redis_auth -.->|连接失败| backend
+  redis_chat -.->|连接失败| backend
+  qdrant -.->|不可用| main_agent
+  mcp -.->|超时/失败| backend
+  backend -.->|SSE中断 降级轮询| frontend
+
+  classDef ext fill:#FFF3CD, stroke:#F9A825, stroke-width:2px;
+  classDef proc fill:#E3F2FD, stroke:#1976D2, stroke-width:2px;
+  classDef store fill:#E8F5E9, stroke:#388E3C, stroke-width:2px;
+  classDef err fill:#FFEBEE, stroke:#D32F2F, stroke-dasharray:5, stroke-width:2px;
 ```
