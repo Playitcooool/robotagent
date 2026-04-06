@@ -588,7 +588,225 @@ def plot_data_flow():
 
 
 # ═══════════════════════════════════════════════════════════
-# 图8：智能体工具调用流程（按智能体分类的工具调用时序）
+# 图9：测试集与训练集任务类型分布对比
+# ═══════════════════════════════════════════════════════════
+
+def plot_exp3_query_distribution():
+    """测试集（20条）× 训练集（80条）任务类型 / 难度分布"""
+    # 测试集 - 按难度
+    test_difficulty = {"easy": 3, "medium": 7, "hard": 10}
+    # 测试集 - 按任务类型（手工标注）
+    test_categories = {
+        "单物体搬运": 3,
+        "路径规划": 1,
+        "多物体操作": 2,
+        "物理参数": 2,
+        "误差分析": 4,
+        "安全约束": 2,
+        "协同规划": 2,
+        "实时控制": 1,
+        "物体创建": 1,
+        "视觉反馈": 2,
+    }
+    # 训练集 - 按任务类型（来自 data.txt 注释）
+    train_categories = {
+        "基础搬运": 4,
+        "路径规划": 3,
+        "物理参数调整": 5,
+        "多物体操作": 4,
+        "视觉反馈": 3,
+        "环境检查": 3,
+        "完整实验流程": 4,
+        "稳定性测试": 3,
+        "分步控制": 4,
+        "安全约束": 4,
+        "异步等待": 3,
+        "错误处理与恢复": 8,
+        "对比实验": 3,
+        "工具选择优化": 3,
+        "状态管理": 3,
+        "往返误差分析": 3,
+        "口语化混合指令": 2,
+        "仿真后分析": 3,
+        "Gazebo基础操作": 11,
+        "跨平台对比": 4,
+    }
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 6))
+    fig.suptitle("实验三：经验回放数据集任务分布", fontsize=15, fontweight="bold", y=1.01)
+
+    # ── 左：测试集难度分布 ──
+    ax = axes[0]
+    diff_labels = ["简单 (easy)", "中等 (medium)", "困难 (hard)"]
+    diff_counts = [test_difficulty["easy"], test_difficulty["medium"], test_difficulty["hard"]]
+    diff_colors = ["#43a047", "#ffa726", "#ef5350"]
+    bars = ax.bar(diff_labels, diff_counts, color=diff_colors, edgecolor="white", linewidth=1.5, width=0.55)
+    for bar, val in zip(bars, diff_counts):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                str(val), ha="center", va="bottom", fontsize=13, fontweight="bold")
+    ax.set_title("测试集（20条）\n按难度分布", fontsize=12, fontweight="bold")
+    ax.set_ylabel("任务数量（条）")
+    ax.set_ylim(0, max(diff_counts) * 1.25)
+    ax.set_xlabel("难度等级")
+
+    # ── 中：测试集类型分布 ──
+    ax = axes[1]
+    cat_names = list(test_categories.keys())
+    cat_counts = list(test_categories.values())
+    cat_colors = plt.cm.Blues(np.linspace(0.3, 0.9, len(cat_names)))
+    bars = ax.barh(cat_names, cat_counts, color=cat_colors, edgecolor="white", linewidth=1)
+    for bar, val in zip(bars, cat_counts):
+        ax.text(bar.get_width() + 0.05, bar.get_y() + bar.get_height()/2,
+                str(val), va="center", fontsize=9.5, fontweight="bold")
+    ax.set_xlim(0, max(cat_counts) * 1.4)
+    ax.set_title("测试集（20条）\n按任务类型分布", fontsize=12, fontweight="bold")
+    ax.set_xlabel("任务数量（条）")
+    ax.invert_yaxis()
+
+    # ── 右：训练集类型分布 ──
+    ax = axes[2]
+    cat_names = list(train_categories.keys())
+    cat_counts = list(train_categories.values())
+    cat_colors = plt.cm.Greens(np.linspace(0.3, 0.9, len(cat_names)))
+    bars = ax.barh(cat_names, cat_counts, color=cat_colors, edgecolor="white", linewidth=1)
+    for bar, val in zip(bars, cat_counts):
+        ax.text(bar.get_width() + 0.1, bar.get_y() + bar.get_height()/2,
+                str(val), va="center", fontsize=9.5, fontweight="bold")
+    ax.set_xlim(0, max(cat_counts) * 1.3)
+    ax.set_title("训练集（80条）\n按任务类型分布", fontsize=12, fontweight="bold")
+    ax.set_xlabel("任务数量（条）")
+    ax.invert_yaxis()
+
+    fig.text(0.5, -0.02,
+             "测试集与训练集无重叠——训练集用于经验回放，测试集仅用于评估泛化效果",
+             ha="center", fontsize=9.5, color="#555555", style="italic")
+
+    fig.tight_layout()
+    out = OUT_DIR / "exp3_query_distribution.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out}")
+
+
+# ═══════════════════════════════════════════════════════════
+# 图10：训练集难度/类别分布（配合图9单独展示训练集）
+# ═══════════════════════════════════════════════════════════
+
+def plot_exp3_train_overview():
+    """训练集 80 条任务一览：类别 + 规模统计"""
+    train_categories = {
+        "Gazebo基础操作": 11,
+        "错误处理与恢复": 8,
+        "物理参数调整": 5,
+        "基础搬运": 4,
+        "多物体操作": 4,
+        "完整实验流程": 4,
+        "分步控制": 4,
+        "安全约束": 4,
+        "路径规划": 3,
+        "视觉反馈": 3,
+        "环境检查": 3,
+        "稳定性测试": 3,
+        "异步等待": 3,
+        "对比实验": 3,
+        "工具选择优化": 3,
+        "状态管理": 3,
+        "往返误差分析": 3,
+        "仿真后分析": 3,
+        "口语化混合指令": 2,
+        "跨平台对比": 4,
+    }
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 7))
+    fig.suptitle("经验回放训练集统计（80 条轨迹）", fontsize=15, fontweight="bold", y=1.01)
+
+    # 左：类别分布横向柱状
+    ax = axes[0]
+    names = list(train_categories.keys())
+    counts = list(train_categories.values())
+    colors = plt.cm.Greens(np.linspace(0.3, 0.9, len(names)))
+    # 按数量降序排列
+    sorted_pairs = sorted(zip(names, counts, colors), key=lambda x: -x[1])
+    names, counts, colors = zip(*sorted_pairs)
+    names, counts, colors = list(names), list(counts), list(colors)
+
+    bars = ax.barh(names, counts, color=colors, edgecolor="white", linewidth=0.8)
+    for bar, val in zip(bars, counts):
+        ax.text(bar.get_width() + 0.1, bar.get_y() + bar.get_height()/2,
+                str(val), va="center", fontsize=9, fontweight="bold")
+    ax.set_xlim(0, max(counts) * 1.35)
+    ax.set_title("训练集任务类别分布（降序）", fontsize=12, fontweight="bold")
+    ax.set_xlabel("任务数量（条）")
+    ax.invert_yaxis()
+
+    # 右上：总体统计卡片
+    ax = axes[1]
+    ax.axis("off")
+
+    stats = [
+        ["统计项", "数值"],
+        ["总任务数", "80 条"],
+        ["任务类别数", "20 类"],
+        ["涵盖仿真引擎", "PyBullet + Gazebo"],
+        ["Gazebo 相关任务", "15 条（跨平台对比 4 + Gazebo 11）"],
+        ["错误处理任务", "8 条（10%）"],
+        ["多步骤/分控任务", "11 条（路径+分步+异步）"],
+        ["平均每类任务数", "4 条"],
+    ]
+
+    tbl = ax.table(
+        cellText=stats[1:],
+        colLabels=stats[0],
+        loc="upper center",
+        cellLoc="left",
+        bbox=[0.05, 0.55, 0.9, 0.42],
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(10.5)
+    tbl.scale(1.0, 1.7)
+    for j in range(2):
+        tbl[(0, j)].set_facecolor("#2e7d32")
+        tbl[(0, j)].set_text_props(color="white", fontweight="bold")
+    for i in range(1, len(stats)):
+        for j in range(2):
+            fc = "#e8f5e9" if i % 2 == 1 else "white"
+            tbl[(i, j)].set_facecolor(fc)
+            if j == 0:
+                tbl[(i, j)].set_text_props(fontweight="bold")
+
+    # 右下：饼图
+    ax2 = fig.add_axes([0.62, 0.08, 0.35, 0.42])
+    top5_names = names[:5]
+    top5_counts = counts[:5]
+    rest = sum(counts[5:])
+    pie_labels = top5_names + [f"其他 {len(counts)-5} 类"]
+    pie_vals = top5_counts + [rest]
+    pie_colors = list(plt.cm.Greens(np.linspace(0.3, 0.85, 5))) + ["#bdbdbd"]
+
+    wedges, texts, autotexts = ax2.pie(
+        pie_vals, labels=None, colors=pie_colors,
+        autopct="%1.0f%%", startangle=90,
+        wedgeprops={"edgecolor": "white", "linewidth": 1.5},
+    )
+    for at in autotexts:
+        at.set_fontsize(9)
+        at.set_fontweight("bold")
+        at.set_color("white")
+    ax2.legend(
+        wedges, [f"{n}（{v}条）" for n, v in zip(pie_labels, pie_vals)],
+        loc="center left", bbox_to_anchor=(0.0, 0.5), fontsize=8.5
+    )
+    ax2.set_title("训练集类别 Top-5 占比", fontsize=11, fontweight="bold")
+
+    fig.tight_layout(rect=[0, 0.02, 1, 0.98])
+    out = OUT_DIR / "exp3_train_set_overview.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out}")
+
+
+# ═══════════════════════════════════════════════════════════
+# 主函数
 # ═══════════════════════════════════════════════════════════
 
 def plot_agent_tool_calls():
@@ -662,6 +880,8 @@ def main():
     plot_experience_replay()
     plot_data_flow()
     plot_agent_tool_calls()
+    plot_exp3_query_distribution()
+    plot_exp3_train_overview()
 
     print("=" * 60)
     print(f"所有图表已保存至: {OUT_DIR}/")
