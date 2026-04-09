@@ -24,7 +24,6 @@ fastmcp>=0.1.0
 
 # PDF Processing
 arxiv>=1.4.0
-pymupdf>=1.23.0
 
 # Web Scraping & Data
 requests>=2.31.0
