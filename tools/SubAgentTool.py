@@ -215,7 +215,8 @@ async def init_subagents(
         )
 
     # Rebuild simulation agent graph with current experiences
-    sim_system = SimulationAgentPrompt.SYSTEM_PROMPT + _build_exp_context(experiences, "simulator")
+    skills_content = _load_simulation_skills()
+    sim_system = SimulationAgentPrompt.SYSTEM_PROMPT + _build_exp_context(experiences, "simulator") + skills_content
     simulation_graph = create_agent(
         model=_cached_simulation_chat,
         tools=_cached_mcp_tools,
@@ -232,8 +233,44 @@ async def init_subagents(
 
 
 # ---------------------------------------------------------------------------
-# Experience loading helpers (for agent_experiences.json)
+# Skill loading helpers (for skills/ directory)
 # ---------------------------------------------------------------------------
+
+def _load_simulation_skills() -> str:
+    """
+    Load skill documentation files from the skills/ directory.
+    Looks for pybullet.md and gazebo.md and returns their content
+    formatted as a system prompt section.
+    """
+    import re
+
+    skills_dir = Path(__file__).parent.parent / "skills"
+    if not skills_dir.exists():
+        logger.warning(f"Skills directory not found: {skills_dir}")
+        return ""
+
+    skill_files = ["pybullet.md", "gazebo.md"]
+    sections = []
+
+    for filename in skill_files:
+        filepath = skills_dir / filename
+        if not filepath.exists():
+            logger.warning(f"Skill file not found: {filepath}")
+            continue
+        try:
+            content = filepath.read_text(encoding="utf-8")
+            # Strip the YAML frontmatter (---...---)
+            content = re.sub(r"^---\n[\s\S]*?---\n", "", content)
+            sections.append(f"\n\n{'='*60}\n{filename}\n{'='*60}\n{content}")
+        except Exception as e:
+            logger.warning(f"Failed to load skill file {filepath}: {e}")
+
+    if not sections:
+        return ""
+
+    header = "\n\n【Skills 参考文档】以下文档描述了 PyBullet 和 Gazebo 仿真工具的详细用法，请在使用前阅读："
+    footer = "\n【Skills 结束】"
+    return header + "\n".join(sections) + footer
 
 def _load_agent_experiences() -> list:
     """
