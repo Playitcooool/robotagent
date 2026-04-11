@@ -243,6 +243,7 @@ def _load_simulation_skills() -> str:
     formatted as a system prompt section.
     """
     import re
+    from pathlib import Path
 
     skills_dir = Path(__file__).parent.parent / "skills"
     if not skills_dir.exists():
