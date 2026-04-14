@@ -71,14 +71,18 @@
         <ChatView
           :conversation="conversation"
           :planning="planningState"
-          :landingMode="!showToolPanel"
+          :landingMode="landingMode"
           @sendMessage="onSendMessage"
         />
       </main>
 
       <Transition name="right-panel">
         <aside v-if="showToolPanel" class="right">
-          <ToolResults :liveFrame="liveFrame" />
+          <ToolResults
+            :liveFrame="liveFrame"
+            :planning="planningState"
+            :conversation="conversation"
+          />
         </aside>
       </Transition>
     </div>
@@ -230,18 +234,32 @@ export default {
       return Boolean(liveFrame.value && liveFrame.value.image_url)
     })
 
-    const showToolPanel = computed(() => {
-      // Only show panel when we actually have frame data
-      if (hasLiveFrame.value) return true
+    const landingMode = computed(() => {
       const msgs = Array.isArray(conversation.value) ? conversation.value : []
-      if (msgs.length === 0) return false
-      const hasUser = msgs.some(m => String(m?.role || '') === 'user')
-      if (hasUser) return true
-      // Existing sessions may start with assistant history only; if so, show tool panel too.
-      return msgs.some((m) => {
+      if (msgs.length === 0) return true
+      if (msgs.some(m => String(m?.role || '') === 'user')) return false
+      return !msgs.some((m) => {
         if (String(m?.role || '') !== 'assistant') return false
         const txt = String(m?.text || '').trim()
         return txt && txt !== WELCOME_TEXT && txt !== WELCOME_TEXT_EN
+      })
+    })
+
+    const showToolPanel = computed(() => {
+      if (hasLiveFrame.value) return true
+      if (Array.isArray(planningState.value?.steps) && planningState.value.steps.length) {
+        return true
+      }
+      const msgs = Array.isArray(conversation.value) ? conversation.value : []
+      if (msgs.length === 0) return false
+      return msgs.some((m) => {
+        if (String(m?.role || '') !== 'assistant') return false
+        const hasToolRefs = Array.isArray(m?.webSearchResults) && m.webSearchResults.length
+        const hasRagRefs = Array.isArray(m?.ragReferences) && m.ragReferences.length
+        const isToolAgent = ['simulator', 'analysis', 'data-analyzer', 'data_analyzer'].includes(
+          String(m?.agent || '').toLowerCase()
+        )
+        return Boolean(m?.loading || hasToolRefs || hasRagRefs || isToolAgent)
       })
     })
 
@@ -881,6 +899,7 @@ export default {
       conversation,
       liveFrame,
       hasLiveFrame,
+      landingMode,
       planningState,
       currentSessionId,
       showToolPanel,
