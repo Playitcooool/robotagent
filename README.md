@@ -1,171 +1,175 @@
 # RobotAgent
 
-基于多智能体协同的机器人仿真任务规划与执行系统。
+一个面向机器人任务执行的多 Agent 平台，集成聊天交互、子代理协作、MCP 仿真控制、Agentic RAG 与实时可视化界面。
 
-## 系统概述
+## 项目概览
 
-RobotAgent 是一个多代理聊天系统，支持工具调用、会话管理、认证登录和仿真画面实时流。系统基于 LangChain 和 ReAct 架构构建，由主代理、仿真代理和分析代理组成协作闭环，通过 MCP（Model Context Protocol）接入 PyBullet/Gazebo 仿真工具，通过 Agentic RAG 增强领域知识理解，并通过 Vue3 + FastAPI 提供端到端可视化平台。
+RobotAgent 提供一套围绕机器人任务的端到端工作流：
 
-**核心特性：**
-- 多代理协同：主代理（任务拆解与路由）+ 仿真代理（执行仿真动作）+ 分析代理（数据统计与可视化）
-- 全本地部署：所有代理使用 Jackrong:MLX-Qwen3.5-4B-Claude-4.6-Opus-Reasoning-Distilled-bf16，通过 OMLX + LM Studio 本地运行
-- Agentic RAG：检索增强作为可按需调用的工具，提升复杂指令理解质量
-- Training-Free GRPO：通过轨迹采样与经验回灌实现无参数更新的策略优化
-- 实时可视化：仿真帧 SSE 推送，前端实时渲染执行过程
+- 后端使用 FastAPI 提供认证、会话管理、流式聊天和仿真帧接口
+- 主代理负责任务理解、工具调用和子代理调度
+- 子代理负责仿真执行和数据分析
+- 仿真能力通过 MCP 接入 PyBullet 与 Gazebo
+- 前端基于 Vue 3 + Vite，支持聊天、计划面板、工具结果和仿真画面展示
+- RAG 模块用于学术/技术资料检索与本地知识库查询
 
-## 目录结构
+当前仓库的模型、MCP 地址和外部服务密钥通过 [`config/config.yml`](/Volumes/Samsung/Projects/robotagent/config/config.yml) 配置，不应在 README 中写死为某个固定模型或部署方式。
 
-```
+## 当前目录
+
+下面只列出与项目运行直接相关的主要目录：
+
+```text
 robotagent/
-├── server.py              # 后端统一入口
-├── dev.sh                # 一键启动前后端
-├── config/config.yml     # 模型与 MCP 基础配置
-│
-├── backend/             # 后端（FastAPI）
-│   ├── app.py           # 主应用装配 + 聊天/会话接口
-│   ├── routes_auth.py   # 认证与登录接口
-│   ├── routes_sim.py     # 仿真帧接口（debug/latest/stream）
-│   ├── schemas.py       # Pydantic 请求模型
-│   ├── auth_utils.py    # 认证辅助函数
-│   └── stream_utils.py  # 流式消息解析与文本提取
-│
-├── frontend/            # 前端（Vue 3 + Vite）
-│   └── src/            # Vue 组件、视图、状态管理
-│
-├── mcp/                # MCP 服务
-│   ├── mcp_server.py   # PyBullet 仿真服务
-│   └── gazebo_mcp_server.py  # Gazebo 仿真服务
-│
-├── tools/              # 工具集
-│   ├── GeneralTool.py  # 通用工具（搜索/文件/格式化）
-│   ├── AnalysisTool.py # 分析工具（统计/绘图）
-│   └── SubAgentTool.py# 子代理工具
-│
-├── prompts/            # Agent System Prompt
-│   ├── MainAgentPrompt.py
-│   ├── SimulationAgentPrompt.py
-│   └── AnalysisAgentPrompt.py
-│
-├── RAG/               # 检索增强生成模块
-│   ├── query.py       # 在线检索入口
-│   ├── script/        # 建库脚本
-│   │   ├── download_arxiv_pdfs.py
-│   │   ├── run_rag_pipeline.py
-│   │   └── write_qdrant.py
-│   └── eval/         # RAG 评估数据
-│
-├── training_free_grpo/ # Training-Free GRPO 经验优化
-│   └── collect.py     # 在线轨迹采集与经验回灌
-│
-├── experiments/       # 实验评估
-│   ├── evaluate_experiment_01.py  # 学术搜索问答质量评估
-│   ├── evaluate_experiment_02.py  # 仿真任务执行质量评估
-│   ├── evaluate_experiment_03.py  # 尝试次数与成功率分析
-│   └── config.yaml
-│
-├── docker/            # Docker 容器化配置
-│
-├── charts/            # Mermaid 流程图源码
-│
-└── trajectories.jsonl # 仿真任务轨迹数据
+├── backend/                 # FastAPI 应用、认证、会话、流式聊天、仿真接口
+├── frontend/                # Vue 3 前端
+├── tools/                   # 主代理工具与分析工具
+├── prompts/                 # 主代理 / 分析代理 / 仿真代理提示词
+├── mcp/                     # MCP 服务与仿真资源
+├── RAG/                     # 检索与建库脚本
+├── training_free_grpo/      # 经验采集与训练自由优化相关脚本
+├── tests/                   # 单元测试
+├── config/config.yml        # 模型、MCP 与外部服务配置
+├── server.py                # Uvicorn 启动入口
+├── dev.sh                   # 同时启动前后端的开发脚本
+└── requirements.txt         # Python 依赖
 ```
+
+说明：
+
+- 根目录还包含论文文档、答辩材料、输出文件和临时资源，这些不属于项目运行所必需的代码结构
+- 前端依赖定义在 [`frontend/package.json`](/Volumes/Samsung/Projects/robotagent/frontend/package.json)，不是根目录 [`package.json`](/Volumes/Samsung/Projects/robotagent/package.json)
+
+## 核心能力
+
+- 多 Agent 协作：主代理 + `data-analyzer` + `simulator`
+- 流式聊天：`/api/chat/send` 以 NDJSON 返回增量消息
+- 会话管理：基于 Redis 保存聊天记录、会话索引和登录状态
+- 实时仿真画面：通过 `/api/sim/stream` 和 `/api/sim/latest.png` 回传
+- 工具化检索：支持 workspace 搜索、网页搜索、学术搜索与本地 RAG
+- 分析工具：支持 CSV 摘要、统计描述和图表生成
+
+## 技术栈
+
+- 后端：FastAPI、LangChain、LangGraph、Redis
+- 前端：Vue 3、Vite、Markdown-It、KaTeX、highlight.js
+- 仿真：PyBullet MCP、Gazebo MCP
+- 检索：Qdrant、sentence-transformers、Tavily、arXiv/OpenAlex
 
 ## 环境要求
 
 - Python 3.10+
 - Node.js 18+
 - Redis 6+
-- OMLX（MLX 本地推理，支持 OpenAI-compatible API）
-- Mac M4（24GB 统一内存，推荐）
+- 可用的 OpenAI-compatible LLM 服务
+- 可选：Docker，用于启动 PyBullet / Gazebo / Qdrant
 
-## 依赖安装
+## 安装
 
-### 前端
+### 1. 安装 Python 依赖
 
 ```bash
-cd frontend && npm install
+pip install -r requirements.txt
 ```
 
-### 后端
-
-项目未提供统一 `requirements.txt`，请按当前环境安装核心依赖：
+### 2. 安装前端依赖
 
 ```bash
-pip install fastapi uvicorn langchain langchain-openai redis deepagents
+cd frontend
+npm install
 ```
 
 ## 配置
 
-编辑 `config/config.yml`：
+主要配置文件是 [`config/config.yml`](/Volumes/Samsung/Projects/robotagent/config/config.yml)。
 
-```yaml
-llm: "Jackrong:MLX-Qwen3.5-4B-Claude-4.6-Opus-Reasoning-Distilled-bf16"
-model_url: "http://localhost:1234/v1"
-api_key: "no_need"
+需要重点检查：
 
-analysis_llm: "Jackrong:MLX-Qwen3.5-4B-Claude-4.6-Opus-Reasoning-Distilled-bf16"
-analysis_model_url: "http://localhost:1234/v1"
-analysis_api_key: "no_need"
+- `llm` / `model_url`：主代理模型与推理服务地址
+- `analysis_llm` / `simulation_llm`：子代理模型配置
+- `mcp`：PyBullet / Gazebo MCP 地址
+- `tavily.api_key`：网页搜索
+- `judge`：实验评估使用的外部裁判模型
 
-simulation_llm: "Jackrong:MLX-Qwen3.5-4B-Claude-4.6-Opus-Reasoning-Distilled-bf16"
-simulation_model_url: "http://localhost:1234/v1"
-simulation_api_key: "no_need"
+建议：
 
-mcp:
-  ip: "http://localhost"
-  port: "18001"
+- 将实际密钥改为你自己的配置
+- 不要把真实 API key 提交到公开仓库
 
-tavily:
-  api_key: "tvly-dev-xxx"
-```
+Redis 默认使用以下 DB：
 
-后端默认 Redis：
+- `redis://127.0.0.1:6379/0`：LangGraph checkpoint
 - `redis://127.0.0.1:6379/1`：聊天记录
 - `redis://127.0.0.1:6379/2`：认证与会话
 
-## 启动
+## 启动方式
 
-### 1. 启动 OMLX 本地推理服务
-
-使用 OMLX 加载 `Jackrong:MLX-Qwen3.5-4B-Claude-4.6-Opus-Reasoning-Distilled-bf16`，启动为 OpenAI-compatible API 服务（默认 localhost:1234）。
-
-### 2. 启动 MCP 仿真服务
+### 启动后端
 
 ```bash
-# PyBullet
-python mcp/mcp_server.py
-
-# 或 Gazebo
-python mcp/gazebo_mcp_server.py
+python server.py
 ```
 
-Docker 方式（推荐）：
+默认监听：`http://127.0.0.1:8000`
+
+### 启动前端
 
 ```bash
-# PyBullet MCP（映射到宿主机 8001）
-docker compose -f docker/pybullet/docker-compose.yml up -d --build
-
-# Gazebo MCP（映射到宿主机 8002）
-docker compose -f docker/gazebo/docker-compose.yml up -d --build
+cd frontend
+npm run dev
 ```
 
-### 3. 启动前后端（推荐）
+默认监听：`http://127.0.0.1:5173`
+
+### 一键启动前后端
 
 ```bash
 ./dev.sh
 ```
 
-会同时启动：
-- 后端：`http://127.0.0.1:8000`
-- 前端：`http://127.0.0.1:5173`
+[`dev.sh`](/Volumes/Samsung/Projects/robotagent/dev.sh) 会在启动前清理 `8000` 和 `5173` 端口上的已有进程，并同时拉起后端与前端。可以通过 `BACKEND_PYTHON=/path/to/python ./dev.sh` 指定后端 Python 解释器。
 
-指定后端 Python 环境：
+## 仿真服务
+
+### PyBullet / Gazebo MCP
+
+可以直接运行 Python 服务，也可以使用 Docker Compose。
 
 ```bash
-BACKEND_PYTHON=/path/to/venv/bin/python ./dev.sh
+# Python 方式
+python mcp/mcp_server.py
+python mcp/gazebo_mcp_server.py
 ```
 
-## 主要接口
+```bash
+# Docker 方式
+docker compose -f docker/pybullet/docker-compose.yml up -d --build
+docker compose -f docker/gazebo/docker-compose.yml up -d --build
+```
+
+当前代码里：
+
+- 后端健康检查默认探测 PyBullet 端口 `18001`
+- 后端健康检查默认探测 Gazebo 端口 `8002`
+- 子代理会从 [`config/config.yml`](/Volumes/Samsung/Projects/robotagent/config/config.yml) 的 `mcp` 配置解析服务地址
+
+### Qdrant
+
+如果要启用本地知识库检索，需要准备 Qdrant：
+
+```bash
+docker compose -f docker/qdrant/docker-compose.yml up -d
+```
+
+默认端口为 `6333`。
+
+## API 概览
+
+### 系统
+
+- `GET /api/health`
+- `GET /api/ping`
+- `GET /api/tools`
 
 ### 认证
 
@@ -176,154 +180,57 @@ BACKEND_PYTHON=/path/to/venv/bin/python ./dev.sh
 
 ### 聊天与会话
 
-- `GET /api/messages` — 按会话拉取历史
-- `GET /api/sessions` — 会话列表
-- `DELETE /api/sessions/{session_id}` — 删除会话
-- `POST /api/chat/send` — 聊天发送（NDJSON 流式输出）
+- `GET /api/messages`
+- `GET /api/sessions`
+- `DELETE /api/sessions/{session_id}`
+- `POST /api/chat/send`
 
 ### 仿真
 
-- `GET /api/sim/debug` — 仿真状态调试
-- `GET /api/sim/latest-frame` — 最新帧元数据
-- `GET /api/sim/latest.png` — 最新帧图像
-- `GET /api/sim/stream` — SSE 帧推送
+- `GET /api/sim/debug`
+- `GET /api/sim/latest-frame`
+- `GET /api/sim/latest.png`
+- `GET /api/sim/stream`
 
-## MCP 工具
+## 主要代码位置
 
-### PyBullet 仿真工具（19个）
+- [`backend/app.py`](/Volumes/Samsung/Projects/robotagent/backend/app.py)：应用入口、Agent 初始化、聊天与会话 API
+- [`backend/routes_auth.py`](/Volumes/Samsung/Projects/robotagent/backend/routes_auth.py)：注册、登录、鉴权
+- [`backend/routes_sim.py`](/Volumes/Samsung/Projects/robotagent/backend/routes_sim.py)：仿真帧读取与 SSE 推送
+- [`tools/GeneralTool.py`](/Volumes/Samsung/Projects/robotagent/tools/GeneralTool.py)：workspace / web / academic / RAG 工具
+- [`tools/AnalysisTool.py`](/Volumes/Samsung/Projects/robotagent/tools/AnalysisTool.py)：统计与图表工具
+- [`tools/SubAgentTool.py`](/Volumes/Samsung/Projects/robotagent/tools/SubAgentTool.py)：分析代理与仿真代理初始化
+- [`frontend/src/components/ChatView.vue`](/Volumes/Samsung/Projects/robotagent/frontend/src/components/ChatView.vue)：主聊天界面
+- [`frontend/src/components/AboutView.vue`](/Volumes/Samsung/Projects/robotagent/frontend/src/components/AboutView.vue)：系统说明页
 
-| 工具名称 | 功能描述 |
-|---|---|
-| `initialize_simulation` | 初始化 PyBullet 仿真环境 |
-| `check_static_assets` | 检查静态资源是否完整 |
-| `push_cube_step` | 推送立方体（指定起点、推动向量、步数） |
-| `grab_and_place_step` | 抓取并放置物体 |
-| `path_planning` | 路径规划（线性插值） |
-| `adjust_physics` | 调整物理参数（摩擦系数、弹性系数） |
-| `multi_object_grab_and_place` | 多物体抓取放置 |
-| `simulate_vision_sensor` | 模拟视觉传感器拍照 |
-| `cleanup_simulation_tool` | 清理仿真环境 |
-| `check_simulation_state` | 检查当前仿真状态 |
-| `reset_simulation` | 重置仿真世界 |
-| `pause_simulation` | 暂停仿真 |
-| `unpause_simulation` | 恢复仿真 |
-| `get_object_state` | 获取物体状态（位置、速度） |
-| `set_object_position` | 设置物体位置 |
-| `step_simulation` | 执行指定步数 |
-| `create_object` | 创建物体（cube/sphere/cylinder） |
-| `delete_object` | 删除物体 |
-| `set_gravity` | 设置重力 |
+## RAG 与实验脚本
 
-### Gazebo 仿真工具（17个）
+仓库包含独立的 RAG 和实验脚本，但它们不是启动 Web 平台的必需前置条件。
 
-| 工具名称 | 功能描述 |
-|---|---|
-| `initialize_ros_connection` | 初始化 ROS2 连接 |
-| `spawn_model` | 创建模型（支持 URDF/SDF） |
-| `list_builtin_models` | 列出内置模型 |
-| `delete_model` | 删除模型 |
-| `get_model_state` | 获取模型状态 |
-| `set_model_state` | 设置模型状态 |
-| `list_models` | 列出所有模型 |
-| `pause_simulation` | 暂停仿真 |
-| `unpause_simulation` | 恢复仿真 |
-| `reset_simulation` | 重置仿真（时间和状态） |
-| `reset_world` | 重置世界（仅状态） |
-| `capture_camera` | 捕获相机图像 |
-| `cleanup_ros_connection` | 清理 ROS 连接 |
-| `get_simulation_info` | 获取仿真信息 |
-| `apply_force` | 施加外力 |
-| `move_object` | 移动物体（简化版） |
-| `create_simple_object` | 创建简单几何体 |
-
-## RAG 建库
-
-一键 RAG Pipeline（推荐）：
+常用入口：
 
 ```bash
 python RAG/script/run_rag_pipeline.py
+python training_free_grpo/collect.py
 ```
 
-默认流程：arXiv PDF 下载 → MinerU 解析 → Markdown 切分 → chunks 写入 Qdrant。
+运行前需要根据脚本依赖自行准备对应服务与数据。
 
-可选写入 Qdrant：
+## 测试
 
 ```bash
-python RAG/script/run_rag_pipeline.py --to-qdrant
+pytest
 ```
 
-## Training-Free GRPO
+现有测试主要覆盖工具与 MCP 交互相关模块。
 
-在线轨迹采集与经验回灌：
+## 已修正的过时内容
 
-```bash
-python training_free_grpo/collect.py \
-  --base_url http://localhost:1234/v1 \
-  --model "Jackrong:MLX-Qwen3.5-4B-Claude-4.6-Opus-Reasoning-Distilled-bf16" \
-  --api_key no_need \
-  --prompts SFT/data.txt \
-  --output_path output/training_free_grpo/trajectories.jsonl \
-  --score_path output/training_free_grpo/trajectory_scores.jsonl \
-  --memory_json_path output/training_free_grpo/external_memory.json \
-  --memory_md_path output/training_free_grpo/external_memory.md \
-  --samples_per_prompt 3 \
-  --max_experiences_in_prompt 20
-```
+这次 README 更新主要清理了以下过时或不准确描述：
 
-每轮执行：采样轨迹 → 评分 → 经验总结 → 写入 external_memory → 注入下一轮 system prompt。
-
-## 实验评估
-
-```bash
-# 实验1: Agentic 学术搜索问答质量评估
-python experiments/evaluate_experiment_01.py \
-    --queries experiments/data/rag_queries.jsonl \
-    --out-dir results/exp01
-
-# 实验2: 机器人仿真任务执行质量评估
-python experiments/evaluate_experiment_02.py \
-    --trajectories trajectories.jsonl \
-    --out-dir results/exp02
-
-# 实验3: 尝试次数与成功率关系分析
-python experiments/evaluate_experiment_03.py \
-    --trajectories trajectories.jsonl \
-    --out-dir results/exp03
-```
-
-每个实验输出：`details.jsonl`（详细结果）、`summary.json`（汇总统计）、`figures/`（可视化图表）。
-
-外部 Judge 使用 DeepSeek，需在 `experiments/config.yaml` 配置：
-
-```yaml
-judge:
-  api_base: "https://api.deepseek.com"
-  api_key: "sk-xxx"
-  model: "deepseek-chat"
-  timeout: 120
-```
-
-## 常见问题
-
-### 1) 重新运行 `./dev.sh` 报端口占用
-
-`dev.sh` 已内置端口清理，直接再次运行即可自动重启。
-
-### 2) 前端能聊天但无仿真画面
-
-检查：
-- MCP 服务是否已启动
-- 后端能否访问 MCP 端口（默认 localhost:18001）
-- `/api/sim/debug` 是否显示帧文件存在
-
-### 3) 模型调用超时
-
-检查 OMLX 服务是否正常运行，localhost:1234 是否可访问。可通过 `curl http://localhost:1234/v1/models` 验证。
-
-## 参考资料
-
-- LangChain: https://python.langchain.com/
-- MCP: https://modelcontextprotocol.org/
-- PyBullet: https://pybullet.org/
-- OMLX: 本地 MLX 推理服务（配置于 localhost:1234/v1）
-- OMLX/MLX: https://github.com/ml-explore/mlx
+- 移除了写死的本地模型名称，改为以配置文件为准
+- 修正了“项目未提供统一 `requirements.txt`”这一错误表述
+- 删除了与当前仓库不一致的目录项和实验脚本名
+- 补充了实际存在的接口：`/api/health`、`/api/ping`、`/api/tools`
+- 明确了前端依赖安装位置在 `frontend/`
+- 将说明收敛为当前代码可运行的开发文档，而不是论文式全量介绍
