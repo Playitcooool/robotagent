@@ -1,111 +1,83 @@
 <template>
-  <div class="sidebar">
-    <div class="header">
-      <h2>{{ t('history') }}</h2>
-      <span>{{ sessions.length }} {{ t('sessions') }}</span>
+  <div class="rail-shell">
+    <header class="rail-header">
+      <div>
+        <p class="eyebrow">Sessions</p>
+        <h2>{{ t('history') }}</h2>
+      </div>
+      <span class="session-count">{{ sessions.length }} {{ t('sessions') }}</span>
+    </header>
+
+    <button class="new-session-btn" type="button" @click="startNew">+ {{ t('newChat') }}</button>
+
+    <div v-if="authUser" class="operator-card">
+      <div class="operator-copy">
+        <small>{{ lang === 'zh' ? '当前操作者' : 'Current Operator' }}</small>
+        <strong>{{ authUser.username }}</strong>
+      </div>
+      <button class="logout-mini" type="button" @click="$emit('logout')">{{ t('logout') }}</button>
     </div>
 
-    <div class="userline" v-if="authUser">
-      <span class="user">{{ authUser.username }}</span>
-      <button class="logout-mini" @click="$emit('logout')">{{ t('logout') }}</button>
-    </div>
-
-    <!-- Search -->
-    <div class="search-wrap">
+    <div class="search-block">
       <input
         v-model="searchQuery"
         class="session-search"
         type="search"
-        :placeholder="lang === 'zh' ? '搜索会话...' : 'Search sessions...'"
+        :placeholder="lang === 'zh' ? '搜索会话、摘要或标题' : 'Search sessions, titles, or previews'"
       />
     </div>
 
-    <!-- Empty state (no sessions or no search results) -->
     <div v-if="sessions.length === 0 || (searchQuery && filteredSessions.length === 0)" class="empty-state">
-      <div class="empty-icon">{{ sessions.length === 0 ? '📭' : '🔍' }}</div>
-      <p class="empty-title">{{ sessions.length === 0 ? (lang === 'zh' ? '暂无会话' : 'No sessions yet') : (lang === 'zh' ? '无匹配结果' : 'No results') }}</p>
-      <p class="empty-hint">{{ sessions.length === 0 ? (lang === 'zh' ? '点击下方按钮开始新对话' : 'Start a new conversation below') : (lang === 'zh' ? '尝试其他关键词' : 'Try a different keyword') }}</p>
+      <div class="empty-icon">{{ sessions.length === 0 ? '◎' : '⌕' }}</div>
+      <strong>{{ sessions.length === 0 ? (lang === 'zh' ? '还没有历史会话' : 'No sessions yet') : (lang === 'zh' ? '没有匹配项' : 'No matches') }}</strong>
+      <p>{{ sessions.length === 0 ? (lang === 'zh' ? '创建一个新任务，对话与执行记录会持续沉淀在这里。' : 'Start a mission and the session history will accumulate here.') : (lang === 'zh' ? '尝试更短的关键词或切换到其他会话。' : 'Try a shorter keyword or switch to another session.') }}</p>
     </div>
 
-      <div
-        v-for="s in filteredSessions"
-        :key="s.session_id"
-        :class="['item', { active: s.session_id === currentSessionId }]"
-        @click="select(s)"
+    <div v-else class="session-list">
+      <article
+        v-for="session in filteredSessions"
+        :key="session.session_id"
+        :class="['session-card', { active: session.session_id === currentSessionId }]"
+        @click="select(session)"
       >
-        <div class="item-row">
-          <div class="meta">
-            <!-- Edit mode -->
+        <div class="session-top">
+          <div class="session-main">
             <input
-              v-if="editingSessionId === s.session_id"
+              v-if="editingSessionId === session.session_id"
+              ref="titleInput"
               v-model="editingTitle"
               class="title-edit"
-              @blur="saveTitle(s)"
-              @keyup.enter="saveTitle(s)"
+              @blur="saveTitle(session)"
+              @keyup.enter="saveTitle(session)"
               @keyup.escape="cancelEdit"
-              ref="titleInput"
               @click.stop
             />
-            <!-- Display mode -->
-            <strong v-else>{{ sessionTitle(s) }}</strong>
-            <span class="snippet">{{ snippet(s.preview) || t('emptySession') }}</span>
-            <div class="item-stats">
-              <span v-if="s.message_count != null" class="stat-chip">{{ s.message_count }} 条消息</span>
-              <span v-if="s.updated_at" class="stat-chip">{{ formatTime(s.updated_at) }}</span>
-            </div>
+            <strong v-else>{{ sessionTitle(session) }}</strong>
+            <span class="snippet">{{ snippet(session.preview) || t('emptySession') }}</span>
           </div>
-          <!-- Action buttons -->
-          <div class="item-actions" @click.stop>
-            <!-- Rename -->
-            <button
-              class="action-btn"
-              :title="t('rename')"
-              @click="startEdit(s)"
-            >
-              ✏️
-            </button>
-            <!-- Export -->
-            <button
-              class="action-btn"
-              :title="t('export')"
-              @click="exportSession(s)"
-            >
-              📥
-            </button>
-            <!-- Share -->
-            <button
-              class="action-btn"
-              :title="t('share')"
-              @click="shareSession(s)"
-            >
-              🔗
-            </button>
-            <!-- Delete -->
-            <button
-              class="delete-mini"
-              :title="t('delete')"
-              :disabled="deletingSessionId === s.session_id"
-              @click="removeSession(s)"
-            >
-              ×
-            </button>
+
+          <div class="session-actions" @click.stop>
+            <button class="icon-action" type="button" :title="t('rename')" @click="startEdit(session)">✎</button>
+            <button class="icon-action" type="button" :title="t('export')" @click="exportSession(session)">⤓</button>
+            <button class="icon-action" type="button" :title="t('share')" @click="shareSession(session)">⤴</button>
+            <button class="delete-action" type="button" :title="t('delete')" :disabled="deletingSessionId === session.session_id" @click="removeSession(session)">×</button>
           </div>
         </div>
+
+        <div class="session-meta">
+          <span v-if="session.message_count != null">{{ session.message_count }} {{ lang === 'zh' ? '条消息' : 'messages' }}</span>
+          <span v-if="session.updated_at">{{ formatTime(session.updated_at) }}</span>
+        </div>
+      </article>
     </div>
 
-    <div class="footer">
-      <button @click="startNew">+ {{ t('newChat') }}</button>
-    </div>
-
-    <!-- Toast notification -->
     <div v-if="toast" class="toast">{{ toast }}</div>
   </div>
 </template>
 
 <script>
-import { ref, computed, onMounted, watch, onBeforeUnmount, nextTick } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-// Constants
 const TOAST_DURATION = 2000
 const SNIPPET_MAX_LENGTH = 80
 const TITLE_TRUNCATE_LENGTH = 18
@@ -133,106 +105,111 @@ export default {
 
     const filteredSessions = computed(() => {
       if (!searchQuery.value.trim()) return sessions.value
-      const q = searchQuery.value.toLowerCase()
-      return sessions.value.filter(s => {
-        const title = (s.title || '').toLowerCase()
-        const preview = (s.preview || '').toLowerCase()
-        return title.includes(q) || preview.includes(q)
+      const query = searchQuery.value.toLowerCase()
+      return sessions.value.filter((session) => {
+        const title = (session.title || '').toLowerCase()
+        const preview = (session.preview || '').toLowerCase()
+        return title.includes(query) || preview.includes(query)
       })
     })
 
-    // Translations
-    const t = (key) => {
-      const translations = {
-        zh: {
-          history: '对话历史',
-          sessions: '个会话',
-          logout: '退出',
-          emptySession: '空会话',
-          newChat: '新对话',
-          rename: '重命名',
-          export: '导出',
-          share: '分享',
-          delete: '删除会话',
-          exportSuccess: '会话已导出',
-          shareSuccess: '链接已复制到剪贴板',
-          renameSuccess: '会话已重命名',
-          confirmDelete: (title) => `确认删除会话「${title}」？`
-        },
-        en: {
-          history: 'History',
-          sessions: 'sessions',
-          logout: 'Logout',
-          emptySession: 'Empty session',
-          newChat: 'New Chat',
-          rename: 'Rename',
-          export: 'Export',
-          share: 'Share',
-          delete: 'Delete',
-          exportSuccess: 'Session exported',
-          shareSuccess: 'Link copied to clipboard',
-          renameSuccess: 'Session renamed',
-          confirmDelete: (title) => `Delete session "${title}"?`
-        }
+    const translations = {
+      zh: {
+        history: '任务会话',
+        sessions: '个会话',
+        logout: '退出',
+        emptySession: '空会话',
+        newChat: '新建任务',
+        rename: '重命名',
+        export: '导出',
+        share: '分享',
+        delete: '删除会话',
+        exportSuccess: '会话已导出',
+        shareSuccess: '链接已复制到剪贴板',
+        renameSuccess: '会话已重命名',
+        confirmDelete: (title) => `确认删除会话「${title}」？`
+      },
+      en: {
+        history: 'Mission Sessions',
+        sessions: 'sessions',
+        logout: 'Logout',
+        emptySession: 'Empty session',
+        newChat: 'New Session',
+        rename: 'Rename',
+        export: 'Export',
+        share: 'Share',
+        delete: 'Delete session',
+        exportSuccess: 'Session exported',
+        shareSuccess: 'Link copied to clipboard',
+        renameSuccess: 'Session renamed',
+        confirmDelete: (title) => `Delete session "${title}"?`
       }
-      return translations[props.lang]?.[key] || translations['zh'][key] || key
     }
 
-    async function load () {
+    function t(key) {
+      return translations[props.lang]?.[key] || translations.zh[key] || key
+    }
+
+    async function load() {
       const seq = ++loadSeq
       if (loadController) loadController.abort()
       loadController = new AbortController()
+
       if (!props.authToken) {
         sessions.value = []
         return
       }
+
       try {
-        const res = await fetch('/api/sessions', {
+        const response = await fetch('/api/sessions', {
           headers: { Authorization: `Bearer ${props.authToken}` },
           signal: loadController.signal
         })
+
         if (seq !== loadSeq) return
-        if (res.ok) {
-          const data = await res.json()
-          sessions.value = Array.isArray(data) ? data.filter(Boolean) : []
-        } else {
-          sessions.value = []
-        }
-      } catch (e) {
-        if (e?.name === 'AbortError') return
+        sessions.value = response.ok ? await fetchSessions(response) : []
+      } catch (error) {
+        if (error?.name === 'AbortError') return
         sessions.value = []
       }
     }
 
-    function select (s) { emit('selectSession', s) }
-    function startNew () {
+    async function fetchSessions(response) {
+      const data = await response.json().catch(() => [])
+      return Array.isArray(data) ? data.filter(Boolean) : []
+    }
+
+    function select(session) {
+      emit('selectSession', session)
+    }
+
+    function startNew() {
       emit('selectSession', { __newConversation: true, session_id: `session_${Date.now()}` })
     }
 
-    async function removeSession (s) {
-      const sid = String(s?.session_id || '')
-      if (!sid || !props.authToken) return
-      const ok = window.confirm(t('confirmDelete')(sessionTitle(s)))
+    async function removeSession(session) {
+      const sessionId = String(session?.session_id || '')
+      if (!sessionId || !props.authToken) return
+      const ok = window.confirm(t('confirmDelete')(sessionTitle(session)))
       if (!ok) return
-      deletingSessionId.value = sid
+      deletingSessionId.value = sessionId
+
       try {
-        const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}`, {
+        const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
           method: 'DELETE',
           headers: { Authorization: `Bearer ${props.authToken}` }
         })
-        if (!res.ok) return
-        sessions.value = sessions.value.filter(item => item.session_id !== sid)
-        emit('sessionDeleted', sid)
-      } catch (_) {
+        if (!response.ok) return
+        sessions.value = sessions.value.filter((item) => item.session_id !== sessionId)
+        emit('sessionDeleted', sessionId)
       } finally {
         deletingSessionId.value = ''
       }
     }
 
-    // Rename functions
-    function startEdit (s) {
-      editingSessionId.value = s.session_id
-      editingTitle.value = s.title || s.preview || ''
+    function startEdit(session) {
+      editingSessionId.value = session.session_id
+      editingTitle.value = session.title || session.preview || ''
       nextTick(() => {
         if (titleInput.value) {
           titleInput.value.focus()
@@ -241,113 +218,101 @@ export default {
       })
     }
 
-    function cancelEdit () {
+    function cancelEdit() {
       editingSessionId.value = ''
       editingTitle.value = ''
     }
 
-    async function saveTitle (s) {
+    function saveTitle(session) {
       if (!editingSessionId.value) return
-      const newTitle = editingTitle.value.trim()
-      if (!newTitle) {
+      const nextTitle = editingTitle.value.trim()
+      if (!nextTitle) {
         cancelEdit()
         return
       }
-      // Update locally
-      s.title = newTitle
-      // Show toast
+      session.title = nextTitle
       showToast(t('renameSuccess'))
       cancelEdit()
     }
 
-    // Export session
-    async function exportSession (s) {
+    async function exportSession(session) {
       if (!props.authToken) return
-      try {
-        const res = await fetch(`/api/messages?session_id=${encodeURIComponent(s.session_id)}`, {
-          headers: { Authorization: `Bearer ${props.authToken}` }
-        })
-        if (!res.ok) return
-        const messages = await res.json()
+      const response = await fetch(`/api/messages?session_id=${encodeURIComponent(session.session_id)}`, {
+        headers: { Authorization: `Bearer ${props.authToken}` }
+      })
+      if (!response.ok) return
 
-        // Create export data
-        const exportData = {
-          title: s.title || s.preview || 'RobotAgent Session',
-          exportedAt: new Date().toISOString(),
-          messages: messages.map(m => ({
-            role: m.role,
-            content: m.text || m.content || ''
-          }))
-        }
+      const messages = await response.json()
+      const blob = new Blob([JSON.stringify({
+        title: session.title || session.preview || 'RobotAgent Session',
+        exportedAt: new Date().toISOString(),
+        messages: (Array.isArray(messages) ? messages : []).map((item) => ({
+          role: item.role,
+          content: item.text || item.content || ''
+        }))
+      }, null, 2)], { type: 'application/json' })
 
-        // Download as JSON
-        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = `robotagent-${s.session_id}.json`
-        a.click()
-        URL.revokeObjectURL(url)
-
-        showToast(t('exportSuccess'))
-      } catch (e) {
-        console.error('Export failed:', e)
-      }
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `robotagent-${session.session_id}.json`
+      anchor.click()
+      URL.revokeObjectURL(url)
+      showToast(t('exportSuccess'))
     }
 
-    // Share session
-    async function shareSession (s) {
-      // Create a shareable link (using session ID)
-      const shareUrl = `${window.location.origin}/share/${s.session_id}`
+    async function shareSession(session) {
+      const shareUrl = `${window.location.origin}/share/${session.session_id}`
       try {
         await navigator.clipboard.writeText(shareUrl)
         showToast(t('shareSuccess'))
-      } catch (e) {
-        // Fallback: show URL in prompt
+      } catch (_) {
         prompt(t('share'), shareUrl)
       }
     }
 
-    function showToast (msg) {
-      toast.value = msg
+    function showToast(message) {
+      toast.value = message
       setTimeout(() => { toast.value = '' }, TOAST_DURATION)
     }
 
+    function snippet(value) {
+      return (value || '').slice(0, SNIPPET_MAX_LENGTH) + ((value || '').length > SNIPPET_MAX_LENGTH ? '…' : '')
+    }
+
+    function sessionTitle(session) {
+      const value = (session?.title || session?.preview || '').trim()
+      if (!value) return props.lang === 'zh' ? '新任务' : 'New Session'
+      return value.length > TITLE_TRUNCATE_LENGTH ? `${value.slice(0, TITLE_TRUNCATE_LENGTH)}...` : value
+    }
+
+    function formatTime(timestamp) {
+      if (!timestamp) return ''
+      const date = new Date(timestamp * 1000)
+      const now = new Date()
+      const diffDays = Math.floor((now - date) / 86400000)
+      if (diffDays === 0) return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      if (diffDays === 1) return props.lang === 'zh' ? '昨天' : 'Yesterday'
+      if (diffDays < 7) return props.lang === 'zh' ? `${diffDays}天前` : `${diffDays}d ago`
+      return date.toLocaleDateString([], { month: 'short', day: 'numeric' })
+    }
+
     onMounted(load)
-    watch(() => props.reloadToken, () => { load() })
-    watch(() => props.authToken, () => { load() })
+    watch(() => props.reloadToken, load)
+    watch(() => props.authToken, load)
     onBeforeUnmount(() => {
       if (loadController) loadController.abort()
     })
 
-    function snippet (t) { return (t || '').slice(0, SNIPPET_MAX_LENGTH) + (t && t.length > SNIPPET_MAX_LENGTH ? '…' : '') }
-
-    function formatTime (ts) {
-      if (!ts) return ''
-      const d = new Date(ts * 1000)
-      const now = new Date()
-      const diffMs = now - d
-      const diffDays = Math.floor(diffMs / 86400000)
-      if (diffDays === 0) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      if (diffDays === 1) return '昨天'
-      if (diffDays < 7) return `${diffDays}天前`
-      return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
-    }
-    function sessionTitle (s) {
-      const t = (s?.title || s?.preview || '').trim()
-      if (!t) return props.lang === 'zh' ? '新对话' : 'New Chat'
-      return t.length > TITLE_TRUNCATE_LENGTH ? `${t.slice(0, TITLE_TRUNCATE_LENGTH)}...` : t
-    }
-
     return {
       sessions,
-      filteredSessions,
-      searchQuery,
       deletingSessionId,
       editingSessionId,
       editingTitle,
       titleInput,
       toast,
+      searchQuery,
+      filteredSessions,
       t,
       select,
       startNew,
@@ -366,309 +331,235 @@ export default {
 </script>
 
 <style scoped>
-.sidebar {
+.rail-shell {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
 }
 
-.header {
+.rail-header,
+.operator-card,
+.session-card,
+.search-block,
+.new-session-btn {
+  border-radius: 18px;
+}
+
+.rail-header {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 12px;
+  gap: 12px;
+  margin-bottom: 14px;
 }
 
-.header h2 {
+.eyebrow {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #8fb7ff;
+}
+
+.rail-header h2 {
   margin: 0;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 18px;
 }
 
-.header span {
+.session-count {
   color: var(--muted);
   font-size: 12px;
 }
 
-.userline {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 10px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 6px 8px;
-  background: #111521;
-}
-
-.userline .user {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.logout-mini {
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--text);
-  border-radius: 999px;
-  padding: 4px 8px;
-  font-size: 12px;
+.new-session-btn,
+.logout-mini,
+.icon-action,
+.delete-action {
   cursor: pointer;
 }
 
-.search-wrap {
-  margin-bottom: 10px;
+.new-session-btn {
+  width: 100%;
+  margin-bottom: 12px;
+  padding: 14px 16px;
+  border: 1px solid rgba(95, 156, 255, 0.28);
+  background:
+    linear-gradient(180deg, rgba(47, 125, 255, 0.18), rgba(47, 125, 255, 0.08)),
+    rgba(9, 15, 25, 0.88);
+  color: #e9f2ff;
+  font-weight: 700;
+}
+
+.operator-card,
+.search-block,
+.session-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015)),
+    rgba(8, 13, 21, 0.88);
+}
+
+.operator-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+
+.operator-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.operator-copy small {
+  color: var(--muted);
+}
+
+.logout-mini,
+.icon-action,
+.delete-action {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  border-radius: 999px;
+}
+
+.logout-mini {
+  padding: 8px 10px;
+}
+
+.search-block {
+  padding: 10px 12px;
 }
 
 .session-search {
   width: 100%;
-  padding: 8px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--input-bg);
+  border: none;
+  background: transparent;
   color: var(--text);
-  font-size: 13px;
-  box-sizing: border-box;
-}
-
-.session-search:focus {
   outline: none;
-  border-color: var(--accent);
+  font: inherit;
 }
 
-.session-search::placeholder {
-  color: var(--muted);
-}
-
-.list {
+.session-list {
   flex: 1;
-  overflow-y: auto;
-  padding-right: 3px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(154, 164, 178, 0.45) #111521;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+  padding-right: 4px;
 }
 
-.list::-webkit-scrollbar {
-  width: 9px;
-}
-
-.list::-webkit-scrollbar-track {
-  background: #111521;
-  border-radius: 999px;
-}
-
-.list::-webkit-scrollbar-thumb {
-  background: rgba(154, 164, 178, 0.45);
-  border-radius: 999px;
-  border: 2px solid #111521;
-}
-
-.item {
-  margin-bottom: 8px;
-  padding: 10px 11px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  background: linear-gradient(180deg, rgba(18, 22, 34, 0.96), rgba(16, 20, 31, 0.96));
+.session-card {
+  padding: 14px;
   cursor: pointer;
-  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+  transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
 }
 
-.item:hover {
-  border-color: rgba(255, 255, 255, 0.12);
-  transform: translateY(-1px);
+.session-card:hover {
+  transform: translateY(-2px);
 }
 
-.item.active {
-  border-color: rgba(47, 125, 255, 0.5);
-  background: #121a2c;
+.session-card.active {
+  border-color: rgba(95, 156, 255, 0.34);
+  background:
+    linear-gradient(180deg, rgba(47, 125, 255, 0.14), rgba(47, 125, 255, 0.05)),
+    rgba(10, 16, 27, 0.92);
 }
 
-.item-row {
+.session-top {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 12px;
 }
 
-.meta {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
+.session-main {
   flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 6px;
 }
 
-.meta strong {
-  font-size: 13px;
-  color: var(--text);
-  display: block;
-  max-width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.session-main strong,
+.empty-state strong {
+  font-size: 14px;
+}
+
+.snippet,
+.session-meta,
+.empty-state p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.session-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.icon-action,
+.delete-action {
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+}
+
+.delete-action {
+  color: #ff8d8d;
+}
+
+.session-meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
 }
 
 .title-edit {
-  font-size: 13px;
-  font-weight: 600;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  padding: 2px 6px;
-  color: var(--text);
   width: 100%;
-  max-width: 140px;
-}
-
-.snippet {
-  margin-top: 6px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.35;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
-}
-
-.item-stats {
-  display: flex;
-  gap: 6px;
-  margin-top: 5px;
-  flex-wrap: wrap;
-}
-
-.stat-chip {
-  font-size: 10px;
-  color: var(--muted);
-  background: rgba(255, 255, 255, 0.05);
-  padding: 1px 6px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.item-actions {
-  display: flex;
-  gap: 4px;
-  opacity: 0;
-  transition: opacity 0.2s ease;
-}
-
-.item:hover .item-actions {
-  opacity: 1;
-}
-
-.action-btn {
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  font-size: 12px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  transition: background 0.2s ease;
-}
-
-.action-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.delete-mini {
-  border: 1px solid rgba(255, 107, 107, 0.35);
-  background: transparent;
-  color: var(--danger);
-  border-radius: 999px;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  flex: 0 0 auto;
-}
-
-.delete-mini:hover {
-  background: rgba(255, 107, 107, 0.1);
-}
-
-.delete-mini:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+  border: 1px solid rgba(95, 156, 255, 0.4);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  padding: 6px 9px;
+  font: inherit;
 }
 
 .empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 32px 16px;
-  text-align: center;
-  color: var(--muted);
+  display: grid;
+  gap: 8px;
+  place-items: start;
+  padding: 18px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
 }
 
 .empty-icon {
-  font-size: 36px;
-  margin-bottom: 12px;
-  opacity: 0.6;
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #8fb7ff;
 }
 
-.empty-title {
-  margin: 0 0 6px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.empty-hint {
-  margin: 0;
-  font-size: 12px;
-}
-
-.footer {
-  padding-top: 8px;
-}
-
-.footer button {
-  width: 100%;
-  padding: 10px 14px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--text);
-  font-weight: 600;
-  cursor: pointer;
-}
-
-/* Toast */
 .toast {
   position: fixed;
-  bottom: 20px;
+  bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(0, 0, 0, 0.8);
-  color: #fff;
-  padding: 10px 20px;
-  border-radius: 8px;
-  font-size: 14px;
-  z-index: 1000;
-  animation: fadeIn 0.2s ease;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateX(-50%) translateY(10px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
-}
-
-/* Mobile adjustments */
-@media (max-width: 900px) {
-  .item-actions {
-    opacity: 1;
-  }
-
-  .item {
-    padding: 8px;
-  }
-
-  .snippet {
-    font-size: 11px;
-  }
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: rgba(6, 10, 16, 0.92);
+  color: white;
+  box-shadow: 0 18px 34px rgba(0, 0, 0, 0.28);
+  z-index: 999;
 }
 </style>

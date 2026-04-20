@@ -2,11 +2,11 @@ import { ref } from 'vue'
 
 const AUTH_TOKEN_KEY = 'robotagent_auth_token'
 
-export function useAuth () {
-  const authToken = ref(localStorage.getItem(AUTH_TOKEN_KEY) || '')
-  const authUser = ref(null)
-  const authLoading = ref(true)
+const authToken = ref(localStorage.getItem(AUTH_TOKEN_KEY) || '')
+const authUser = ref(null)
+const authLoading = ref(true)
 
+export function useAuth () {
   function authHeaders (extra = {}) {
     const headers = { ...extra }
     if (authToken.value) headers.Authorization = `Bearer ${authToken.value}`

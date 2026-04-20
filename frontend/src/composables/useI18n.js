@@ -1,6 +1,4 @@
-import { ref } from 'vue'
-
-const LANG_KEY = 'robotagent_lang'
+import { usePreferences } from './usePreferences.js'
 
 const translations = {
   zh: {
@@ -50,17 +48,12 @@ const translations = {
 }
 
 export function useI18n () {
-  const lang = ref(localStorage.getItem(LANG_KEY) || 'zh')
+  const { lang, toggleLang } = usePreferences()
 
   function t (key, ...args) {
     const val = translations[lang.value]?.[key] || translations['zh'][key] || key
     if (typeof val === 'function') return val(...args)
     return val
-  }
-
-  function toggleLang () {
-    lang.value = lang.value === 'zh' ? 'en' : 'zh'
-    localStorage.setItem(LANG_KEY, lang.value)
   }
 
   return { lang, t, toggleLang, translations }

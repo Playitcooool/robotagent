@@ -2,10 +2,10 @@
   <div class="about-page">
     <section class="hero">
       <p class="eyebrow">RobotAgent Platform</p>
-      <h1>多 Agent + 仿真闭环的机器人任务平台</h1>
+      <h1>多 Agent 编排、仿真验证和证据回放的一体化机器人工作台</h1>
       <p class="lead">
-        RobotAgent 将大模型任务编排、数据分析、仿真控制和前端可视化合并为一个工作流。
-        三个代理（主代理、仿真代理、分析代理）均通过 OMLX 本地部署推理，用户可在同一界面中发起任务、查看执行计划、追踪时间轴，并获得仿真回传画面。
+        RobotAgent 把任务拆解、数据分析、仿真控制和前端可视化统一到一个桌面优先的操作台里。
+        主代理、仿真代理和分析代理通过本地推理协同工作，用户可以在同一界面里下达任务、追踪计划、查看搜索与参考证据，并持续获得仿真反馈。
       </p>
       <div class="hero-tags">
         <span>LangChain / ReAct</span>
@@ -19,11 +19,11 @@
       <article class="card">
         <h2>核心能力</h2>
         <ul>
-          <li>主代理负责任务理解、路由和结果归纳，不直接做底层仿真。</li>
-          <li>分析代理处理数据解读与指标分析任务。</li>
-          <li>仿真代理通过 MCP 调用 PyBullet / Gazebo 工具执行场景操作。</li>
-          <li>三个代理均使用本地 OMLX 推理服务（MLX-Qwen3.5-4B），无需外部 API。</li>
-          <li>前端实时展示 token 输出、planning 更新、timeline 和仿真画面。</li>
+          <li>主代理负责任务理解、路由和结果归纳，不直接执行底层仿真操作。</li>
+          <li>分析代理处理数据解释、指标诊断和报告型任务。</li>
+          <li>仿真代理通过 MCP 调用 PyBullet / Gazebo 工具执行机器人场景操作。</li>
+          <li>所有代理都运行在本地 OMLX 推理服务上，无需外部云 API。</li>
+          <li>前端工作台实时展示规划、搜索出处、子代理输出和仿真回放。</li>
         </ul>
       </article>
 
@@ -120,12 +120,14 @@ export default {
 
 .hero {
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 16px;
+  border-radius: 24px;
   background:
-    radial-gradient(1200px 220px at -10% -40%, rgba(47, 125, 255, 0.22), transparent 45%),
-    radial-gradient(600px 220px at 110% -40%, rgba(40, 193, 153, 0.14), transparent 50%),
-    #141a27;
-  padding: 18px;
+    radial-gradient(1200px 280px at -10% -40%, rgba(47, 125, 255, 0.28), transparent 45%),
+    radial-gradient(700px 240px at 110% -40%, rgba(40, 193, 153, 0.16), transparent 50%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01)),
+    #111726;
+  padding: 22px;
+  box-shadow: var(--shadow-sm);
 }
 
 .eyebrow {
@@ -138,8 +140,10 @@ export default {
 
 .hero h1 {
   margin: 0;
-  font-size: 30px;
-  line-height: 1.25;
+  max-width: 20ch;
+  font-size: clamp(2rem, 3vw, 3.3rem);
+  line-height: 1.08;
+  letter-spacing: -0.05em;
 }
 
 .lead {
@@ -180,9 +184,12 @@ export default {
 
 .card {
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 14px;
-  background: #141925;
-  padding: 14px;
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015)),
+    #101724;
+  padding: 16px;
+  box-shadow: var(--shadow-sm);
 }
 
 .card h2,
