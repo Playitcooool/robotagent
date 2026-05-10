@@ -293,6 +293,7 @@ export default {
 <style scoped>
 .message-row {
   display: flex;
+  align-items: flex-start;
 }
 
 .message-row.user {
@@ -300,7 +301,8 @@ export default {
 }
 
 .bubble-card {
-  width: min(68ch, 100%);
+  width: fit-content;
+  max-width: min(68ch, 100%);
   padding: 12px 14px;
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -318,7 +320,7 @@ export default {
 }
 
 .subagent-card {
-  width: min(58ch, 100%);
+  max-width: min(58ch, 100%);
 }
 
 .error-card {
@@ -331,6 +333,11 @@ export default {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 8px;
+  min-width: 0;
+}
+
+.message-row.assistant .bubble-card:not(.subagent-card) .message-topline {
+  min-width: 220px;
 }
 
 .agent-chip,
