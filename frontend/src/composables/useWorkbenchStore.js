@@ -28,12 +28,14 @@ const currentSessionId = ref(`session_${Date.now()}`)
 const sidebarReloadToken = ref(0)
 const planningState = ref(createEmptyPlanningState())
 const showLandingHero = ref(true)
+const isSending = ref(false)
 
 const assistantStreams = {}
 const assistantMessageIds = {}
 const assistantTypewriters = {}
 const typewriterAccum = {}
 let sessionLoadController = null
+let chatAbortController = null
 
 const hasLiveFrame = computed(() => Boolean(liveFrame.value?.image_url))
 const landingMode = computed(() => showLandingHero.value && computeLandingMode(conversation.value))
@@ -218,6 +220,7 @@ function onSessionDeleted(sessionId) {
 
 async function sendMessage(payload) {
   if (!auth.authUser.value) return
+  if (isSending.value) return
 
   const text = typeof payload === 'string' ? payload : String(payload?.text || '')
   const enabledTools = Array.isArray(payload?.enabledTools) ? payload.enabledTools : []
@@ -226,6 +229,8 @@ async function sendMessage(payload) {
   stopLiveFrameStream()
   liveFrame.value = null
   planningState.value = createEmptyPlanningState()
+  chatAbortController = new AbortController()
+  isSending.value = true
 
   conversation.value.push({ id: Date.now(), role: 'user', text })
 
@@ -256,6 +261,7 @@ async function sendMessage(payload) {
   try {
     const res = await auth.apiFetch('/api/chat/send', {
       method: 'POST',
+      signal: chatAbortController.signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: text,
@@ -451,6 +457,17 @@ async function sendMessage(payload) {
       }
     }
   } catch (error) {
+    if (error?.name === 'AbortError') {
+      const idx = conversation.value.findIndex((message) => message.id === mainMessageId)
+      if (idx !== -1) {
+        conversation.value[idx].loading = false
+        conversation.value[idx].thinkingDone = true
+        if (!String(conversation.value[idx].text || '').trim()) {
+          conversation.value[idx].text = '[已中断]'
+        }
+      }
+      return
+    }
     const idx = conversation.value.findIndex((message) => message.id === mainMessageId)
     if (idx !== -1) {
       conversation.value[idx].loading = false
@@ -458,12 +475,30 @@ async function sendMessage(payload) {
       conversation.value[idx].text = `[网络错误] ${String(error)}`
     }
   } finally {
+    isSending.value = false
+    chatAbortController = null
     sidebarReloadToken.value += 1
   }
 }
 
+function stopMessage() {
+  if (!chatAbortController) return
+  chatAbortController.abort()
+  Object.values(assistantMessageIds).forEach((bucket) => {
+    Object.values(bucket || {}).forEach((messageId) => {
+      clearTypewriter(messageId)
+      const idx = conversation.value.findIndex((message) => message.id === messageId)
+      if (idx === -1) return
+      conversation.value[idx].loading = false
+      conversation.value[idx].thinkingDone = true
+    })
+  })
+  stopLiveFrameStream()
+}
+
 function teardown() {
   stopLiveFrameStream()
+  if (chatAbortController) chatAbortController.abort()
   if (sessionLoadController) sessionLoadController.abort()
   stopAllTypewriters()
 }
@@ -478,6 +513,7 @@ export function useWorkbenchStore() {
     planningState,
     liveFrame,
     simStreamActive,
+    isSending,
     hasLiveFrame,
     landingMode,
     hasToolPanelContent,
@@ -486,6 +522,7 @@ export function useWorkbenchStore() {
     selectSession,
     onSessionDeleted,
     sendMessage,
+    stopMessage,
     teardown
   }
 }

@@ -19,7 +19,7 @@
             <span>{{ agentIcon }}</span>
             <span>{{ agentName }}</span>
           </div>
-          <button v-if="message.text" type="button" class="mini-action" @click.stop="copyText(message.text)">
+          <button v-if="hasSpecialTextBlock" type="button" class="mini-action" @click.stop="copyText(message.text)">
             {{ copied ? (lang === 'zh' ? '已复制' : 'Copied') : (lang === 'zh' ? '复制' : 'Copy') }}
           </button>
         </div>
@@ -228,6 +228,10 @@ export default {
       return `${lines.slice(0, 3).join('\n')}\n…`
     })
     const renderedHtml = computed(() => renderMarkdown(props.message?.text || ''))
+    const hasSpecialTextBlock = computed(() => {
+      const text = String(props.message?.text || '')
+      return /```[\s\S]*?```/.test(text) || /(^|\n)( {4}|\t)\S/.test(text)
+    })
     const displayedSearchResults = computed(() => {
       const results = Array.isArray(props.message?.webSearchResults) ? props.message.webSearchResults : []
       if (collapsed.value && results.length > SEARCH_RESULTS_COLLAPSE) {
@@ -280,6 +284,7 @@ export default {
       agentIcon,
       truncatedThinking,
       renderedHtml,
+      hasSpecialTextBlock,
       displayedSearchResults,
       isAcademicSearch,
       copyText,

@@ -10,8 +10,10 @@
       v-model="text"
       :landingMode="landingMode"
       :canSend="canSend"
+      :isSending="isSending"
       :lang="lang"
       @send="send"
+      @stop="$emit('stopMessage')"
     />
   </section>
 </template>
@@ -31,9 +33,10 @@ export default {
   props: {
     conversation: { type: Array, default: () => [] },
     planning: { type: [Object, null], default: null },
-    landingMode: { type: Boolean, default: false }
+    landingMode: { type: Boolean, default: false },
+    isSending: { type: Boolean, default: false }
   },
-  emits: ['sendMessage'],
+  emits: ['sendMessage', 'stopMessage'],
   setup (_, { emit }) {
     const { lang } = useI18n()
     const text = ref('')

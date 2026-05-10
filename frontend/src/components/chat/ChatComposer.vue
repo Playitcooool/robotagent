@@ -1,5 +1,5 @@
 <template>
-  <form :class="['composer-shell', landingMode ? 'landing' : '']" @submit.prevent="$emit('send')">
+  <form :class="['composer-shell', landingMode ? 'landing' : '']" @submit.prevent="submit">
     <div class="composer-surface">
       <textarea
         ref="textareaRef"
@@ -13,8 +13,13 @@
       ></textarea>
 
       <div class="composer-actions">
-        <button type="submit" class="send-btn" :disabled="!canSend">
-          {{ lang === 'zh' ? '发送' : 'Send' }}
+        <button
+          :type="isSending ? 'button' : 'submit'"
+          :class="['send-btn', isSending ? 'stop' : '']"
+          :disabled="!isSending && !canSend"
+          @click="isSending ? $emit('stop') : null"
+        >
+          {{ isSending ? (lang === 'zh' ? '中断' : 'Stop') : (lang === 'zh' ? '发送' : 'Send') }}
         </button>
       </div>
     </div>
@@ -32,9 +37,10 @@ export default {
     modelValue: { type: String, default: '' },
     landingMode: { type: Boolean, default: false },
     canSend: { type: Boolean, default: false },
+    isSending: { type: Boolean, default: false },
     lang: { type: String, default: 'zh' }
   },
-  emits: ['update:modelValue', 'send'],
+  emits: ['update:modelValue', 'send', 'stop'],
   setup (props, { emit }) {
     const textareaRef = ref(null)
     const composing = ref(false)
@@ -53,10 +59,23 @@ export default {
 
     function onKeydown(event) {
       if (composing.value || event.isComposing || event.keyCode === 229) return
+      if (props.isSending && event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault()
+        emit('stop')
+        return
+      }
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault()
         emit('send')
       }
+    }
+
+    function submit() {
+      if (props.isSending) {
+        emit('stop')
+        return
+      }
+      emit('send')
     }
 
     watch(() => props.modelValue, () => nextTick(resize))
@@ -66,7 +85,8 @@ export default {
       textareaRef,
       composing,
       onInput,
-      onKeydown
+      onKeydown,
+      submit
     }
   }
 }
@@ -132,6 +152,11 @@ textarea {
   opacity: 0.45;
   cursor: not-allowed;
   box-shadow: none;
+}
+
+.send-btn.stop {
+  background: linear-gradient(180deg, #ff9b8f, #e05252);
+  box-shadow: 0 14px 28px rgba(224, 82, 82, 0.24);
 }
 
 @media (max-width: 720px) {

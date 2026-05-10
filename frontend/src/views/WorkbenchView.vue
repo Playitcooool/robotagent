@@ -23,7 +23,9 @@
         :conversation="conversation"
         :planning="planningState"
         :landingMode="landingMode"
+        :isSending="isSending"
         @sendMessage="sendMessage"
+        @stopMessage="stopMessage"
       />
       <button
         class="results-toggle"
