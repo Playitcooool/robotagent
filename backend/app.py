@@ -21,6 +21,7 @@ import time
 from langchain_openai import ChatOpenAI
 import re
 import hashlib
+import httpx
 from prompts import MainAgentPrompt
 from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 from redis.asyncio import Redis
@@ -122,6 +123,48 @@ def _truncate_for_prefill(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars].rstrip() + "\n\n[...context truncated for faster prefill...]"
+
+
+# ========== Intent detection via small LLM ==========
+_INTENT_PROMPT = """判断用户意图。根据用户消息和最近一条助手消息，输出一个JSON：
+{"simulator_required": true/false, "execution_confirmed": true/false}
+
+规则：
+- simulator_required: 用户想执行机器人仿真任务（机械臂、抓取、放置、仿真、轨迹规划等）
+- execution_confirmed: 用户在确认执行之前已提出的方案（如"确认"、"好的"、"开始"、"执行"等），且之前助手已给出了仿真方案
+
+只输出JSON，不要其他内容。/no_think"""
+
+
+async def detect_intent(user_message: str, last_assistant_message: str = "") -> dict:
+    """Use small LLM to classify user intent for simulator routing."""
+    url = config.get("intent_model_url", config["model_url"])
+    model = config.get("intent_llm", "Qwen:Qwen3-0.6B")
+    api_key = config.get("intent_api_key", config.get("api_key", "no_need"))
+
+    messages = [
+        {"role": "system", "content": _INTENT_PROMPT},
+        {"role": "user", "content": f"助手上一条消息：{last_assistant_message[:300]}\n\n用户消息：{user_message}"},
+    ]
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={"model": model, "messages": messages, "temperature": 0, "max_tokens": 50},
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"].strip()
+            # Parse JSON from response (handle possible markdown wrapping)
+            content = content.strip("`").removeprefix("json").strip()
+            result = json.loads(content)
+            return {
+                "simulator_required": bool(result.get("simulator_required")),
+                "execution_confirmed": bool(result.get("execution_confirmed")),
+            }
+    except Exception as e:
+        logger.warning(f"Intent detection failed, falling back: {e}")
+        return {"simulator_required": False, "execution_confirmed": False}
 
 
 # ========== 4. 加载工具函数（保留并添加日志） ==========
@@ -696,25 +739,26 @@ async def chat_send(
         if str(t).strip()
     }
     search_enabled = bool(enabled_tools & {"search", "academic_search", "web_search"})
-    simulator_required = any(
-        keyword in user_message
-        for keyword in ("机械臂", "抓取", "放置", "仿真", "PyBullet", "Gazebo", "轨迹")
-    )
-    simulator_execution_confirmed = any(
-        phrase in user_message.strip().lower()
-        for phrase in (
-            "确认执行",
-            "开始执行",
-            "按方案执行",
-            "按计划执行",
-            "可以执行",
-            "继续执行",
-            "执行吧",
-            "run it",
-            "start simulation",
-            "go ahead",
-        )
-    )
+
+    # Use small LLM for intent detection
+    last_assistant_msg = ""
+    if chat_redis:
+        user_id_tmp = current_user.get("uid", "unknown")
+        key = _chat_history_key(user_id_tmp, session_id)
+        recent = await chat_redis.lrange(key, -4, -1)
+        for item in reversed(recent or []):
+            try:
+                parsed = json.loads(item)
+                if parsed.get("role") == "assistant":
+                    last_assistant_msg = parsed.get("content", "")
+                    break
+            except Exception:
+                continue
+
+    intent = await detect_intent(user_message, last_assistant_msg)
+    simulator_required = intent["simulator_required"]
+    simulator_execution_confirmed = intent["execution_confirmed"]
+
     user_id = current_user.get("uid", "unknown")
     await _append_chat_message(user_id, session_id, "user", user_message)
 
