@@ -28,6 +28,12 @@ export function computeShowToolPanel({ liveFrame = null } = {}) {
   return Boolean(liveFrame?.image_url)
 }
 
+export function computeShowPlanningPanel(planning = null) {
+  const steps = Array.isArray(planning?.steps) ? planning.steps : []
+  const statusText = String(planning?.statusText || '').trim()
+  return steps.length > 0 || Boolean(statusText)
+}
+
 export function normalizePlanningPayload(payload = {}) {
   const incoming = Array.isArray(payload?.plan)
     ? payload.plan
@@ -37,8 +43,14 @@ export function normalizePlanningPayload(payload = {}) {
         ? payload.plan.steps
         : []
 
+  const statusText = String(payload?.status_text || payload?.statusText || '').trim()
+  const activeSource = resolveAgentKey(payload?.active_source || payload?.activeSource || payload?.source || 'main')
+
   return {
     updatedAt: Number(payload?.updated_at || payload?.updatedAt || Date.now() / 1000),
+    statusText,
+    activeSource,
+    isActive: Boolean(payload?.is_active ?? payload?.isActive ?? statusText),
     steps: incoming
       .map((item, index) => {
         const statusRaw = String(item?.status || item?.state || '').toLowerCase().replace('-', '_')
@@ -62,7 +74,10 @@ export function normalizePlanningPayload(payload = {}) {
 export function createEmptyPlanningState() {
   return {
     steps: [],
-    updatedAt: 0
+    updatedAt: 0,
+    statusText: '',
+    activeSource: 'main',
+    isActive: false
   }
 }
 

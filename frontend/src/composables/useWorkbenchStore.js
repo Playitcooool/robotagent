@@ -408,6 +408,13 @@ async function sendMessage(payload) {
         if (event.type === 'status') {
           const statusText = String(event.text || '').trim()
           if (!statusText) continue
+          planningState.value = normalizePlanningPayload({
+            steps: planningState.value?.steps || [],
+            updatedAt: Date.now() / 1000,
+            statusText,
+            activeSource: event.source || planningState.value?.activeSource || 'main',
+            isActive: true
+          })
           if (event.status_kind === 'search') streamState.loadingKind = 'search'
           if (idx !== -1) {
             conversation.value[idx].loading = true

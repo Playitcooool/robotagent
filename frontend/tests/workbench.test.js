@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   computeLandingMode,
+  computeShowPlanningPanel,
   computeShowToolPanel,
   createWelcomeMessage,
   deriveResultRailData,
@@ -76,12 +77,40 @@ test('normalizePlanningPayload normalizes alternate incoming event shapes', () =
     }),
     {
       updatedAt: 123,
+      statusText: '',
+      activeSource: 'main',
+      isActive: false,
       steps: [
         { id: '1', step: 'Inspect scene', status: 'in_progress' },
         { id: '2', step: 'Report outcome', status: 'completed' }
       ]
     }
   )
+})
+
+test('normalizePlanningPayload preserves structured status fields without steps', () => {
+  assert.deepEqual(
+    normalizePlanningPayload({
+      status_text: '已转交 simulator 执行，正在处理中...',
+      active_source: 'simulator',
+      is_active: true,
+      updated_at: 456
+    }),
+    {
+      updatedAt: 456,
+      statusText: '已转交 simulator 执行，正在处理中...',
+      activeSource: 'simulator',
+      isActive: true,
+      steps: []
+    }
+  )
+})
+
+test('computeShowPlanningPanel shows steps or status text only', () => {
+  assert.equal(computeShowPlanningPanel(null), false)
+  assert.equal(computeShowPlanningPanel({ steps: [], statusText: '' }), false)
+  assert.equal(computeShowPlanningPanel({ steps: [], statusText: '正在执行工具：task' }), true)
+  assert.equal(computeShowPlanningPanel({ steps: [{ id: '1', step: 'Plan', status: 'pending' }] }), true)
 })
 
 test('resolveAgentKey collapses simulator and analysis aliases', () => {

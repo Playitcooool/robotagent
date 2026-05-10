@@ -661,6 +661,9 @@ async def chat_send(
         last_usage_by_agent_signature = ""
         last_status_signature = ""
         last_tool_output_signature = ""
+        current_planning_steps = []
+        current_status_text = ""
+        current_status_source = "main"
         debug_msg_count = 0
         try:
             analysis_tool_names = set(getattr(AnalysisTool, "__all__", []))
@@ -969,6 +972,21 @@ async def chat_send(
                     return False
                 return True
 
+            def _build_planning_payload(
+                plan=None,
+                status_text: str = "",
+                active_source: str = "main",
+                is_active: bool = False,
+            ) -> dict:
+                return {
+                    "type": "planning",
+                    "plan": plan if isinstance(plan, list) else [],
+                    "updated_at": time.time(),
+                    "status_text": _normalize_text(status_text).strip(),
+                    "active_source": active_source or "main",
+                    "is_active": bool(is_active),
+                }
+
             runtime_tool_note = (
                 "本轮可用工具：search（智能搜索，同时支持学术论文和网页）。请自主判断并调用 search。"
                 if academic_search_enabled
@@ -1037,8 +1055,19 @@ async def chat_send(
                         signature = f"subagent:{status_text}"
                         if signature != last_status_signature:
                             last_status_signature = signature
+                            current_status_text = status_text
+                            current_status_source = source
                             yield json.dumps(
                                 {"type": "status", "text": status_text, "source": source},
+                                ensure_ascii=False,
+                            ) + "\n"
+                            yield json.dumps(
+                                _build_planning_payload(
+                                    current_planning_steps,
+                                    current_status_text,
+                                    current_status_source,
+                                    True,
+                                ),
                                 ensure_ascii=False,
                             ) + "\n"
 
@@ -1235,8 +1264,19 @@ async def chat_send(
                             signature = f"tool:{name_msg}:{status_text}"
                             if signature != last_status_signature:
                                 last_status_signature = signature
+                                current_status_text = status_text
+                                current_status_source = "main"
                                 yield json.dumps(
                                     {"type": "status", "text": status_text, "source": "main"},
+                                    ensure_ascii=False,
+                                ) + "\n"
+                                yield json.dumps(
+                                    _build_planning_payload(
+                                        current_planning_steps,
+                                        current_status_text,
+                                        current_status_source,
+                                        True,
+                                    ),
                                     ensure_ascii=False,
                                 ) + "\n"
                             if planning_steps:
@@ -1245,11 +1285,13 @@ async def chat_send(
                                 )
                                 if signature != last_planning_signature:
                                     last_planning_signature = signature
-                                    planning_payload = {
-                                        "type": "planning",
-                                        "plan": planning_steps,
-                                        "updated_at": time.time(),
-                                    }
+                                    current_planning_steps = planning_steps
+                                    planning_payload = _build_planning_payload(
+                                        current_planning_steps,
+                                        current_status_text,
+                                        current_status_source,
+                                        True,
+                                    )
                                     yield json.dumps(
                                         planning_payload, ensure_ascii=False
                                     ) + "\n"
@@ -1274,6 +1316,8 @@ async def chat_send(
                         signature = f"tool:{name_msg}:{_truncate_text(_normalize_text(content_msg), max_len=60)}"
                         if signature != last_status_signature:
                             last_status_signature = signature
+                            current_status_text = tool_status_text
+                            current_status_source = tool_source
                             yield json.dumps(
                                 {
                                     "type": "status",
@@ -1281,6 +1325,15 @@ async def chat_send(
                                     "source": tool_source,
                                     "status_kind": "search" if (is_web_search_tool or is_academic_search_tool or is_unified_search_tool) else "tool",
                                 },
+                                ensure_ascii=False,
+                            ) + "\n"
+                            yield json.dumps(
+                                _build_planning_payload(
+                                    current_planning_steps,
+                                    current_status_text,
+                                    current_status_source,
+                                    True,
+                                ),
                                 ensure_ascii=False,
                             ) + "\n"
                         tool_text = _normalize_text(content_msg)
@@ -1448,6 +1501,16 @@ async def chat_send(
                     session_id,
                     final_usage_by_agent,
                 )
+            if current_planning_steps or current_status_text:
+                yield json.dumps(
+                    _build_planning_payload(
+                        current_planning_steps,
+                        current_status_text,
+                        current_status_source,
+                        False,
+                    ),
+                    ensure_ascii=False,
+                ) + "\n"
             # 发送完成信号
             print(f"[DEBUG] ====== STREAM COMPLETE, yielding done ======")
             yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
