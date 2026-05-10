@@ -13,13 +13,8 @@
       ></textarea>
 
       <div class="composer-actions">
-        <div class="hint">
-          <span>{{ lang === 'zh' ? '任务下达' : 'Mission Dispatch' }}</span>
-          <small>{{ lang === 'zh' ? '规划 / 分析 / 仿真会在右栏联动展示' : 'Planning / analysis / simulation sync to the right rail.' }}</small>
-        </div>
-
         <button type="submit" class="send-btn" :disabled="!canSend">
-          {{ lang === 'zh' ? '执行任务' : 'Run Mission' }}
+          {{ lang === 'zh' ? '发送' : 'Send' }}
         </button>
       </div>
     </div>
@@ -117,27 +112,7 @@ textarea {
 .composer-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.hint {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.hint span {
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: #8fb7ff;
-  font-weight: 700;
-}
-
-.hint small {
-  color: var(--muted);
-  font-size: 12px;
+  justify-content: flex-end;
 }
 
 .send-btn {

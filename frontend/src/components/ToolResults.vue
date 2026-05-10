@@ -3,7 +3,7 @@
     <header class="results-header">
       <div>
         <p class="eyebrow">Execution Rail</p>
-        <h2>{{ lang === 'zh' ? '执行证据与状态回放' : 'Execution Evidence & State Replay' }}</h2>
+        <h2>{{ lang === 'zh' ? '执行结果' : 'Execution Results' }}</h2>
       </div>
       <div class="summary-pills">
         <span v-if="activeTasks.length" class="pill active">{{ activeTasks.length }} {{ lang === 'zh' ? '运行中' : 'live' }}</span>

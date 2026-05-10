@@ -27,6 +27,7 @@ const conversation = ref(createWelcomeConversation(preferences.lang.value))
 const currentSessionId = ref(`session_${Date.now()}`)
 const sidebarReloadToken = ref(0)
 const planningState = ref(createEmptyPlanningState())
+const showLandingHero = ref(true)
 
 const assistantStreams = {}
 const assistantMessageIds = {}
@@ -35,7 +36,7 @@ const typewriterAccum = {}
 let sessionLoadController = null
 
 const hasLiveFrame = computed(() => Boolean(liveFrame.value?.image_url))
-const landingMode = computed(() => computeLandingMode(conversation.value))
+const landingMode = computed(() => showLandingHero.value && computeLandingMode(conversation.value))
 const hasToolPanelContent = computed(() => computeShowToolPanel({
   liveFrame: liveFrame.value,
   planningState: planningState.value,
@@ -69,7 +70,8 @@ function resetConversation(newSessionId = null) {
   stopLiveFrameStream()
   liveFrame.value = null
   planningState.value = createEmptyPlanningState()
-  conversation.value = createWelcomeConversation(preferences.lang.value)
+  showLandingHero.value = false
+  conversation.value = []
 }
 
 function startTypewriter(msgId, idx, fullText, field = 'text') {
@@ -181,6 +183,7 @@ async function selectSession(session) {
     return
   }
 
+  showLandingHero.value = false
   currentSessionId.value = session.session_id
   if (sessionLoadController) sessionLoadController.abort()
   sessionLoadController = new AbortController()

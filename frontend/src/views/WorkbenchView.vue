@@ -1,5 +1,8 @@
 <template>
-  <section :class="['workbench', toolPanelOpen && hasToolPanelContent ? 'has-results' : 'no-results']">
+  <section
+    :class="['workbench', toolPanelOpen ? 'has-results' : 'no-results']"
+    :style="{ gridTemplateColumns }"
+  >
     <aside class="session-rail">
       <Sidebar
         :reloadToken="sidebarReloadToken"
@@ -13,6 +16,8 @@
       />
     </aside>
 
+    <div class="resize-handle left-handle" @mousedown="startResize('left', $event)"></div>
+
     <main class="conversation-stage">
       <ChatView
         :conversation="conversation"
@@ -20,19 +25,20 @@
         :landingMode="landingMode"
         @sendMessage="sendMessage"
       />
+      <button
+        class="results-toggle"
+        type="button"
+        :aria-pressed="toolPanelOpen"
+        :title="toolPanelOpen ? (preferences.lang.value === 'zh' ? '收起结果' : 'Hide results') : (preferences.lang.value === 'zh' ? '展开结果' : 'Show results')"
+        @click="toolPanelOpen = !toolPanelOpen"
+      >
+        {{ toolPanelOpen ? '▸' : '◂' }}
+      </button>
     </main>
 
-    <button
-      v-if="hasToolPanelContent"
-      class="results-toggle"
-      type="button"
-      :aria-pressed="toolPanelOpen"
-      @click="toolPanelOpen = !toolPanelOpen"
-    >
-      {{ toolPanelOpen ? (preferences.lang.value === 'zh' ? '收起结果' : 'Hide Results') : (preferences.lang.value === 'zh' ? '打开结果' : 'Show Results') }}
-    </button>
+    <div v-if="toolPanelOpen" class="resize-handle right-handle" @mousedown="startResize('right', $event)"></div>
 
-    <aside v-if="toolPanelOpen && hasToolPanelContent" class="results-rail">
+    <aside v-if="toolPanelOpen" class="results-rail">
       <ToolResults
         :liveFrame="liveFrame"
         :planning="planningState"
@@ -43,7 +49,7 @@
 </template>
 
 <script>
-import { onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import ChatView from '../components/ChatView.vue'
@@ -59,6 +65,50 @@ export default {
     const router = useRouter()
     const workbench = useWorkbenchStore()
     const toolPanelOpen = ref(false)
+    const leftWidth = ref(290)
+    const rightWidth = ref(360)
+    let resizeState = null
+
+    const gridTemplateColumns = computed(() => {
+      if (toolPanelOpen.value) {
+        return `${leftWidth.value}px 8px minmax(360px, 1fr) 8px ${rightWidth.value}px`
+      }
+      return `${leftWidth.value}px 8px minmax(360px, 1fr)`
+    })
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value))
+    }
+
+    function startResize(target, event) {
+      event.preventDefault()
+      resizeState = {
+        target,
+        startX: event.clientX,
+        startLeft: leftWidth.value,
+        startRight: rightWidth.value
+      }
+      document.body.classList.add('is-resizing')
+      window.addEventListener('mousemove', onResize)
+      window.addEventListener('mouseup', stopResize)
+    }
+
+    function onResize(event) {
+      if (!resizeState) return
+      const delta = event.clientX - resizeState.startX
+      if (resizeState.target === 'left') {
+        leftWidth.value = clamp(resizeState.startLeft + delta, 220, 420)
+        return
+      }
+      rightWidth.value = clamp(resizeState.startRight - delta, 280, 560)
+    }
+
+    function stopResize() {
+      resizeState = null
+      document.body.classList.remove('is-resizing')
+      window.removeEventListener('mousemove', onResize)
+      window.removeEventListener('mouseup', stopResize)
+    }
 
     async function handleSelectSession(session) {
       await workbench.selectSession(session)
@@ -94,12 +144,15 @@ export default {
 
     watch(workbench.hasToolPanelContent, (hasContent, hadContent) => {
       if (hasContent && !hadContent) toolPanelOpen.value = true
-      if (!hasContent) toolPanelOpen.value = false
     })
+
+    onBeforeUnmount(stopResize)
 
     return {
       ...workbench,
       toolPanelOpen,
+      gridTemplateColumns,
+      startResize,
       handleSelectSession,
       handleSessionDeleted
     }
@@ -111,30 +164,31 @@ export default {
 .workbench {
   position: relative;
   display: grid;
-  grid-template-columns: 290px minmax(0, 1fr) 360px;
-  gap: 16px;
+  gap: 8px;
   height: calc(100vh - 72px);
   padding: 18px;
 }
 
 .results-toggle {
   position: absolute;
-  top: 26px;
-  right: 28px;
-  z-index: 5;
+  top: 50%;
+  right: -1px;
+  z-index: 8;
+  transform: translateY(-50%);
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 46px;
   border: 1px solid rgba(95, 156, 255, 0.32);
-  border-radius: 999px;
+  border-right: none;
+  border-radius: 12px 0 0 12px;
   background: rgba(12, 18, 29, 0.92);
   color: #dce8ff;
-  padding: 8px 12px;
-  font-size: 12px;
+  padding: 0;
+  font-size: 13px;
   font-weight: 700;
   cursor: pointer;
   box-shadow: var(--shadow-sm);
-}
-
-.workbench.no-results {
-  grid-template-columns: 290px minmax(0, 1fr);
 }
 
 .session-rail,
@@ -155,6 +209,7 @@ export default {
 }
 
 .conversation-stage {
+  position: relative;
   overflow: hidden;
   background:
     radial-gradient(880px 360px at 50% 0%, rgba(47, 125, 255, 0.12), transparent 56%),
@@ -162,10 +217,26 @@ export default {
     rgba(12, 16, 24, 0.96);
 }
 
+.resize-handle {
+  min-height: 0;
+  border-radius: 999px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.16s ease;
+}
+
+.resize-handle:hover {
+  background: rgba(95, 156, 255, 0.2);
+}
+
+:global(body.is-resizing) {
+  cursor: col-resize;
+  user-select: none;
+}
+
 @media (max-width: 1280px) {
-  .workbench,
-  .workbench.no-results {
-    grid-template-columns: 268px minmax(0, 1fr);
+  .workbench {
+    grid-template-columns: 268px 8px minmax(0, 1fr) !important;
   }
 
   .results-rail {
@@ -175,11 +246,14 @@ export default {
 }
 
 @media (max-width: 900px) {
-  .workbench,
-  .workbench.no-results {
-    grid-template-columns: 1fr;
+  .workbench {
+    grid-template-columns: 1fr !important;
     height: auto;
     min-height: calc(100vh - 72px);
+  }
+
+  .resize-handle {
+    display: none;
   }
 
   .session-rail,
