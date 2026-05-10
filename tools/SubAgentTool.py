@@ -41,6 +41,32 @@ _cached_simulation_chat: "ChatOpenAI | None" = None
 _mcp_tools_lock = asyncio.Lock()
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; using %s", name, raw, default)
+        return default
+
+
+def _truncate_for_prefill(text: str, max_chars: int) -> str:
+    if max_chars <= 0 or not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "\n\n[...truncated for faster prefill...]"
+
+
 def _resolve_mcp_service_urls() -> dict[str, str]:
     """Resolve MCP endpoints from config with backward compatibility."""
     mcp_cfg = config.get("mcp") or {}
@@ -92,7 +118,7 @@ def reset_cached_mcp_tools() -> None:
 
 async def init_subagents(
     experiences: list | None = None,
-    max_experiences_in_subagent: int = 10,
+    max_experiences_in_subagent: int = 3,
 ):
     """
     Initialize subagents with optional experience injection.
@@ -119,7 +145,8 @@ async def init_subagents(
             s = str(exp.get("summary", "")).strip()
             if s:
                 lines.append(f"  总结: {s}")
-            for p in exp.get("principles", [])[:3]:
+            max_principles = _env_int("MAX_EXPERIENCE_PRINCIPLES", 2, minimum=0)
+            for p in exp.get("principles", [])[:max_principles]:
                 lines.append(f"  原则: {p}")
         return "\n".join(lines)
 
@@ -245,6 +272,10 @@ def _load_simulation_skills() -> str:
     import re
     from pathlib import Path
 
+    if not _env_bool("ENABLE_SIM_SKILLS_CONTEXT", False):
+        logger.info("Simulation skills context skipped; set ENABLE_SIM_SKILLS_CONTEXT=1 to inject it")
+        return ""
+
     skills_dir = Path(__file__).parent.parent / "skills"
     if not skills_dir.exists():
         logger.warning(f"Skills directory not found: {skills_dir}")
@@ -262,7 +293,10 @@ def _load_simulation_skills() -> str:
             content = filepath.read_text(encoding="utf-8")
             # Strip the YAML frontmatter (---...---)
             content = re.sub(r"^---\n[\s\S]*?---\n", "", content)
-            sections.append(f"\n\n{'='*60}\n{filename}\n{'='*60}\n{content}")
+            max_chars = _env_int("SIM_SKILL_FILE_MAX_CHARS", 2000, minimum=0)
+            content = _truncate_for_prefill(content, max_chars)
+            if content:
+                sections.append(f"\n\n{'='*60}\n{filename}\n{'='*60}\n{content}")
         except Exception as e:
             logger.warning(f"Failed to load skill file {filepath}: {e}")
 
@@ -271,7 +305,10 @@ def _load_simulation_skills() -> str:
 
     header = "\n\n【Skills 参考文档】以下文档描述了 PyBullet 和 Gazebo 仿真工具的详细用法，请在使用前阅读："
     footer = "\n【Skills 结束】"
-    return header + "\n".join(sections) + footer
+    return _truncate_for_prefill(
+        header + "\n".join(sections) + footer,
+        _env_int("SIM_SKILLS_TOTAL_MAX_CHARS", 4000, minimum=0),
+    )
 
 def _load_agent_experiences() -> list:
     """
@@ -313,7 +350,7 @@ def _load_agent_experiences() -> list:
     return experiences
 
 
-def build_experience_suffix(experiences: list, max_experiences: int = 10, agent_filter: str | None = None) -> str:
+def build_experience_suffix(experiences: list, max_experiences: int = 3, agent_filter: str | None = None) -> str:
     """
     Build the text suffix for an agent's system prompt from experience list.
 
@@ -338,7 +375,8 @@ def build_experience_suffix(experiences: list, max_experiences: int = 10, agent_
         if summary:
             lines.append(summary)
         # principles as items
-        for p in exp.get("principles", [])[:10]:
+        max_principles = _env_int("MAX_EXPERIENCE_PRINCIPLES", 2, minimum=0)
+        for p in exp.get("principles", [])[:max_principles]:
             lines.append(f"- {p}")
         # dos / 高分要点
         for d in exp.get("dos", []):

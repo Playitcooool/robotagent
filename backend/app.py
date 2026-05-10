@@ -96,18 +96,57 @@ with open(ROOT_DIR / "config" / "config.yml", "r", encoding="utf-8") as f:
     config = yaml.load(f.read(), Loader=yaml.FullLoader)
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; using %s", name, raw, default)
+        return default
+
+
+def _truncate_for_prefill(text: str, max_chars: int) -> str:
+    if max_chars <= 0 or not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "\n\n[...context truncated for faster prefill...]"
+
+
 # ========== 4. 加载工具函数（保留并添加日志） ==========
 def get_tools():
     try:
         general_tools = []
         subagent_tools = []
+        default_tool_names = "search,current_time"
+        configured_tools = os.environ.get("MAIN_GENERAL_TOOLS", default_tool_names)
+        enabled_general_tools = {
+            name.strip()
+            for name in configured_tools.split(",")
+            if name.strip()
+        }
         for func_name in GeneralTool.__all__:
+            if enabled_general_tools and func_name not in enabled_general_tools:
+                continue
             function = getattr(GeneralTool, func_name)
             general_tools.append(function)
 
         # 合并工具
         all_tools = general_tools + subagent_tools
-        logger.info(f"总工具数量：{len(all_tools)}")
+        logger.info(
+            "总工具数量：%s；MainAgent 通用工具：%s",
+            len(all_tools),
+            [getattr(t, "name", str(t)) for t in general_tools],
+        )
         return all_tools
     except Exception as e:
         logger.error(f"加载工具失败：{str(e)}", exc_info=True)
@@ -163,17 +202,28 @@ async def startup_event():
         if not all_tools:
             logger.warning("未加载到任何工具，agent将使用空工具列表")
 
-        # 加载 experience（从 agent_experperiences.json）
-        # 通过环境变量控制：WITHOUT_EXPERIENCE=1 启动则跳过注入
-        inject_experiences = os.environ.get("WITHOUT_EXPERIENCE", "0") != "1"
+        # 加载 experience（从 agent_experiences.json）。
+        # 为了降低 prefill，默认不注入；需要时设置 ENABLE_EXPERIENCE=1。
+        # WITHOUT_EXPERIENCE=1 继续作为强制关闭开关。
+        inject_experiences = (
+            _env_bool("ENABLE_EXPERIENCE", False)
+            and not _env_bool("WITHOUT_EXPERIENCE", False)
+        )
         if inject_experiences:
             experiences = _load_agent_experiences()
             logger.info(f"已加载 {len(experiences)} 条 agent experiences")
         else:
             experiences = []
-            logger.info("WITHOUT_EXPERIENCE=1，已跳过 experience 注入")
+            logger.info("已跳过 experience 注入；设置 ENABLE_EXPERIENCE=1 可开启")
 
-        subagents = list(await init_subagents(experiences=experiences))
+        subagents = list(
+            await init_subagents(
+                experiences=experiences,
+                max_experiences_in_subagent=_env_int(
+                    "MAX_EXPERIENCES_IN_SUBAGENT", 3, minimum=0
+                ),
+            )
+        )
 
         def _subagent_name(sa) -> str:
             if isinstance(sa, dict):
@@ -209,18 +259,30 @@ async def startup_event():
 
         # 加载 robot_context.md
         context = context_loader.load_context() if context_loader else ""
+        context = _truncate_for_prefill(
+            context,
+            _env_int("ROBOT_CONTEXT_MAX_CHARS", 1200, minimum=0),
+        )
         logger.info(f"已加载 robot_context.md: {len(context)} 字符" if context else "未找到 robot_context.md")
 
         runtime_system_prompt = build_system_prompt_with_context(
             MainAgentPrompt.SYSTEM_PROMPT,
             context,
-            exp_suffix
+            _truncate_for_prefill(
+                exp_suffix,
+                _env_int("MAIN_EXPERIENCE_MAX_CHARS", 1500, minimum=0),
+            )
         ) + prompt_suffix
 
         # 创建带工具的agent（核心修正）
         DB_URI = "redis://localhost:6379"
-        async with AsyncRedisSaver.from_conn_string(DB_URI) as checkpointer:
+        checkpointer = None
+        checkpointer_cm = None
+        if _env_bool("AGENT_CHECKPOINT_ENABLED", True):
+            checkpointer_cm = AsyncRedisSaver.from_conn_string(DB_URI)
+            checkpointer = await checkpointer_cm.__aenter__()
             await checkpointer.asetup()
+        try:
             active_agent = create_deep_agent(
                 model=chatBot,
                 tools=all_tools,
@@ -228,6 +290,9 @@ async def startup_event():
                 subagents=subagents,
                 checkpointer=checkpointer,
             )
+        finally:
+            if checkpointer_cm is not None:
+                await checkpointer_cm.__aexit__(None, None, None)
         logger.info("Agent 初始化成功！")
     except Exception as e:
         logger.error(f"Agent 初始化失败：{str(e)}", exc_info=True)
