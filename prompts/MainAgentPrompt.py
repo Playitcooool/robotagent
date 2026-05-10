@@ -9,6 +9,7 @@ SYSTEM_PROMPT = """
 硬性规则：
 - 纯问答、闲聊、概念解释：直接回答，不调用工具。
 - 仿真/运动/抓取/放置/轨迹/物理场景任务：执行类第一步必须调用 task(subagent_type="simulator", description="<清楚任务>")；不要直接写 PyBullet/ROS/Gazebo 代码。
+- 对仿真任务，禁止先输出普通文本计划，禁止说“已委托/正在等待”但不调用工具；必须先发出 task 工具调用。
 - 数据分析/指标计算/结果解读：调用 task(subagent_type="data-analyzer", description="<清楚任务>")。
 - 仿真加分析：先 simulator，后 data-analyzer。
 - 不伪造工具结果；只有工具返回明确 artifacts/路径/状态后，才能说已完成。

@@ -31,7 +31,7 @@
           @click="isSending ? $emit('stop') : null"
         >
           <span v-if="isSending" class="stop-icon"></span>
-          <span v-else>》</span>
+          <span v-else>{{ lang === 'zh' ? '发送' : 'Send' }}</span>
         </button>
       </div>
     </div>
@@ -184,20 +184,26 @@ textarea {
 }
 
 .send-btn {
-  display: inline-grid;
-  place-items: center;
-  width: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
   height: 38px;
-  padding: 0;
-  border: none;
-  border-radius: 999px;
-  background: linear-gradient(180deg, #56a3ff, #2f7dff);
-  color: white;
-  font-size: 22px;
+  padding: 0 16px;
+  border: 1px solid rgba(86, 163, 255, 0.48);
+  border-radius: 10px;
+  background: rgba(47, 125, 255, 0.16);
+  color: #d9e9ff;
+  font-size: 13px;
   line-height: 1;
-  font-weight: 700;
+  font-weight: 650;
   cursor: pointer;
-  box-shadow: 0 14px 28px rgba(47, 125, 255, 0.28);
+  box-shadow: none;
+}
+
+.send-btn:hover:not(:disabled) {
+  background: rgba(47, 125, 255, 0.24);
+  border-color: rgba(86, 163, 255, 0.72);
 }
 
 .send-btn:disabled {
@@ -207,14 +213,21 @@ textarea {
 }
 
 .send-btn.stop {
-  background: linear-gradient(180deg, #ff9b8f, #e05252);
-  box-shadow: 0 14px 28px rgba(224, 82, 82, 0.24);
+  min-width: 44px;
+  border-color: rgba(224, 82, 82, 0.5);
+  background: rgba(224, 82, 82, 0.14);
+  color: #ffd9d9;
+}
+
+.send-btn.stop:hover {
+  background: rgba(224, 82, 82, 0.22);
+  border-color: rgba(224, 82, 82, 0.72);
 }
 
 .stop-icon {
-  width: 13px;
-  height: 13px;
-  border-radius: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 1px;
   background: currentColor;
 }
 

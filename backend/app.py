@@ -77,6 +77,7 @@ DEBUG_STREAM_FIELDS = os.environ.get("DEBUG_STREAM_FIELDS", "0") == "1"
 # ========== 2. 全局变量定义（关键：提前声明active_agent） ==========
 active_agent = None  # 默认 agent：不加载联网搜索工具
 active_search_agent = None  # 联网搜索 agent：仅用户打开开关时使用
+agent_checkpointer_cm = None
 chat_redis: Optional[Redis] = None
 auth_redis: Optional[Redis] = None
 context_loader: Optional[ContextLoader] = None  # Context 文件加载器
@@ -169,7 +170,7 @@ app = FastAPI()
 # ========== 7. 启动事件（正确初始化agent） ==========
 @app.on_event("startup")
 async def startup_event():
-    global active_agent, active_search_agent, chat_redis, auth_redis, context_loader  # 关联全局变量
+    global active_agent, active_search_agent, agent_checkpointer_cm, chat_redis, auth_redis, context_loader  # 关联全局变量
     try:
         # Redis connection with retry (指数退避 + jitter)
         async def connect_chat_redis():
@@ -279,34 +280,32 @@ async def startup_event():
         # 创建带工具的agent（核心修正）
         DB_URI = "redis://localhost:6379"
         checkpointer = None
-        checkpointer_cm = None
         if _env_bool("AGENT_CHECKPOINT_ENABLED", True):
-            checkpointer_cm = AsyncRedisSaver.from_conn_string(DB_URI)
-            checkpointer = await checkpointer_cm.__aenter__()
+            agent_checkpointer_cm = AsyncRedisSaver.from_conn_string(DB_URI)
+            checkpointer = await agent_checkpointer_cm.__aenter__()
             await checkpointer.asetup()
-        try:
-            active_agent = create_deep_agent(
-                model=chatBot,
-                tools=all_tools,
-                system_prompt=runtime_system_prompt,
-                subagents=subagents,
-                checkpointer=checkpointer,
-            )
-            active_search_agent = create_deep_agent(
-                model=chatBot,
-                tools=search_tools,
-                system_prompt=runtime_system_prompt,
-                subagents=subagents,
-                checkpointer=checkpointer,
-            )
-        finally:
-            if checkpointer_cm is not None:
-                await checkpointer_cm.__aexit__(None, None, None)
+        active_agent = create_deep_agent(
+            model=chatBot,
+            tools=all_tools,
+            system_prompt=runtime_system_prompt,
+            subagents=subagents,
+            checkpointer=checkpointer,
+        )
+        active_search_agent = create_deep_agent(
+            model=chatBot,
+            tools=search_tools,
+            system_prompt=runtime_system_prompt,
+            subagents=subagents,
+            checkpointer=checkpointer,
+        )
         logger.info("Agent 初始化成功！")
     except Exception as e:
         logger.error(f"Agent 初始化失败：{str(e)}", exc_info=True)
         active_agent = None
         active_search_agent = None
+        if agent_checkpointer_cm is not None:
+            await agent_checkpointer_cm.__aexit__(None, None, None)
+            agent_checkpointer_cm = None
         if chat_redis is not None:
             await chat_redis.aclose()
             chat_redis = None
@@ -317,7 +316,10 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global chat_redis, auth_redis
+    global chat_redis, auth_redis, agent_checkpointer_cm
+    if agent_checkpointer_cm is not None:
+        await agent_checkpointer_cm.__aexit__(None, None, None)
+        agent_checkpointer_cm = None
     if chat_redis is not None:
         await chat_redis.aclose()
         chat_redis = None
@@ -694,6 +696,10 @@ async def chat_send(
         if str(t).strip()
     }
     search_enabled = bool(enabled_tools & {"search", "academic_search", "web_search"})
+    simulator_required = any(
+        keyword in user_message
+        for keyword in ("机械臂", "抓取", "放置", "仿真", "PyBullet", "Gazebo", "轨迹")
+    )
     user_id = current_user.get("uid", "unknown")
     await _append_chat_message(user_id, session_id, "user", user_message)
 
@@ -738,6 +744,7 @@ async def chat_send(
         current_planning_steps = []
         current_status_text = ""
         current_status_source = "main"
+        simulator_activity_seen = False
         debug_msg_count = 0
         try:
             analysis_tool_names = set(getattr(AnalysisTool, "__all__", []))
@@ -1066,6 +1073,14 @@ async def chat_send(
                 if search_enabled
                 else "本轮禁用工具：search。"
             )
+            if any(
+                keyword in user_message
+                for keyword in ("机械臂", "抓取", "放置", "仿真", "PyBullet", "Gazebo", "轨迹")
+            ):
+                runtime_tool_note += (
+                    "\n本轮是机器人仿真/执行任务：必须立即调用 task(subagent_type=\"simulator\", "
+                    "description=\"...\")。禁止只用文字声称已委托、正在执行或等待结果。"
+                )
             input_messages = [
                 {"role": "system", "content": runtime_tool_note},
                 {"role": "user", "content": user_message},
@@ -1096,6 +1111,8 @@ async def chat_send(
                             )
                     role_name = _normalize_message_role(msg)
                     source = _resolve_agent_source(_meta)
+                    if source == "simulator":
+                        simulator_activity_seen = True
                     print(f"[DEBUG] role_name={role_name} source={source}")
                     if role_name in {"assistant", "ai"}:
                         msg_id = _extract_message_id(msg)
@@ -1374,6 +1391,8 @@ async def chat_send(
 
                         # Timeline output disabled by product requirement.
                         tool_source = _resolve_tool_source(name_msg)
+                        if tool_source == "simulator":
+                            simulator_activity_seen = True
                         is_web_search_tool = name_msg == "web_search"
                         is_academic_search_tool = name_msg == "academic_search"
                         is_unified_search_tool = name_msg == "search"
@@ -1561,6 +1580,18 @@ async def chat_send(
 
             final_text = main_latest_text or main_stream_text
             print(f"[DEBUG] final_text={repr(final_text[:200]) if final_text else 'EMPTY'} main_latest_text={repr(main_latest_text[:100]) if main_latest_text else ''} main_stream_text={repr(main_stream_text[:100]) if main_stream_text else ''}")
+            if simulator_required and not simulator_activity_seen:
+                no_tool_error = (
+                    "仿真任务没有触发 simulator 工具调用。模型只生成了文字说明，"
+                    "没有实际执行抓取放置；请重试，或检查 simulator 子代理/MCP 服务是否可用。"
+                )
+                await _append_chat_message(user_id, session_id, "assistant", no_tool_error)
+                yield json.dumps(
+                    {"type": "error", "error": no_tool_error},
+                    ensure_ascii=False,
+                ) + "\n"
+                return
+
             if final_text:
                 await _append_chat_message(user_id, session_id, "assistant", final_text)
             final_usage_by_agent = {}
