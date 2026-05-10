@@ -1,0 +1,178 @@
+<?xml version="1.0"?>
+<sdf version="1.7">
+  <model name="panda">
+    <static>false</static>
+    <!-- Base Link -->
+    <link name="panda_link0">
+      <inertial>
+        <mass>2.0</mass>
+        <inertia>
+          <ixx>0.01</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.01</iyy><iyz>0</iyz>
+          <izz>0.02</izz>
+        </inertia>
+      </inertial>
+      <collision name="link0_collision">
+        <geometry><cylinder><radius>0.08</radius><length>0.04</length></cylinder></geometry>
+      </collision>
+      <visual name="link0_visual">
+        <geometry><cylinder><radius>0.08</radius><length>0.04</length></cylinder></geometry>
+        <material><ambient>0.3 0.3 0.3 1</ambient></material>
+      </visual>
+    </link>
+    <!-- Joint 1-7 Links (Panda has 7 joints) -->
+    <link name="panda_link1">
+      <inertial>
+        <mass>2.0</mass>
+        <inertia><ixx>0.01</ixx><ixy>0</ixy><ixz>0</ixz><iyy>0.01</iyy><iyz>0</iyz><izz>0.005</izz></inertia>
+      </inertial>
+      <collision name="link1_collision">
+        <geometry><cylinder><radius>0.06</radius><length>0.12</length></cylinder></geometry>
+      </collision>
+      <visual name="link1_visual">
+        <geometry><cylinder><radius>0.06</radius><length>0.12</length></cylinder></geometry>
+        <material><ambient>0.8 0.1 0.1 1</ambient></material>
+      </visual>
+    </link>
+    <link name="panda_link2">
+      <inertial>
+        <mass>2.5</mass>
+        <inertia><ixx>0.015</ixx><ixy>0</ixy><ixz>0</ixz><iyy>0.015</iyy><iyz>0</iyz><izz>0.005</izz></inertia>
+      </inertial>
+      <collision name="link2_collision">
+        <geometry><cylinder><radius>0.05</radius><length>0.40</length></cylinder></geometry>
+      </collision>
+      <visual name="link2_visual">
+        <geometry><cylinder><radius>0.05</radius><length>0.40</length></cylinder></geometry>
+        <material><ambient>0.8 0.2 0.2 1</ambient></material>
+      </visual>
+    </link>
+    <link name="panda_link3">
+      <inertial>
+        <mass>2.0</mass>
+        <inertia><ixx>0.01</ixx><ixy>0</ixy><ixz>0</ixz><iyy>0.01</iyy><iyz>0</iyz><izz>0.004</izz></inertia>
+      </inertial>
+      <collision name="link3_collision">
+        <geometry><cylinder><radius>0.05</radius><length>0.40</length></cylinder></geometry>
+      </collision>
+      <visual name="link3_visual">
+        <geometry><cylinder><radius>0.05</radius><length>0.40</length></cylinder></geometry>
+        <material><ambient>0.8 0.3 0.3 1</ambient></material>
+      </visual>
+    </link>
+    <link name="panda_link4">
+      <inertial>
+        <mass>1.5</mass>
+        <inertia><ixx>0.008</ixx><ixy>0</ixy><ixz>0</ixz><iyy>0.008</iyy><iyz>0</iyz><izz>0.003</izz></inertia>
+      </inertial>
+      <collision name="link4_collision">
+        <geometry><cylinder><radius>0.04</radius><length>0.30</length></cylinder></geometry>
+      </collision>
+      <visual name="link4_visual">
+        <geometry><cylinder><radius>0.04</radius><length>0.30</length></cylinder></geometry>
+        <material><ambient>0.8 0.4 0.4 1</ambient></material>
+      </visual>
+    </link>
+    <link name="panda_link5">
+      <inertial>
+        <mass>1.0</mass>
+        <inertia><ixx>0.005</ixx><ixy>0</ixy><ixz>0</ixz><iyy>0.005</iyy><iyz>0</iyz><izz>0.002</izz></inertia>
+      </inertial>
+      <collision name="link5_collision">
+        <geometry><cylinder><radius>0.04</radius><length>0.25</length></cylinder></geometry>
+      </collision>
+      <visual name="link5_visual">
+        <geometry><cylinder><radius>0.04</radius><length>0.25</length></cylinder></geometry>
+        <material><ambient>0.8 0.5 0.5 1</ambient></material>
+      </visual>
+    </link>
+    <link name="panda_link6">
+      <inertial>
+        <mass>0.8</mass>
+        <inertia><ixx>0.003</ixx><ixy>0</ixy><ixz>0</ixz><iyy>0.003</iyy><iyz>0</iyz><izz>0.001</izz></inertia>
+      </inertial>
+      <collision name="link6_collision">
+        <geometry><cylinder><radius>0.035</radius><length>0.15</length></cylinder></geometry>
+      </collision>
+      <visual name="link6_visual">
+        <geometry><cylinder><radius>0.035</radius><length>0.15</length></cylinder></geometry>
+        <material><ambient>0.8 0.6 0.6 1</ambient></material>
+      </visual>
+    </link>
+    <link name="panda_link7">
+      <inertial>
+        <mass>0.5</mass>
+        <inertia><ixx>0.002</ixx><ixy>0</ixy><ixz>0</ixz><iyy>0.002</iyy><iyz>0</iyz><izz>0.001</izz></inertia>
+      </inertial>
+      <collision name="link7_collision">
+        <geometry><cylinder><radius>0.03</radius><length>0.10</length></cylinder></geometry>
+      </collision>
+      <visual name="link7_visual">
+        <geometry><cylinder><radius>0.03</radius><length>0.10</length></cylinder></geometry>
+        <material><ambient>0.8 0.7 0.7 1</ambient></material>
+      </visual>
+    </link>
+    <!-- End Effector (gripper base) -->
+    <link name="panda_link8">
+      <inertial>
+        <mass>0.3</mass>
+        <inertia><ixx>0.001</ixx><ixy>0</ixy><ixz>0</ixz><iyy>0.001</iyy><iyz>0</iyz><izz>0.001</izz></inertia>
+      </inertial>
+      <collision name="link8_collision">
+        <geometry><box><size>0.06 0.06 0.04</size></box></geometry>
+      </collision>
+      <visual name="link8_visual">
+        <geometry><box><size>0.06 0.06 0.04</size></box></geometry>
+        <material><ambient>0.1 0.8 0.1 1</ambient></material>
+      </visual>
+    </link>
+    <!-- Joints -->
+    <joint name="panda_joint1" type="revolute">
+      <parent>panda_link0</parent>
+      <child>panda_link1</child>
+      <axis>0 0 1</axis>
+      <pose>0 0 0.02 0 0 0</pose>
+    </joint>
+    <joint name="panda_joint2" type="revolute">
+      <parent>panda_link1</parent>
+      <child>panda_link2</child>
+      <axis>0 1 0</axis>
+      <pose>0 0 0.06 0 0 0</pose>
+    </joint>
+    <joint name="panda_joint3" type="revolute">
+      <parent>panda_link2</parent>
+      <child>panda_link3</child>
+      <axis>0 1 0</axis>
+      <pose>0 0 0.20 0 0 0</pose>
+    </joint>
+    <joint name="panda_joint4" type="revolute">
+      <parent>panda_link3</parent>
+      <child>panda_link4</child>
+      <axis>0 0 1</axis>
+      <pose>0 0 0.20 0 0 0</pose>
+    </joint>
+    <joint name="panda_joint5" type="revolute">
+      <parent>panda_link4</parent>
+      <child>panda_link5</child>
+      <axis>0 1 0</axis>
+      <pose>0 0 0.15 0 0 0</pose>
+    </joint>
+    <joint name="panda_joint6" type="revolute">
+      <parent>panda_link5</parent>
+      <child>panda_link6</child>
+      <axis>0 0 1</axis>
+      <pose>0 0 0.12 0 0 0</pose>
+    </joint>
+    <joint name="panda_joint7" type="revolute">
+      <parent>panda_link6</parent>
+      <child>panda_link7</child>
+      <axis>0 1 0</axis>
+      <pose>0 0 0.075 0 0 0</pose>
+    </joint>
+    <joint name="panda_joint8" type="fixed">
+      <parent>panda_link7</parent>
+      <child>panda_link8</child>
+      <pose>0 0 0.05 0 0 0</pose>
+    </joint>
+  </model>
+</sdf>

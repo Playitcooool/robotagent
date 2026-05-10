@@ -1,0 +1,192 @@
+<?xml version="1.0"?>
+<sdf version="1.7">
+  <model name="ur5">
+    <static>false</static>
+    <!-- Base Link -->
+    <link name="base_link">
+      <inertial>
+        <mass>5.0</mass>
+        <inertia>
+          <ixx>0.01</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.01</iyy><iyz>0</iyz>
+          <izz>0.02</izz>
+        </inertia>
+      </inertial>
+      <collision name="base_collision">
+        <geometry><cylinder><radius>0.06</radius><length>0.05</length></cylinder></geometry>
+      </collision>
+      <visual name="base_visual">
+        <geometry><cylinder><radius>0.06</radius><length>0.05</length></cylinder></geometry>
+        <material><ambient>0.5 0.5 0.5 1</ambient></material>
+      </visual>
+    </link>
+    <!-- Shoulder Link -->
+    <link name="shoulder_link">
+      <inertial>
+        <mass>3.5</mass>
+        <inertia>
+          <ixx>0.01</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.01</iyy><iyz>0</iyz>
+          <izz>0.005</izz>
+        </inertia>
+      </inertial>
+      <collision name="shoulder_collision">
+        <geometry><cylinder><radius>0.05</radius><length>0.15</length></cylinder></geometry>
+      </collision>
+      <visual name="shoulder_visual">
+        <geometry><cylinder><radius>0.05</radius><length>0.15</length></cylinder></geometry>
+        <material><ambient>0.7 0.7 0.7 1</ambient></material>
+      </visual>
+    </link>
+    <!-- Upper Arm Link -->
+    <link name="upper_arm_link">
+      <inertial>
+        <mass>4.0</mass>
+        <inertia>
+          <ixx>0.02</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.02</iyy><iyz>0</iyz>
+          <izz>0.001</izz>
+        </inertia>
+      </inertial>
+      <collision name="upper_arm_collision">
+        <geometry><cylinder><radius>0.04</radius><length>0.45</length></cylinder></geometry>
+      </collision>
+      <visual name="upper_arm_visual">
+        <geometry><cylinder><radius>0.04</radius><length>0.45</length></cylinder></geometry>
+        <material><ambient>0.8 0.8 0.8 1</ambient></material>
+      </visual>
+    </link>
+    <!-- Forearm Link -->
+    <link name="forearm_link">
+      <inertial>
+        <mass>2.5</mass>
+        <inertia>
+          <ixx>0.01</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.01</iyy><iyz>0</iyz>
+          <izz>0.001</izz>
+        </inertia>
+      </inertial>
+      <collision name="forearm_collision">
+        <geometry><cylinder><radius>0.03</radius><length>0.40</length></cylinder></geometry>
+      </collision>
+      <visual name="forearm_visual">
+        <geometry><cylinder><radius>0.03</radius><length>0.40</length></cylinder></geometry>
+        <material><ambient>0.9 0.9 0.9 1</ambient></material>
+      </visual>
+    </link>
+    <!-- Wrist 1 Link -->
+    <link name="wrist_1_link">
+      <inertial>
+        <mass>1.0</mass>
+        <inertia>
+          <ixx>0.002</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.002</iyy><iyz>0</iyz>
+          <izz>0.001</izz>
+        </inertia>
+      </inertial>
+      <collision name="wrist_1_collision">
+        <geometry><cylinder><radius>0.03</radius><length>0.10</length></cylinder></geometry>
+      </collision>
+      <visual name="wrist_1_visual">
+        <geometry><cylinder><radius>0.03</radius><length>0.10</length></cylinder></geometry>
+        <material><ambient>0.6 0.6 0.6 1</ambient></material>
+      </visual>
+    </link>
+    <!-- Wrist 2 Link -->
+    <link name="wrist_2_link">
+      <inertial>
+        <mass>0.8</mass>
+        <inertia>
+          <ixx>0.001</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.001</iyy><iyz>0</iyz>
+          <izz>0.001</izz>
+        </inertia>
+      </inertial>
+      <collision name="wrist_2_collision">
+        <geometry><cylinder><radius>0.025</radius><length>0.08</length></cylinder></geometry>
+      </collision>
+      <visual name="wrist_2_visual">
+        <geometry><cylinder><radius>0.025</radius><length>0.08</length></cylinder></geometry>
+        <material><ambient>0.5 0.5 0.5 1</ambient></material>
+      </visual>
+    </link>
+    <!-- Wrist 3 Link (flange) -->
+    <link name="wrist_3_link">
+      <inertial>
+        <mass>0.5</mass>
+        <inertia>
+          <ixx>0.0005</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.0005</iyy><iyz>0</iyz>
+          <izz>0.0005</izz>
+        </inertia>
+      </inertial>
+      <collision name="wrist_3_collision">
+        <geometry><cylinder><radius>0.025</radius><length>0.05</length></cylinder></geometry>
+      </collision>
+      <visual name="wrist_3_visual">
+        <geometry><cylinder><radius>0.025</radius><length>0.05</length></cylinder></geometry>
+        <material><ambient>0.4 0.4 0.4 1</ambient></material>
+      </visual>
+    </link>
+    <!-- End Effector -->
+    <link name="tool0">
+      <inertial>
+        <mass>0.1</mass>
+        <inertia>
+          <ixx>0.0001</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.0001</iyy><iyz>0</iyz>
+          <izz>0.0001</izz>
+        </inertia>
+      </inertial>
+      <collision name="tool0_collision">
+        <geometry><box><size>0.02 0.02 0.05</size></box></geometry>
+      </collision>
+      <visual name="tool0_visual">
+        <geometry><box><size>0.02 0.02 0.05</size></box></geometry>
+        <material><ambient>0.2 0.6 0.2 1</ambient></material>
+      </visual>
+    </link>
+    <!-- Joints -->
+    <joint name="base_joint" type="revolute">
+      <parent>base_link</parent>
+      <child>shoulder_link</child>
+      <axis>0 0 1</axis>
+      <pose>0 0 0.025 0 0 0</pose>
+    </joint>
+    <joint name="shoulder_joint" type="revolute">
+      <parent>shoulder_link</parent>
+      <child>upper_arm_link</child>
+      <axis>0 1 0</axis>
+      <pose>0 0 0.075 0 0 0</pose>
+    </joint>
+    <joint name="elbow_joint" type="revolute">
+      <parent>upper_arm_link</parent>
+      <child>forearm_link</child>
+      <axis>0 1 0</axis>
+      <pose>0 0 0.225 0 0 0</pose>
+    </joint>
+    <joint name="wrist_1_joint" type="revolute">
+      <parent>forearm_link</parent>
+      <child>wrist_1_link</child>
+      <axis>0 1 0</axis>
+      <pose>0 0 0.20 0 0 0</pose>
+    </joint>
+    <joint name="wrist_2_joint" type="revolute">
+      <parent>wrist_1_link</parent>
+      <child>wrist_2_link</child>
+      <axis>0 0 1</axis>
+      <pose>0 0 0.05 0 0 0</pose>
+    </joint>
+    <joint name="wrist_3_joint" type="revolute">
+      <parent>wrist_2_link</parent>
+      <child>wrist_3_link</child>
+      <axis>0 1 0</axis>
+      <pose>0 0 0.04 0 0 0</pose>
+    </joint>
+    <joint name="flange_joint" type="fixed">
+      <parent>wrist_3_link</parent>
+      <child>tool0</child>
+      <pose>0 0 0.025 0 0 0</pose>
+    </joint>
+  </model>
+</sdf>

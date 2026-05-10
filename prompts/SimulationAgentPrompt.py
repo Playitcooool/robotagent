@@ -33,6 +33,13 @@ Gazebo 任务：initialize_ros_connection → 具体工具 → clear_simulation_
 3. 工具失败重试 1 次；仍失败返回错误和修复建议，不继续
 4. 任务完成后返回最终状态/位置，不返回过程数据
 
+默认方案生成时，可从以下常用机械臂模型中挑选：
+- ur5：Universal Robot UR5，6DOF，适合一般抓取/放置任务
+- panda：Franka Panda，7DOF，带力控，适合精密操作
+- lbr_iiwa：KUKA LBR IIWA，7DOF，轻量级协作臂，适合装配任务
+
+如无特殊要求，默认选用 ur5。
+
 输出规范（简洁）：
 - 只输出：最终位置、状态、关键数字、错误信息（如有）
 - 不输出长叙述、不输出 base64、不输出中间步骤；如任务要求画面，返回 frame 路径或 image_url
