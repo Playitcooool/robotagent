@@ -700,6 +700,21 @@ async def chat_send(
         keyword in user_message
         for keyword in ("机械臂", "抓取", "放置", "仿真", "PyBullet", "Gazebo", "轨迹")
     )
+    simulator_execution_confirmed = any(
+        phrase in user_message.strip().lower()
+        for phrase in (
+            "确认执行",
+            "开始执行",
+            "按方案执行",
+            "按计划执行",
+            "可以执行",
+            "继续执行",
+            "执行吧",
+            "run it",
+            "start simulation",
+            "go ahead",
+        )
+    )
     user_id = current_user.get("uid", "unknown")
     await _append_chat_message(user_id, session_id, "user", user_message)
 
@@ -1073,13 +1088,15 @@ async def chat_send(
                 if search_enabled
                 else "本轮禁用工具：search。"
             )
-            if any(
-                keyword in user_message
-                for keyword in ("机械臂", "抓取", "放置", "仿真", "PyBullet", "Gazebo", "轨迹")
-            ):
+            if simulator_required and simulator_execution_confirmed:
                 runtime_tool_note += (
                     "\n本轮是机器人仿真/执行任务：必须立即调用 task(subagent_type=\"simulator\", "
                     "description=\"...\")。禁止只用文字声称已委托、正在执行或等待结果。"
+                )
+            elif simulator_required:
+                runtime_tool_note += (
+                    "\n本轮是机器人仿真规划请求：先给出简短计划、你选择的关键参数和确认问题；"
+                    "未收到用户明确确认前不要调用 simulator。"
                 )
             input_messages = [
                 {"role": "system", "content": runtime_tool_note},
@@ -1580,10 +1597,40 @@ async def chat_send(
 
             final_text = main_latest_text or main_stream_text
             print(f"[DEBUG] final_text={repr(final_text[:200]) if final_text else 'EMPTY'} main_latest_text={repr(main_latest_text[:100]) if main_latest_text else ''} main_stream_text={repr(main_stream_text[:100]) if main_stream_text else ''}")
-            if simulator_required and not simulator_activity_seen:
+            misleading_simulator_claim = bool(
+                final_text
+                and any(
+                    phrase in final_text
+                    for phrase in (
+                        "已委托",
+                        "已经委托",
+                        "正在等待",
+                        "已将任务委托",
+                        "已转交",
+                        "正在执行",
+                        "执行完成",
+                    )
+                )
+            )
+            if (
+                simulator_required
+                and simulator_execution_confirmed
+                and not simulator_activity_seen
+            ):
                 no_tool_error = (
-                    "仿真任务没有触发 simulator 工具调用。模型只生成了文字说明，"
-                    "没有实际执行抓取放置；请重试，或检查 simulator 子代理/MCP 服务是否可用。"
+                    "已收到执行确认，但没有触发 simulator 工具调用。"
+                    "请重试，或检查 simulator 子代理/MCP 服务是否可用。"
+                )
+                await _append_chat_message(user_id, session_id, "assistant", no_tool_error)
+                yield json.dumps(
+                    {"type": "error", "error": no_tool_error},
+                    ensure_ascii=False,
+                ) + "\n"
+                return
+            if simulator_required and not simulator_activity_seen and misleading_simulator_claim:
+                no_tool_error = (
+                    "模型声称已委托或正在执行 simulator，但没有实际触发工具调用。"
+                    "请先确认计划，确认后我会调用 simulator 执行。"
                 )
                 await _append_chat_message(user_id, session_id, "assistant", no_tool_error)
                 yield json.dumps(
