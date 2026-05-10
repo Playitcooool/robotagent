@@ -27,7 +27,7 @@ test('computeLandingMode stays true until a user message appears', () => {
   )
 })
 
-test('computeShowToolPanel becomes true for planning, tool references, live frames, or tool agents', () => {
+test('computeShowToolPanel becomes true only for live frames', () => {
   const baseConversation = [{ role: 'assistant', text: 'hello' }]
 
   assert.equal(computeShowToolPanel({ liveFrame: null, planningState: null, conversation: baseConversation }), false)
@@ -45,7 +45,7 @@ test('computeShowToolPanel becomes true for planning, tool references, live fram
       planningState: { steps: [{ id: '1', step: 'Plan', status: 'pending' }] },
       conversation: baseConversation
     }),
-    true
+    false
   )
   assert.equal(
     computeShowToolPanel({
@@ -53,7 +53,7 @@ test('computeShowToolPanel becomes true for planning, tool references, live fram
       planningState: null,
       conversation: [{ role: 'assistant', text: 'hello', webSearchResults: [{ url: 'https://example.com' }] }]
     }),
-    true
+    false
   )
   assert.equal(
     computeShowToolPanel({
@@ -61,7 +61,7 @@ test('computeShowToolPanel becomes true for planning, tool references, live fram
       planningState: null,
       conversation: [{ role: 'assistant', text: 'hello', agent: 'simulator' }]
     }),
-    true
+    false
   )
 })
 
@@ -93,14 +93,14 @@ test('resolveAgentKey collapses simulator and analysis aliases', () => {
 
 test('deriveResultRailData summarizes assistant activity for the right rail', () => {
   const summary = deriveResultRailData([
-    { id: '1', role: 'assistant', agent: 'main', loading: true, loadingKind: 'search', text: 'Searching docs' },
-    { id: '2', role: 'assistant', agent: 'analysis', text: 'Trajectory deviation is high.' },
+    { id: '1', role: 'assistant', agent: 'analysis', loading: true, loadingKind: 'search', text: 'Searching docs' },
+    { id: '2', role: 'assistant', agent: 'analysis', loading: false, text: 'Trajectory deviation is high.' },
     { id: '3', role: 'assistant', agent: 'main', webSearchResults: [{ title: 'Paper', url: 'https://example.com' }] },
     { id: '4', role: 'assistant', ragReferences: [{ title: 'Internal note', url: 'https://internal.local' }] }
   ])
 
   assert.equal(summary.activeTasks.length, 1)
-  assert.equal(summary.activeTasks[0].agentKey, 'main')
+  assert.equal(summary.activeTasks[0].agentKey, 'analysis')
   assert.equal(summary.latestSearchResults.length, 1)
   assert.equal(summary.latestRagReferences.length, 1)
   assert.equal(summary.toolOutputs.length, 1)

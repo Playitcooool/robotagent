@@ -21,7 +21,13 @@ const CHECK_THINK_INTERVAL = 50
 
 const auth = useAuth()
 const preferences = usePreferences()
-const { liveFrame, simStreamActive, startLiveFrameStream, stopLiveFrameStream } = useSSE(auth.authToken)
+const {
+  liveFrame,
+  simStreamActive,
+  refreshLatestFrame,
+  startLiveFrameStream,
+  stopLiveFrameStream
+} = useSSE(auth.authToken)
 
 const conversation = ref(createWelcomeConversation(preferences.lang.value))
 const currentSessionId = ref(`session_${Date.now()}`)
@@ -132,8 +138,10 @@ function normalizeSource(source) {
   return resolveAgentKey(source)
 }
 
-function maybeStartSimStream(source) {
-  if (normalizeSource(source) === 'simulator') startLiveFrameStream()
+function maybeStartSimStream(source, sinceTimestamp = null) {
+  if (normalizeSource(source) !== 'simulator') return
+  startLiveFrameStream(sinceTimestamp)
+  refreshLatestFrame(sinceTimestamp)
 }
 
 function ensureAgentMessage(assistantId, source) {
@@ -225,6 +233,9 @@ async function sendMessage(payload) {
   const text = typeof payload === 'string' ? payload : String(payload?.text || '')
   const enabledTools = Array.isArray(payload?.enabledTools) ? payload.enabledTools : []
   if (!text.trim()) return
+
+  const requestStartedAt = Date.now() / 1000
+  const simFrameSinceTimestamp = requestStartedAt - 2
 
   stopLiveFrameStream()
   liveFrame.value = null
@@ -378,7 +389,7 @@ async function sendMessage(payload) {
           continue
         }
 
-        maybeStartSimStream(event.source)
+        maybeStartSimStream(event.source, simFrameSinceTimestamp)
         const messageId = ensureAgentMessage(assistantId, event.source)
         const idx = conversation.value.findIndex((message) => message.id === messageId)
         let streamState = assistantStreams[messageId]

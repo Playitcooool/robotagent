@@ -25,6 +25,8 @@ export function useSSE (authToken) {
 
   let liveFrameEventSource = null
   let liveFrameStartTimestamp = 0
+  let activeStreamSinceTimestamp = 0
+  let latestFrameRefreshSinceTimestamp = 0
   let reconnectAttempt = 0  // Non-reactive: internal retry counter
   let reconnectTimeoutId = null
 
@@ -39,27 +41,71 @@ export function useSSE (authToken) {
     }
     simStreamActive.value = false
     reconnectAttempt = 0  // 重置重试计数
+    activeStreamSinceTimestamp = 0
+    latestFrameRefreshSinceTimestamp = 0
   }
 
-  function startLiveFrameStream () {
+  function normalizeSinceTimestamp (sinceTimestamp) {
+    const timestamp = Number(sinceTimestamp)
+    if (Number.isFinite(timestamp) && timestamp > 0) return timestamp
+    return Date.now() / 1000
+  }
+
+  function acceptLiveFramePayload (payload) {
+    if (
+      payload?.has_frame &&
+      typeof payload.timestamp === 'number' &&
+      payload.timestamp >= liveFrameStartTimestamp
+    ) {
+      simStreamActive.value = true
+      liveFrame.value = payload
+      reconnectAttempt = 0
+      return true
+    }
+    return false
+  }
+
+  async function refreshLatestFrame (sinceTimestamp = liveFrameStartTimestamp) {
+    const nextSinceTimestamp = normalizeSinceTimestamp(sinceTimestamp)
+    if (latestFrameRefreshSinceTimestamp === nextSinceTimestamp) return false
+    latestFrameRefreshSinceTimestamp = nextSinceTimestamp
+    try {
+      const res = await fetch('/api/sim/latest-frame', {
+        headers: { Accept: 'application/json' },
+        cache: 'no-store'
+      })
+      if (!res.ok) return false
+      const payload = await res.json()
+      const previousStartTimestamp = liveFrameStartTimestamp
+      liveFrameStartTimestamp = nextSinceTimestamp
+      const accepted = acceptLiveFramePayload(payload)
+      if (!accepted) liveFrameStartTimestamp = previousStartTimestamp
+      return accepted
+    } catch (e) {
+      console.error('Failed to refresh latest frame:', e)
+      return false
+    }
+  }
+
+  function startLiveFrameStream (sinceTimestamp = null) {
     if (!authToken.value) return
+    const nextSinceTimestamp = normalizeSinceTimestamp(sinceTimestamp)
+    if (
+      liveFrameEventSource &&
+      activeStreamSinceTimestamp === nextSinceTimestamp
+    ) {
+      return
+    }
     stopLiveFrameStream()
 
-    liveFrameStartTimestamp = Date.now() / 1000
+    liveFrameStartTimestamp = nextSinceTimestamp
+    activeStreamSinceTimestamp = nextSinceTimestamp
     const eventSource = new EventSource(`/api/sim/stream?since=${liveFrameStartTimestamp}`)
 
     eventSource.addEventListener('frame', (event) => {
       try {
         const payload = JSON.parse(event.data)
-        if (
-          payload.has_frame &&
-          typeof payload.timestamp === 'number' &&
-          payload.timestamp >= liveFrameStartTimestamp
-        ) {
-          simStreamActive.value = true
-          liveFrame.value = payload
-          // 连接成功后重置重试计数
-          reconnectAttempt = 0
+        if (acceptLiveFramePayload(payload)) {
           if (payload.done) {
             setTimeout(() => {
               if (liveFrameEventSource === eventSource) {
@@ -86,7 +132,7 @@ export function useSSE (authToken) {
 
         reconnectTimeoutId = setTimeout(() => {
           if (liveFrameEventSource === null && authToken.value && simStreamActive.value) {
-            startLiveFrameStream()
+            startLiveFrameStream(liveFrameStartTimestamp)
           }
         }, delay)
       } else if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
@@ -101,6 +147,7 @@ export function useSSE (authToken) {
   return {
     liveFrame,
     simStreamActive,
+    refreshLatestFrame,
     startLiveFrameStream,
     stopLiveFrameStream
   }
