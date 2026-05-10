@@ -21,11 +21,9 @@
       :authUser="auth.authUser.value"
       :isDark="isDark.value"
       :lang="lang.value"
-      :fontSize="fontSize.value"
       :simStreamActive="workbench.simStreamActive.value"
       @toggle-lang="toggleLang"
       @toggle-theme="toggleTheme"
-      @set-font-size="setFontSize"
       @logout="auth.onLogout"
     />
 
@@ -57,7 +55,7 @@ export default {
   components: { AppTopbar, AuthView, RouterView, ShortcutHelp },
   setup () {
     const auth = useAuth()
-    const { lang, fontSize, isDark, toggleLang, toggleTheme, setFontSize } = usePreferences()
+    const { lang, isDark, toggleLang, toggleTheme } = usePreferences()
     const workbench = useWorkbenchStore()
     const showShortcutHelp = ref(false)
 
@@ -86,11 +84,9 @@ export default {
       auth,
       workbench,
       lang,
-      fontSize,
       isDark,
       toggleLang,
       toggleTheme,
-      setFontSize,
       showShortcutHelp
     }
   }

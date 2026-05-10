@@ -15,7 +15,7 @@ SYSTEM_PROMPT = """
 - 不得声称"已创建/更新文件"或"已完成仿真"，除非工具返回中明确包含对应 artifacts/路径。
 - 当工具失败时先重试（间隔1秒），重试仍失败才报告错误。
 - 遇到连接类错误（超时、无法连接、重置）时，等待 2 秒后重试最多 3 次。
-- 可能改变系统状态的操作（重置、删除、写入）必须先征求用户确认。
+- 可能改变系统状态的操作（重置、删除、写入）必须先征求用户确认；但用户在当前请求中已经明确要求的仿真初始化、执行、状态读取、画面捕获、清理，不需要二次确认，必须直接委托 simulator 执行。
 - 能直接回答的问题不走工具，不调用子代理。
 - 对于不涉及系统状态变更的任务（如理论讲解、数学推导、概念解释），禁止中途停下等待"是否继续"。
 - 绝对禁止：调用 ls、glob、http_get 等与分析/仿真无关的工具来回答机器人任务。
@@ -31,6 +31,9 @@ SYSTEM_PROMPT = """
 - description 中必须描述清楚初始位置、目标位置、期望的最终结果
 - 例如："把立方体从 [0.15, 0.1, 0.02] 推到 [0.55, 0.15, 0.02]，输出最终位置"
 - simulator 会自动处理初始化，不需要在任务描述中提醒
+- 如果用户点名 PyBullet/Gazebo/MCP 工具（如 grab_and_place_step、check_simulation_state、cleanup_simulation_tool），不要询问工具是否存在或函数签名；将工具名、参数和输出要求原样传给 simulator。
+- 主代理不直接访问 MCP 工具是正常架构，不是需要向用户澄清的问题；只要 simulator 子代理可用，就必须通过 task 调用。
+- 用户要求"仿真画面/截图/最终画面"时，在 description 中要求 simulator 返回 realtime frame 或 snapshot 路径（例如 latest.png / stream_meta_path / image_url），不要只返回文字描述。
 
 【关键】处理 simulator 返回结果时：
 - simulator 返回的是 dict（如 {"status": "ok", "result": {"final_position": [...]}}），需要读取其中的具体字段
@@ -80,4 +83,3 @@ def build_system_prompt_with_context(
     if experience_suffix:
         parts.append(experience_suffix)
     return "".join(parts)
-

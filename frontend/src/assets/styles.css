@@ -127,13 +127,16 @@ img {
   display: grid;
   place-items: center;
   padding: 24px;
+  background:
+    radial-gradient(680px 360px at 50% 0%, rgba(47, 125, 255, 0.2), transparent 62%),
+    radial-gradient(520px 300px at 20% 90%, rgba(32, 196, 120, 0.1), transparent 58%);
 }
 
 .auth-card,
 .skeleton-card {
-  width: min(440px, 100%);
-  padding: 28px;
-  border-radius: 28px;
+  width: min(420px, 100%);
+  padding: 24px;
+  border-radius: 22px;
   border: 1px solid var(--line);
   background:
     radial-gradient(560px 220px at 50% 0%, var(--accent-soft), transparent 58%),
@@ -174,7 +177,7 @@ img {
 
 .markdown {
   color: var(--text);
-  line-height: 1.75;
+  line-height: 1.65;
 }
 
 .markdown > :first-child {
@@ -191,7 +194,7 @@ img {
 .markdown blockquote,
 .markdown pre,
 .markdown table {
-  margin: 0 0 14px;
+  margin: 0 0 10px;
 }
 
 .markdown ul,
@@ -228,7 +231,7 @@ img {
   position: relative;
   overflow: auto;
   padding: 38px 14px 14px;
-  border-radius: 16px;
+  border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: #0b1220;
 }

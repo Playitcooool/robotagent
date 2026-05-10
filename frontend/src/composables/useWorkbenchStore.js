@@ -36,11 +36,12 @@ let sessionLoadController = null
 
 const hasLiveFrame = computed(() => Boolean(liveFrame.value?.image_url))
 const landingMode = computed(() => computeLandingMode(conversation.value))
-const showToolPanel = computed(() => computeShowToolPanel({
+const hasToolPanelContent = computed(() => computeShowToolPanel({
   liveFrame: liveFrame.value,
   planningState: planningState.value,
   conversation: conversation.value
 }))
+const showToolPanel = hasToolPanelContent
 
 watch(() => preferences.lang.value, (nextLang) => {
   const welcomeText = createWelcomeMessage(nextLang)
@@ -476,6 +477,7 @@ export function useWorkbenchStore() {
     simStreamActive,
     hasLiveFrame,
     landingMode,
+    hasToolPanelContent,
     showToolPanel,
     resetConversation,
     selectSession,

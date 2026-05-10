@@ -85,8 +85,8 @@ export default {
 
 <style scoped>
 .landing-hero {
-  width: min(940px, 100%);
-  margin: 0 auto 22px;
+  width: min(860px, 100%);
+  margin: 0 auto 18px;
   text-align: left;
 }
 
@@ -94,7 +94,7 @@ export default {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
   color: #8fb7ff;
   font-size: 12px;
   font-weight: 700;
@@ -105,37 +105,37 @@ export default {
 .headline {
   max-width: 18ch;
   margin: 0;
-  font-size: clamp(2.4rem, 4vw, 4.3rem);
-  line-height: 1.02;
-  letter-spacing: -0.05em;
+  font-size: clamp(1.9rem, 3.1vw, 3.2rem);
+  line-height: 1.08;
+  letter-spacing: 0;
   text-wrap: balance;
 }
 
 .lead {
   max-width: 72ch;
-  margin: 18px 0 0;
+  margin: 12px 0 0;
   color: rgba(230, 237, 243, 0.78);
   font-size: 15px;
-  line-height: 1.8;
+  line-height: 1.65;
 }
 
 .hero-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-  margin-top: 28px;
+  gap: 12px;
+  margin-top: 20px;
 }
 
 .hero-card {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   text-align: left;
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 18px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.01)),
     rgba(9, 14, 24, 0.74);
-  padding: 18px;
+  padding: 14px;
   color: var(--text);
   cursor: pointer;
   transition: transform 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;

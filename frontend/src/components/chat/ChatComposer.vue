@@ -29,7 +29,7 @@
 <script>
 import { nextTick, onMounted, ref, watch } from 'vue'
 
-const TEXTAREA_MAX_HEIGHT = 220
+const TEXTAREA_MAX_HEIGHT = 160
 
 export default {
   name: 'ChatComposer',
@@ -79,21 +79,21 @@ export default {
 
 <style scoped>
 .composer-shell {
-  padding: 18px 18px 22px;
+  padding: 12px 14px 16px;
 }
 
 .composer-shell.landing {
-  width: min(940px, 100%);
+  width: min(860px, 100%);
   margin: 0 auto;
   padding: 0;
 }
 
 .composer-surface {
   display: grid;
-  gap: 14px;
-  padding: 18px;
+  gap: 10px;
+  padding: 13px 14px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 22px;
+  border-radius: 18px;
   background:
     radial-gradient(620px 220px at 50% 0%, rgba(47, 125, 255, 0.12), transparent 58%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015)),
@@ -102,8 +102,8 @@ export default {
 }
 
 textarea {
-  min-height: 56px;
-  max-height: 220px;
+  min-height: 42px;
+  max-height: 160px;
   width: 100%;
   border: none;
   outline: none;
@@ -111,7 +111,7 @@ textarea {
   background: transparent;
   color: var(--text);
   font: inherit;
-  line-height: 1.7;
+  line-height: 1.55;
 }
 
 .composer-actions {
@@ -141,8 +141,8 @@ textarea {
 }
 
 .send-btn {
-  min-width: 142px;
-  padding: 12px 20px;
+  min-width: 118px;
+  padding: 10px 16px;
   border: none;
   border-radius: 999px;
   background: linear-gradient(180deg, #56a3ff, #2f7dff);

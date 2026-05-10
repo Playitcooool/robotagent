@@ -26,14 +26,14 @@ export function computeLandingMode(conversation = []) {
 
 export function computeShowToolPanel({ liveFrame = null, planningState = null, conversation = [] } = {}) {
   if (liveFrame?.image_url) return true
-  if (Array.isArray(planningState?.steps) && planningState.steps.length > 0) return true
 
   return (Array.isArray(conversation) ? conversation : []).some((message) => {
     if (String(message?.role || '') !== 'assistant') return false
     const hasSearch = Array.isArray(message?.webSearchResults) && message.webSearchResults.length > 0
     const hasRag = Array.isArray(message?.ragReferences) && message.ragReferences.length > 0
-    const isTool = resolveAgentKey(message?.agent) !== 'main'
-    return Boolean(message?.loading || hasSearch || hasRag || isTool)
+    const isToolMessage = resolveAgentKey(message?.agent) !== 'main'
+    const hasToolOutput = isToolMessage && (message?.loading || String(message?.text || '').trim())
+    return Boolean(hasSearch || hasRag || hasToolOutput)
   })
 }
 
@@ -80,7 +80,7 @@ export function deriveResultRailData(conversation = []) {
     .filter((item) => String(item?.role || '') === 'assistant')
 
   const activeTasks = assistantMessages
-    .filter((item) => item?.loading)
+    .filter((item) => item?.loading && resolveAgentKey(item.agent) !== 'main')
     .slice(-3)
     .reverse()
     .map((item) => ({

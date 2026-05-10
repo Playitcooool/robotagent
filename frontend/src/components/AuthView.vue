@@ -1,8 +1,12 @@
 <template>
   <div class="auth-card">
-    <div class="hero-mark">RA</div>
-    <h1>RobotAgent {{ mode === 'login' ? (lang === 'zh' ? '登录' : 'Access') : (lang === 'zh' ? '创建账户' : 'Create Account') }}</h1>
-    <p class="hint">{{ lang === 'zh' ? '进入机器人任务工作台，查看会话、规划、证据和仿真回放。' : 'Enter the robot mission workbench to review sessions, plans, evidence, and simulation replay.' }}</p>
+    <div class="auth-heading">
+      <div class="hero-mark">RA</div>
+      <div>
+        <h1>RobotAgent</h1>
+        <p class="hint">{{ mode === 'login' ? (lang === 'zh' ? '登录机器人任务工作台' : 'Sign in to the mission workbench') : (lang === 'zh' ? '创建工作台账户' : 'Create a workbench account') }}</p>
+      </div>
+    </div>
 
     <div class="tabs">
       <button :class="{ active: mode === 'login' }" @click="mode = 'login'">{{ lang === 'zh' ? '登录' : 'Login' }}</button>
@@ -112,38 +116,45 @@ export default {
   position: relative;
 }
 
+.auth-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
 .hero-mark {
   display: inline-grid;
   place-items: center;
-  width: 52px;
-  height: 52px;
-  border-radius: 18px;
+  width: 46px;
+  height: 46px;
+  border-radius: 15px;
   background: linear-gradient(145deg, rgba(86, 163, 255, 0.95), rgba(47, 125, 255, 0.82));
   color: white;
   font-weight: 800;
   letter-spacing: 0.04em;
-  margin-bottom: 18px;
   box-shadow: 0 16px 36px rgba(47, 125, 255, 0.28);
 }
 
 .auth-card h1 {
-  margin: 0 0 10px;
-  font-size: 28px;
-  line-height: 1.05;
-  letter-spacing: -0.04em;
+  margin: 0 0 4px;
+  font-size: 25px;
+  line-height: 1.1;
+  letter-spacing: 0;
 }
 
 .hint {
-  margin: 0 0 18px;
+  margin: 0;
   color: var(--muted);
-  line-height: 1.7;
+  line-height: 1.5;
+  font-size: 13px;
 }
 
 .tabs {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
-  margin-bottom: 18px;
+  margin-bottom: 16px;
 }
 
 .tabs button,
@@ -154,7 +165,7 @@ export default {
 }
 
 .tabs button {
-  padding: 10px 12px;
+  padding: 9px 12px;
   background: rgba(255, 255, 255, 0.04);
   color: var(--muted);
 }
@@ -167,7 +178,7 @@ export default {
 
 form {
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
 label {
@@ -179,9 +190,9 @@ label {
 
 input {
   width: 100%;
-  padding: 12px 14px;
+  padding: 11px 13px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--input-bg);
   color: var(--text);
 }

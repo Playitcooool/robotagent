@@ -300,9 +300,9 @@ export default {
 }
 
 .bubble-card {
-  width: min(78ch, 100%);
-  padding: 16px 18px;
-  border-radius: 22px;
+  width: min(68ch, 100%);
+  padding: 12px 14px;
+  border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.015)),
@@ -318,7 +318,7 @@ export default {
 }
 
 .subagent-card {
-  width: min(64ch, 100%);
+  width: min(58ch, 100%);
 }
 
 .error-card {
@@ -330,7 +330,7 @@ export default {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .agent-chip,
@@ -412,8 +412,8 @@ export default {
 
 .thinking-preview {
   margin: 0 0 12px;
-  padding: 10px 12px;
-  border-radius: 14px;
+  padding: 8px 10px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.035);
   color: var(--muted);
   white-space: pre-wrap;
@@ -422,8 +422,8 @@ export default {
 }
 
 .source-block {
-  margin-top: 16px;
-  padding-top: 14px;
+  margin-top: 12px;
+  padding-top: 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 

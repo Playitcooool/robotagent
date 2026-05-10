@@ -41,15 +41,6 @@
         {{ isDark ? '☀' : '◐' }}
       </button>
 
-      <label class="font-control">
-        <span>{{ lang === 'zh' ? '字号' : 'Type' }}</span>
-        <select :value="fontSize" @change="$emit('set-font-size', Number($event.target.value))">
-          <option value="13">S</option>
-          <option value="15">M</option>
-          <option value="18">L</option>
-        </select>
-      </label>
-
       <div class="user-chip">
         <span class="user-name">{{ authUser?.username }}</span>
         <button class="logout-btn" type="button" @click="$emit('logout')">{{ t('logout') }}</button>
@@ -69,10 +60,9 @@ export default {
     authUser: { type: Object, default: null },
     isDark: { type: Boolean, default: true },
     lang: { type: String, default: 'zh' },
-    fontSize: { type: Number, default: 15 },
     simStreamActive: { type: Boolean, default: false }
   },
-  emits: ['toggle-lang', 'toggle-theme', 'set-font-size', 'logout'],
+  emits: ['toggle-lang', 'toggle-theme', 'logout'],
   setup () {
     const route = useRoute()
     const router = useRouter()
@@ -149,8 +139,7 @@ export default {
 
 .nav-btn,
 .icon-btn,
-.logout-btn,
-.font-control select {
+.logout-btn {
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.04);
   color: var(--text);
@@ -170,8 +159,7 @@ export default {
 }
 
 .status-chip,
-.user-chip,
-.font-control {
+.user-chip {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -196,14 +184,6 @@ export default {
   display: inline-grid;
   place-items: center;
   font-size: 13px;
-}
-
-.font-control span {
-  color: var(--muted);
-}
-
-.font-control select {
-  padding: 4px 10px;
 }
 
 .user-name {

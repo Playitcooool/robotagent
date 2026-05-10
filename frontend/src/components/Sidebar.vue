@@ -18,19 +18,10 @@
       <button class="logout-mini" type="button" @click="$emit('logout')">{{ t('logout') }}</button>
     </div>
 
-    <div class="search-block">
-      <input
-        v-model="searchQuery"
-        class="session-search"
-        type="search"
-        :placeholder="lang === 'zh' ? '搜索会话、摘要或标题' : 'Search sessions, titles, or previews'"
-      />
-    </div>
-
-    <div v-if="sessions.length === 0 || (searchQuery && filteredSessions.length === 0)" class="empty-state">
-      <div class="empty-icon">{{ sessions.length === 0 ? '◎' : '⌕' }}</div>
-      <strong>{{ sessions.length === 0 ? (lang === 'zh' ? '还没有历史会话' : 'No sessions yet') : (lang === 'zh' ? '没有匹配项' : 'No matches') }}</strong>
-      <p>{{ sessions.length === 0 ? (lang === 'zh' ? '创建一个新任务，对话与执行记录会持续沉淀在这里。' : 'Start a mission and the session history will accumulate here.') : (lang === 'zh' ? '尝试更短的关键词或切换到其他会话。' : 'Try a shorter keyword or switch to another session.') }}</p>
+    <div v-if="sessions.length === 0" class="empty-state">
+      <div class="empty-icon">◎</div>
+      <strong>{{ lang === 'zh' ? '还没有历史会话' : 'No sessions yet' }}</strong>
+      <p>{{ lang === 'zh' ? '创建一个新任务，对话与执行记录会持续沉淀在这里。' : 'Start a mission and the session history will accumulate here.' }}</p>
     </div>
 
     <div v-else class="session-list">
@@ -76,7 +67,7 @@
 </template>
 
 <script>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const TOAST_DURATION = 2000
 const SNIPPET_MAX_LENGTH = 80
@@ -99,19 +90,8 @@ export default {
     const editingTitle = ref('')
     const titleInput = ref(null)
     const toast = ref('')
-    const searchQuery = ref('')
     let loadController = null
     let loadSeq = 0
-
-    const filteredSessions = computed(() => {
-      if (!searchQuery.value.trim()) return sessions.value
-      const query = searchQuery.value.toLowerCase()
-      return sessions.value.filter((session) => {
-        const title = (session.title || '').toLowerCase()
-        const preview = (session.preview || '').toLowerCase()
-        return title.includes(query) || preview.includes(query)
-      })
-    })
 
     const translations = {
       zh: {
@@ -311,8 +291,7 @@ export default {
       editingTitle,
       titleInput,
       toast,
-      searchQuery,
-      filteredSessions,
+      filteredSessions: sessions,
       t,
       select,
       startNew,
@@ -341,9 +320,8 @@ export default {
 .rail-header,
 .operator-card,
 .session-card,
-.search-block,
 .new-session-btn {
-  border-radius: 18px;
+  border-radius: 14px;
 }
 
 .rail-header {
@@ -351,7 +329,7 @@ export default {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 
 .eyebrow {
@@ -382,8 +360,8 @@ export default {
 
 .new-session-btn {
   width: 100%;
-  margin-bottom: 12px;
-  padding: 14px 16px;
+  margin-bottom: 10px;
+  padding: 11px 14px;
   border: 1px solid rgba(95, 156, 255, 0.28);
   background:
     linear-gradient(180deg, rgba(47, 125, 255, 0.18), rgba(47, 125, 255, 0.08)),
@@ -393,7 +371,6 @@ export default {
 }
 
 .operator-card,
-.search-block,
 .session-card {
   border: 1px solid rgba(255, 255, 255, 0.08);
   background:
@@ -406,8 +383,8 @@ export default {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px;
-  margin-bottom: 12px;
+  padding: 11px;
+  margin-bottom: 10px;
 }
 
 .operator-copy {
@@ -432,30 +409,17 @@ export default {
   padding: 8px 10px;
 }
 
-.search-block {
-  padding: 10px 12px;
-}
-
-.session-search {
-  width: 100%;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  outline: none;
-  font: inherit;
-}
-
 .session-list {
   flex: 1;
   min-height: 0;
   overflow: auto;
   display: grid;
-  gap: 10px;
+  gap: 8px;
   padding-right: 4px;
 }
 
 .session-card {
-  padding: 14px;
+  padding: 10px 11px;
   cursor: pointer;
   transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
 }
@@ -474,14 +438,14 @@ export default {
 .session-top {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
+  gap: 8px;
 }
 
 .session-main {
   flex: 1;
   min-width: 0;
   display: grid;
-  gap: 6px;
+  gap: 4px;
 }
 
 .session-main strong,
@@ -499,7 +463,7 @@ export default {
 
 .session-actions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
 }
 
 .icon-action,
@@ -518,7 +482,7 @@ export default {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
-  margin-top: 12px;
+  margin-top: 7px;
 }
 
 .title-edit {

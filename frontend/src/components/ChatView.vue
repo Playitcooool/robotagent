@@ -69,7 +69,7 @@ export default {
 
 .chat-panel.landing {
   justify-content: center;
-  padding: 28px 24px 24px;
+  padding: 22px 24px 20px;
 }
 
 .chat-panel.dialogue {

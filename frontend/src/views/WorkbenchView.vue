@@ -1,5 +1,5 @@
 <template>
-  <section :class="['workbench', showToolPanel ? 'has-results' : 'no-results']">
+  <section :class="['workbench', toolPanelOpen && hasToolPanelContent ? 'has-results' : 'no-results']">
     <aside class="session-rail">
       <Sidebar
         :reloadToken="sidebarReloadToken"
@@ -22,7 +22,17 @@
       />
     </main>
 
-    <aside v-if="showToolPanel" class="results-rail">
+    <button
+      v-if="hasToolPanelContent"
+      class="results-toggle"
+      type="button"
+      :aria-pressed="toolPanelOpen"
+      @click="toolPanelOpen = !toolPanelOpen"
+    >
+      {{ toolPanelOpen ? (preferences.lang.value === 'zh' ? '收起结果' : 'Hide Results') : (preferences.lang.value === 'zh' ? '打开结果' : 'Show Results') }}
+    </button>
+
+    <aside v-if="toolPanelOpen && hasToolPanelContent" class="results-rail">
       <ToolResults
         :liveFrame="liveFrame"
         :planning="planningState"
@@ -33,7 +43,7 @@
 </template>
 
 <script>
-import { onMounted, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import ChatView from '../components/ChatView.vue'
@@ -48,6 +58,7 @@ export default {
     const route = useRoute()
     const router = useRouter()
     const workbench = useWorkbenchStore()
+    const toolPanelOpen = ref(false)
 
     async function handleSelectSession(session) {
       await workbench.selectSession(session)
@@ -81,8 +92,14 @@ export default {
       }
     })
 
+    watch(workbench.hasToolPanelContent, (hasContent, hadContent) => {
+      if (hasContent && !hadContent) toolPanelOpen.value = true
+      if (!hasContent) toolPanelOpen.value = false
+    })
+
     return {
       ...workbench,
+      toolPanelOpen,
       handleSelectSession,
       handleSessionDeleted
     }
@@ -92,11 +109,28 @@ export default {
 
 <style scoped>
 .workbench {
+  position: relative;
   display: grid;
   grid-template-columns: 290px minmax(0, 1fr) 360px;
   gap: 16px;
   height: calc(100vh - 72px);
   padding: 18px;
+}
+
+.results-toggle {
+  position: absolute;
+  top: 26px;
+  right: 28px;
+  z-index: 5;
+  border: 1px solid rgba(95, 156, 255, 0.32);
+  border-radius: 999px;
+  background: rgba(12, 18, 29, 0.92);
+  color: #dce8ff;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
 }
 
 .workbench.no-results {
