@@ -75,7 +75,8 @@ logger.setLevel(logging.INFO)
 DEBUG_STREAM_FIELDS = os.environ.get("DEBUG_STREAM_FIELDS", "0") == "1"
 
 # ========== 2. 全局变量定义（关键：提前声明active_agent） ==========
-active_agent = None  # 全局agent，启动事件中初始化
+active_agent = None  # 默认 agent：不加载联网搜索工具
+active_search_agent = None  # 联网搜索 agent：仅用户打开开关时使用
 chat_redis: Optional[Redis] = None
 auth_redis: Optional[Redis] = None
 context_loader: Optional[ContextLoader] = None  # Context 文件加载器
@@ -123,17 +124,17 @@ def _truncate_for_prefill(text: str, max_chars: int) -> str:
 
 
 # ========== 4. 加载工具函数（保留并添加日志） ==========
-def get_tools():
+def get_tools(enabled_general_tools: set[str] | None = None):
     try:
         general_tools = []
         subagent_tools = []
-        default_tool_names = "search,current_time"
-        configured_tools = os.environ.get("MAIN_GENERAL_TOOLS", default_tool_names)
-        enabled_general_tools = {
-            name.strip()
-            for name in configured_tools.split(",")
-            if name.strip()
-        }
+        if enabled_general_tools is None:
+            configured_tools = os.environ.get("MAIN_GENERAL_TOOLS", "current_time")
+            enabled_general_tools = {
+                name.strip()
+                for name in configured_tools.split(",")
+                if name.strip()
+            }
         for func_name in GeneralTool.__all__:
             if enabled_general_tools and func_name not in enabled_general_tools:
                 continue
@@ -168,7 +169,7 @@ app = FastAPI()
 # ========== 7. 启动事件（正确初始化agent） ==========
 @app.on_event("startup")
 async def startup_event():
-    global active_agent, chat_redis, auth_redis, context_loader  # 关联全局变量
+    global active_agent, active_search_agent, chat_redis, auth_redis, context_loader  # 关联全局变量
     try:
         # Redis connection with retry (指数退避 + jitter)
         async def connect_chat_redis():
@@ -197,8 +198,9 @@ async def startup_event():
         context_loader = ContextLoader()
         logger.info("ContextLoader 已初始化")
 
-        # 加载所有工具
-        all_tools = get_tools()
+        # 加载默认工具。联网 search 工具只挂到 search agent，避免每轮都进入 prefill。
+        all_tools = get_tools({"current_time"})
+        search_tools = get_tools({"current_time", "search"})
         if not all_tools:
             logger.warning("未加载到任何工具，agent将使用空工具列表")
 
@@ -290,6 +292,13 @@ async def startup_event():
                 subagents=subagents,
                 checkpointer=checkpointer,
             )
+            active_search_agent = create_deep_agent(
+                model=chatBot,
+                tools=search_tools,
+                system_prompt=runtime_system_prompt,
+                subagents=subagents,
+                checkpointer=checkpointer,
+            )
         finally:
             if checkpointer_cm is not None:
                 await checkpointer_cm.__aexit__(None, None, None)
@@ -297,6 +306,7 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Agent 初始化失败：{str(e)}", exc_info=True)
         active_agent = None
+        active_search_agent = None
         if chat_redis is not None:
             await chat_redis.aclose()
             chat_redis = None
@@ -683,14 +693,13 @@ async def chat_send(
         for t in (payload.enabled_tools or [])
         if str(t).strip()
     }
-    # academic_search 已内置到 agent 工具中，始终启用
-    academic_search_enabled = True
-    web_search_enabled = "web_search" in enabled_tools  # 保留兼容旧版
+    search_enabled = bool(enabled_tools & {"search", "academic_search", "web_search"})
     user_id = current_user.get("uid", "unknown")
     await _append_chat_message(user_id, session_id, "user", user_message)
 
     # 核心修正：使用全局的active_agent，而非初始空工具的agent
-    if not active_agent:
+    selected_agent = active_search_agent if search_enabled else active_agent
+    if not selected_agent:
         # 返回流式错误响应（保持格式统一）并添加防缓冲头
         return StreamingResponse(
             iter(
@@ -1054,7 +1063,7 @@ async def chat_send(
 
             runtime_tool_note = (
                 "本轮可用工具：search（智能搜索，同时支持学术论文和网页）。请自主判断并调用 search。"
-                if academic_search_enabled
+                if search_enabled
                 else "本轮禁用工具：search。"
             )
             input_messages = [
@@ -1063,7 +1072,7 @@ async def chat_send(
             ]
             # 同时订阅 messages(增量token) 与 values(状态事件)，保证前端实时流式显示。
             print(f"[DEBUG] ====== Starting astream for user={user_id} session={session_id} ======")
-            async for mode, event in active_agent.astream(
+            async for mode, event in selected_agent.astream(
                 {"messages": input_messages},
                 stream_mode=["messages", "values"],
                 config={"configurable": {"thread_id": f"{user_id}:{session_id}"}},

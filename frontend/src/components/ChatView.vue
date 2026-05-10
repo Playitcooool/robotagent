@@ -12,6 +12,8 @@
       :canSend="canSend"
       :isSending="isSending"
       :lang="lang"
+      :searchEnabled="searchEnabled"
+      @toggle-search="searchEnabled = !searchEnabled"
       @send="send"
       @stop="$emit('stopMessage')"
     />
@@ -40,11 +42,15 @@ export default {
   setup (_, { emit }) {
     const { lang } = useI18n()
     const text = ref('')
+    const searchEnabled = ref(false)
     const canSend = computed(() => text.value.trim().length > 0)
 
     function send() {
       if (!text.value.trim()) return
-      emit('sendMessage', { text: text.value.trim(), enabledTools: [] })
+      emit('sendMessage', {
+        text: text.value.trim(),
+        enabledTools: searchEnabled.value ? ['search'] : []
+      })
       text.value = ''
     }
 
@@ -55,6 +61,7 @@ export default {
     return {
       lang,
       text,
+      searchEnabled,
       canSend,
       send,
       applyPrompt

@@ -14,12 +14,24 @@
 
       <div class="composer-actions">
         <button
+          type="button"
+          :class="['search-toggle', searchEnabled ? 'active' : '']"
+          :title="searchEnabled ? (lang === 'zh' ? '联网搜索已开启' : 'Web search on') : (lang === 'zh' ? '联网搜索已关闭' : 'Web search off')"
+          :aria-pressed="searchEnabled ? 'true' : 'false'"
+          @click="$emit('toggle-search')"
+        >
+          <span class="search-dot"></span>
+          <span>{{ lang === 'zh' ? '联网' : 'Search' }}</span>
+        </button>
+        <button
           :type="isSending ? 'button' : 'submit'"
           :class="['send-btn', isSending ? 'stop' : '']"
           :disabled="!isSending && !canSend"
+          :title="isSending ? (lang === 'zh' ? '中断' : 'Stop') : (lang === 'zh' ? '发送' : 'Send')"
           @click="isSending ? $emit('stop') : null"
         >
-          {{ isSending ? (lang === 'zh' ? '中断' : 'Stop') : (lang === 'zh' ? '发送' : 'Send') }}
+          <span v-if="isSending" class="stop-icon"></span>
+          <span v-else>》</span>
         </button>
       </div>
     </div>
@@ -38,9 +50,10 @@ export default {
     landingMode: { type: Boolean, default: false },
     canSend: { type: Boolean, default: false },
     isSending: { type: Boolean, default: false },
-    lang: { type: String, default: 'zh' }
+    lang: { type: String, default: 'zh' },
+    searchEnabled: { type: Boolean, default: false }
   },
-  emits: ['update:modelValue', 'send', 'stop'],
+  emits: ['update:modelValue', 'send', 'stop', 'toggle-search'],
   setup (props, { emit }) {
     const textareaRef = ref(null)
     const composing = ref(false)
@@ -132,17 +145,56 @@ textarea {
 .composer-actions {
   display: flex;
   align-items: center;
+  gap: 10px;
   justify-content: flex-end;
 }
 
+.search-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.search-toggle.active {
+  border-color: rgba(86, 163, 255, 0.58);
+  background: rgba(47, 125, 255, 0.14);
+  color: var(--text);
+}
+
+.search-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.5;
+}
+
+.search-toggle.active .search-dot {
+  opacity: 1;
+  background: #56a3ff;
+}
+
 .send-btn {
-  min-width: 118px;
-  padding: 10px 16px;
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
   border: none;
   border-radius: 999px;
   background: linear-gradient(180deg, #56a3ff, #2f7dff);
   color: white;
-  font-size: 13px;
+  font-size: 22px;
+  line-height: 1;
   font-weight: 700;
   cursor: pointer;
   box-shadow: 0 14px 28px rgba(47, 125, 255, 0.28);
@@ -159,14 +211,21 @@ textarea {
   box-shadow: 0 14px 28px rgba(224, 82, 82, 0.24);
 }
 
+.stop-icon {
+  width: 13px;
+  height: 13px;
+  border-radius: 2px;
+  background: currentColor;
+}
+
 @media (max-width: 720px) {
   .composer-actions {
-    flex-direction: column;
-    align-items: stretch;
+    justify-content: space-between;
   }
 
-  .send-btn {
-    width: 100%;
+  .search-toggle {
+    flex: 1;
+    justify-content: center;
   }
 }
 </style>
