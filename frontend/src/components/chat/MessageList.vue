@@ -1,7 +1,7 @@
 <template>
   <div ref="messagesRef" class="message-list" role="log" aria-live="polite" aria-label="对话消息" aria-relevant="additions">
     <MessageBubble
-      v-for="message in conversation"
+      v-for="message in visibleMessages"
       :key="message.id"
       :message="message"
       :lang="lang"
@@ -10,9 +10,10 @@
 </template>
 
 <script>
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import MessageBubble from './MessageBubble.vue'
+import { resolveAgentKey } from '../../lib/workbench.js'
 
 export default {
   name: 'MessageList',
@@ -24,6 +25,12 @@ export default {
   setup (props) {
     const messagesRef = ref(null)
     let scrollRaf = 0
+    const visibleMessages = computed(() => {
+      return props.conversation.filter((message) => {
+        if (String(message?.role || '') !== 'assistant') return true
+        return resolveAgentKey(message?.agent) === 'main'
+      })
+    })
 
     function scrollToBottom() {
       const element = messagesRef.value
@@ -37,7 +44,7 @@ export default {
     }
 
     watch(
-      () => props.conversation.slice(-3).map((item) => {
+      () => visibleMessages.value.slice(-3).map((item) => {
         const textLen = String(item?.text || '').length
         const thinkLen = String(item?.thinking || '').length
         return `${item?.id}:${textLen}:${thinkLen}:${item?.loading ? 1 : 0}:${item?.thinkingDone ? 1 : 0}`
@@ -50,7 +57,7 @@ export default {
       if (scrollRaf) cancelAnimationFrame(scrollRaf)
     })
 
-    return { messagesRef }
+    return { messagesRef, visibleMessages }
   }
 }
 </script>

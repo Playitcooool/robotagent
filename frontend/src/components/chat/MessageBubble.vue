@@ -14,11 +14,7 @@
       </div>
 
       <template v-else>
-        <div v-if="message.role === 'assistant'" class="message-topline">
-          <div :class="['agent-chip', `agent-${agentKey}`]">
-            <span>{{ agentIcon }}</span>
-            <span>{{ agentName }}</span>
-          </div>
+        <div v-if="message.role === 'assistant' && hasSpecialTextBlock" class="message-topline compact">
           <button v-if="hasSpecialTextBlock" type="button" class="mini-action" @click.stop="copyText(message.text)">
             {{ copied ? (lang === 'zh' ? '已复制' : 'Copied') : (lang === 'zh' ? '复制' : 'Copy') }}
           </button>

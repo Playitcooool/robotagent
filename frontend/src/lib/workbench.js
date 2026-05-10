@@ -24,17 +24,8 @@ export function computeLandingMode(conversation = []) {
   return !messages.some((message) => String(message?.role || '') === 'user')
 }
 
-export function computeShowToolPanel({ liveFrame = null, planningState = null, conversation = [] } = {}) {
-  if (liveFrame?.image_url) return true
-
-  return (Array.isArray(conversation) ? conversation : []).some((message) => {
-    if (String(message?.role || '') !== 'assistant') return false
-    const hasSearch = Array.isArray(message?.webSearchResults) && message.webSearchResults.length > 0
-    const hasRag = Array.isArray(message?.ragReferences) && message.ragReferences.length > 0
-    const isToolMessage = resolveAgentKey(message?.agent) !== 'main'
-    const hasToolOutput = isToolMessage && (message?.loading || String(message?.text || '').trim())
-    return Boolean(hasSearch || hasRag || hasToolOutput)
-  })
+export function computeShowToolPanel({ liveFrame = null } = {}) {
+  return Boolean(liveFrame?.image_url)
 }
 
 export function normalizePlanningPayload(payload = {}) {

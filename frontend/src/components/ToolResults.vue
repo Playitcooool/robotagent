@@ -5,66 +5,9 @@
         <p class="eyebrow">Execution Rail</p>
         <h2>{{ lang === 'zh' ? '执行结果' : 'Execution Results' }}</h2>
       </div>
-      <div class="summary-pills">
-        <span v-if="activeTasks.length" class="pill active">{{ activeTasks.length }} {{ lang === 'zh' ? '运行中' : 'live' }}</span>
-        <span v-if="planningSteps.length" class="pill">{{ completedPlanningCount }}/{{ planningSteps.length }} {{ lang === 'zh' ? '计划' : 'plan' }}</span>
-        <span v-if="latestSearchResults.length" class="pill">{{ latestSearchResults.length }} {{ lang === 'zh' ? '出处' : 'sources' }}</span>
-      </div>
     </header>
 
     <div class="results-body">
-      <section v-if="activeTasks.length" class="rail-section">
-        <div class="section-heading">{{ lang === 'zh' ? '工具状态' : 'Tool Activity' }}</div>
-        <div class="card-grid">
-          <article v-for="task in activeTasks" :key="task.id" class="rail-card">
-            <div class="card-top">
-              <span :class="['agent-chip', task.agentKey]">{{ task.agentLabel }}</span>
-              <span class="card-status">{{ task.loadingKindLabel }}</span>
-            </div>
-            <p>{{ task.statusText }}</p>
-          </article>
-        </div>
-      </section>
-
-      <section v-if="planningSteps.length" class="rail-section">
-        <div class="section-heading">{{ lang === 'zh' ? '执行计划' : 'Plan Trace' }}</div>
-        <ol class="plan-list">
-          <li v-for="(item, index) in planningSteps" :key="item.id || index" :class="['plan-item', item.status]">
-            <span class="plan-index">{{ item.status === 'completed' ? '✓' : index + 1 }}</span>
-            <div class="plan-copy">
-              <strong>{{ item.step }}</strong>
-              <small>{{ planStatusLabel(item.status) }}</small>
-            </div>
-          </li>
-        </ol>
-      </section>
-
-      <section v-if="latestSearchResults.length || latestRagReferences.length" class="rail-section">
-        <div class="section-heading">{{ lang === 'zh' ? '证据来源' : 'Evidence Sources' }}</div>
-        <div class="stack-list">
-          <article v-for="(item, index) in latestSearchResults" :key="`search-${index}`" class="source-card">
-            <a :href="item.url" target="_blank" rel="noopener noreferrer">{{ item.title || item.url }}</a>
-            <p v-if="item.snippet">{{ item.snippet }}</p>
-          </article>
-          <article v-for="(item, index) in latestRagReferences" :key="`rag-${index}`" class="source-card compact">
-            <a :href="item.url" target="_blank" rel="noopener noreferrer">{{ item.title || item.url }}</a>
-          </article>
-        </div>
-      </section>
-
-      <section v-if="toolOutputs.length" class="rail-section">
-        <div class="section-heading">{{ lang === 'zh' ? '子代理输出' : 'Subagent Output' }}</div>
-        <div class="stack-list">
-          <article v-for="item in toolOutputs" :key="item.id" class="rail-card">
-            <div class="card-top">
-              <span :class="['agent-chip', item.agentKey]">{{ item.agentLabel }}</span>
-              <span class="card-status">{{ item.outputLabel }}</span>
-            </div>
-            <pre>{{ item.outputText }}</pre>
-          </article>
-        </div>
-      </section>
-
       <section v-if="liveFrame?.image_url" class="rail-section">
         <div class="section-heading">{{ lang === 'zh' ? '仿真画面' : 'Simulation Feed' }}</div>
         <div class="frame-card">
@@ -90,17 +33,14 @@
       </section>
 
       <div v-if="!hasContent" class="empty-state">
-        <strong>{{ lang === 'zh' ? '等待执行证据' : 'Awaiting execution evidence' }}</strong>
-        <p>{{ lang === 'zh' ? '规划、搜索结果、子代理输出和仿真帧会在这里按时间汇总。' : 'Plans, sources, subagent output, and simulation frames will collect here as the mission runs.' }}</p>
+        <strong>{{ lang === 'zh' ? '等待仿真画面' : 'Awaiting simulation frame' }}</strong>
+        <p>{{ lang === 'zh' ? '仿真工具回传画面后会显示在这里。' : 'Simulation frames will appear here when returned by the simulator.' }}</p>
       </div>
     </div>
   </div>
 </template>
 
 <script>
-import { computed } from 'vue'
-
-import { deriveResultRailData } from '../lib/workbench.js'
 import { useI18n } from '../composables/useI18n.js'
 
 export default {
@@ -122,36 +62,8 @@ export default {
     return { lang }
   },
   computed: {
-    planningSteps () {
-      return Array.isArray(this.planning?.steps) ? this.planning.steps : []
-    },
-    completedPlanningCount () {
-      return this.planningSteps.filter((item) => item?.status === 'completed').length
-    },
-    resultRailData () {
-      return deriveResultRailData(this.conversation)
-    },
-    activeTasks () {
-      return this.resultRailData.activeTasks
-    },
-    latestSearchResults () {
-      return this.resultRailData.latestSearchResults
-    },
-    latestRagReferences () {
-      return this.resultRailData.latestRagReferences
-    },
-    toolOutputs () {
-      return this.resultRailData.toolOutputs
-    },
     hasContent () {
-      return Boolean(
-        this.activeTasks.length ||
-        this.planningSteps.length ||
-        this.latestSearchResults.length ||
-        this.latestRagReferences.length ||
-        this.toolOutputs.length ||
-        this.liveFrame?.image_url
-      )
+      return Boolean(this.liveFrame?.image_url)
     }
   },
   watch: {
@@ -174,11 +86,6 @@ export default {
     }
   },
   methods: {
-    planStatusLabel (status) {
-      if (status === 'completed') return this.lang === 'zh' ? '已完成' : 'Completed'
-      if (status === 'in_progress') return this.lang === 'zh' ? '进行中' : 'In progress'
-      return this.lang === 'zh' ? '待执行' : 'Pending'
-    },
     onImgLoad () {
       this.imgLoading = false
       this.imgError = false
