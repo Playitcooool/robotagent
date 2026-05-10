@@ -230,6 +230,8 @@ async def init_subagents(
 
         if not _cached_mcp_tools:
             raise RuntimeError(f"Simulation MCP unavailable: {errors}")
+        for t in _cached_mcp_tools:
+            t.handle_tool_error = True
         logger.info(
             f"MCP tools loaded from services={loaded_services}, total={len(_cached_mcp_tools)}"
         )
