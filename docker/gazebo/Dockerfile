@@ -4,8 +4,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     TZ=UTC
 
-# 1. 安装 Gazebo 11 ROS2 桥接包
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 使用清华镜像源
+RUN sed -i 's|http://archive.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list && \
+    sed -i 's|http://security.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list && \
+    curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /tmp/ros.key && \
+    apt-key add /tmp/ros.key && \
+    echo "deb https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu jammy main" > /etc/apt/sources.list.d/ros2.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-gazebo-ros-pkgs \
     ros-humble-gazebo-msgs \
     git \

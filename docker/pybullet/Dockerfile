@@ -36,8 +36,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 # 6. 升级 pip（在 venv 中完全合法）
 RUN pip install --upgrade pip
 
-# 7. 安装 Python 包
-RUN pip install \
+# 7. 安装 Python 包 (使用清华镜像)
+RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
     pybullet \
     numpy \
     pandas \

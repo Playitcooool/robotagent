@@ -129,6 +129,25 @@ npm run dev
 
 [`dev.sh`](/Volumes/Samsung/Projects/robotagent/dev.sh) 会在启动前清理 `8000` 和 `5173` 端口上的已有进程，并同时拉起后端与前端。可以通过 `BACKEND_PYTHON=/path/to/python ./dev.sh` 指定后端 Python 解释器。
 
+### Redis
+
+Redis 是必需的后端依赖，用于会话管理与 Agent checkpoint。
+
+```bash
+# macOS/Linux 本地安装后直接启动
+redis-server --daemonize yes
+
+# 或使用 Docker
+docker run -d --name robotagent-redis -p 6379:6379 redis:7
+```
+
+验证 Redis 正常运行：
+
+```bash
+redis-cli ping
+# 应返回：PONG
+```
+
 ## 仿真服务
 
 ### PyBullet / Gazebo MCP
