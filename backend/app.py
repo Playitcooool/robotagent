@@ -1288,6 +1288,32 @@ async def chat_send(
                                     },
                                     ensure_ascii=False,
                                 ) + "\n"
+
+                    # Emit real-time status for tool messages from subagents
+                    if role_name == "tool" and source in {"simulator", "analysis"}:
+                        tool_name = _extract_message_name(msg)
+                        if tool_name and tool_name != "task":
+                            simulator_activity_seen = True
+                            tool_status_text = f"正在执行：{tool_name}"
+                            signature = f"subtool:{tool_name}"
+                            if signature != last_status_signature:
+                                last_status_signature = signature
+                                current_status_text = tool_status_text
+                                current_status_source = source
+                                yield json.dumps(
+                                    {"type": "status", "text": tool_status_text, "source": source},
+                                    ensure_ascii=False,
+                                ) + "\n"
+                                yield json.dumps(
+                                    _build_planning_payload(
+                                        current_planning_steps,
+                                        current_status_text,
+                                        current_status_source,
+                                        True,
+                                    ),
+                                    ensure_ascii=False,
+                                ) + "\n"
+
                     continue
 
                 if mode != "values":
@@ -1465,7 +1491,9 @@ async def chat_send(
                             if is_academic_search_tool
                             else "联网搜索中..."
                             if is_web_search_tool
-                            else f"正在执行工具：{name_msg or 'tool'}"
+                            else "仿真子代理执行中..."
+                            if name_msg == "task"
+                            else f"正在执行：{name_msg or 'tool'}"
                         )
                         signature = f"tool:{name_msg}:{_truncate_text(_normalize_text(content_msg), max_len=60)}"
                         if signature != last_status_signature:
