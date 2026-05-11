@@ -375,6 +375,7 @@ async function sendMessage(payload) {
 
             const streamState = assistantStreams[messageId]
             conversation.value[idx].loading = false
+            conversation.value[idx].statusText = ''
 
             if (streamState) {
               const finalText = streamState.text || conversation.value[idx].text || ''
@@ -457,8 +458,12 @@ async function sendMessage(payload) {
           }
           streamState.lastStatusText = statusText
           if (idx !== -1) {
-            conversation.value[idx].loading = true
             conversation.value[idx].loadingKind = streamState.loadingKind || 'thinking'
+            if (!String(streamState.text || '').trim()) {
+              conversation.value[idx].loading = true
+            } else {
+              conversation.value[idx].statusText = statusText
+            }
           }
           maybeStartSimStream(event.source, simFrameSinceTimestamp)
           continue
@@ -474,6 +479,7 @@ async function sendMessage(payload) {
             if (idx !== -1) {
               conversation.value[idx].loading = false
               conversation.value[idx].loadingKind = streamState.loadingKind || 'thinking'
+              conversation.value[idx].statusText = ''
               conversation.value[idx].text = streamState.text
             }
           } else {

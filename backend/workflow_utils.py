@@ -37,8 +37,8 @@ _PENDING_CONFIRM_RE = re.compile(
 )
 _PENDING_MODIFY_RE = re.compile(
     r"("
-    r"改|修改|调整|换成|不要.*默认|参数|位置|目标|物体|"
-    r"change|modify|adjust|instead|parameter|position|target"
+    r"改一下|修改|调整|换成|不要.*默认|改为|换一个|"
+    r"change|modify|adjust|instead"
     r")",
     re.IGNORECASE,
 )
@@ -129,7 +129,12 @@ def normalize_intent_result(
     if pending_action == "simulator":
         if pending_response == "unclear":
             pending_response = infer_pending_action_response(user_message)
-        if pending_response == "confirmed":
+        if pending_response == "unclear":
+            # User continued conversation with pending simulator action;
+            # default to confirmed unless clearly modifying/rejecting.
+            execution_confirmed = True
+            simulator_required = True
+        elif pending_response == "confirmed":
             execution_confirmed = True
             simulator_required = True
         elif pending_response == "modify":

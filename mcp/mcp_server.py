@@ -121,6 +121,8 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]):
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp_path, path)
 
 
@@ -211,6 +213,8 @@ def _publish_realtime_frame(
     tmp_frame = LATEST_FRAME_FILE.with_suffix(".png.tmp")
     with open(tmp_frame, "wb") as f:
         f.write(png_bytes)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp_frame, LATEST_FRAME_FILE)
     _write_json_atomic(LATEST_META_FILE, payload)
 
@@ -349,7 +353,9 @@ def initialize_simulation(args: InitializeSimulationArgs):
         Exception: If simulation initialization fails. The ToolRetryMiddleware
             will retry this call up to max_retries times.
     """
-    setup_simulation(gui=args.gui)
+    if args.gui:
+        print("[mcp_server] GUI mode requested but forcing DIRECT mode (no X server in container)")
+    setup_simulation(gui=False)
     _publish_snapshot("initialize_simulation", done=False, extra={"status": "running"})
     asset_status = _pybullet_asset_status()
 
@@ -1175,6 +1181,7 @@ def step_simulation(args: StepSimulationArgs):
     try:
         with with_simulation() as cid:
             _safe_step(cid, steps)
+            _publish_snapshot("step_simulation", done=False, extra={"steps": steps})
 
         return {
             "task": "step_simulation",

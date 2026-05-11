@@ -29,6 +29,11 @@
           v-html="renderedHtml"
         ></div>
 
+        <div v-if="message.statusText" class="inline-status">
+          <span class="pulse-dot small"></span>
+          <span>{{ message.statusText }}</span>
+        </div>
+
         <section v-if="Array.isArray(message.webSearchResults) && message.webSearchResults.length" class="source-block">
           <header class="source-header">
             <strong>{{ isAcademicSearch ? (lang === 'zh' ? '学术资料' : 'Academic Sources') : (lang === 'zh' ? '搜索出处' : 'Search Sources') }}</strong>
@@ -412,6 +417,22 @@ export default {
   background: #56a3ff;
   box-shadow: 0 0 0 rgba(86, 163, 255, 0.5);
   animation: pulse 1.25s infinite;
+}
+
+.pulse-dot.small {
+  width: 7px;
+  height: 7px;
+}
+
+.inline-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .loading-lines {
