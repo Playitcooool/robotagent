@@ -1072,7 +1072,7 @@ async def chat_send(
                 stream_mode=["messages", "values"],
                 config={
                     "configurable": {"thread_id": f"{user_id}:{session_id}"},
-                    "recursion_limit": 15,
+                    "recursion_limit": 40,
                 },
             ):
                 if mode == "messages":
@@ -1729,9 +1729,40 @@ async def chat_send(
             )
             yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
         except Exception as e:
+            # GraphRecursionError: model looped too long. Treat tools called so far as the result.
+            err_name = type(e).__name__
+            is_recursion = "Recursion" in err_name or "recursion_limit" in str(e).lower()
+
+            if is_recursion and tool_names_seen:
+                warning_text = (
+                    f"⚠️ 模型调用工具次数过多（已达上限）。"
+                    f"已执行的工具：{', '.join(sorted(tool_names_seen))}。"
+                    f"可能已完成任务，请查看右侧画面；或重新描述任务更简洁的步骤。"
+                )
+                await _append_chat_message(user_id, session_id, "assistant", warning_text)
+                yield json.dumps(
+                    {"type": "delta", "text": warning_text, "source": "main"},
+                    ensure_ascii=False,
+                ) + "\n"
+                if current_planning_steps:
+                    for step in current_planning_steps:
+                        step["status"] = "completed"
+                    yield json.dumps(
+                        _build_planning_payload(
+                            current_planning_steps, "已达调用上限", "simulator", False
+                        ),
+                        ensure_ascii=False,
+                    ) + "\n"
+                yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
+                logger.warning(
+                    "[chat-stream] recursion limit hit user=%s session=%s tools=%s",
+                    user_id, session_id, sorted(tool_names_seen),
+                )
+                return
+
             logger.error(
                 f"调用Agent出错：{str(e)}", exc_info=True
-            )  # 修正：使用uvicorn logger
+            )
             await _append_chat_message(
                 user_id, session_id, "assistant", f"[后端错误] 处理请求失败：{str(e)}"
             )
