@@ -55,6 +55,23 @@ def extract_text_from_message(msg) -> str:
         content = getattr(msg, "content", None) or getattr(msg, "text", None)
         content_blocks = getattr(msg, "content_blocks", None)
 
+    # If content is a list of blocks, filter out thinking/reasoning/thought blocks
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                btype = str(item.get("type") or "").lower()
+                if btype in {"thinking", "reasoning", "thought", "think"}:
+                    continue
+                t = item.get("text") or item.get("content")
+                if isinstance(t, str):
+                    parts.append(t)
+        text = "".join(parts)
+        if text:
+            return text
+
     text = normalize_text(content)
     if text:
         return text
@@ -63,6 +80,9 @@ def extract_text_from_message(msg) -> str:
         parts = []
         for block in content_blocks:
             if isinstance(block, dict):
+                btype = str(block.get("type") or "").lower()
+                if btype in {"thinking", "reasoning", "thought", "think"}:
+                    continue
                 t = block.get("text") or block.get("content")
                 if isinstance(t, str) and t:
                     parts.append(t)
