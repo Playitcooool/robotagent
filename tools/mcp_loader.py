@@ -21,10 +21,10 @@ with open(os.path.join(ROOT_DIR, "config", "config.yml"), "r", encoding="utf-8")
     _config = yaml.load(f.read(), yaml.FullLoader)
 
 # Core tools: always loaded with full schema
-# Strategy: only expose composition-friendly primitives as core.
-# "Demo-style" tools that create their own objects (grab_and_place_step, push_cube_step,
-# path_planning, multi_object_grab_and_place) are in extended tier to avoid confusing
-# the model into repeated initialization + object creation cycles.
+# All simulation tools are composition-friendly primitives. The previous "demo-style"
+# high-level tools (grab_and_place_step, push_cube_step, path_planning, etc.) were
+# removed entirely from the MCP server as they confused the model with internal
+# loadURDF calls incompatible with composition.
 CORE_TOOL_NAMES = {
     "initialize_simulation",
     "create_object",

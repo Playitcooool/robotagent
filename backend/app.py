@@ -9,6 +9,11 @@ from fastapi.responses import StreamingResponse
 from pathlib import Path
 import ast
 from langchain.agents import create_agent
+from langchain.agents.middleware.context_editing import (
+    ClearToolUsesEdit,
+    ContextEditingMiddleware,
+)
+from langchain.agents.middleware.model_call_limit import ModelCallLimitMiddleware
 from tools.mcp_loader import load_mcp_tools_progressive
 from prompts.context_loader import ContextLoader
 from prompts.MainAgentPrompt import build_system_prompt_with_context
@@ -238,16 +243,25 @@ async def startup_event():
             agent_checkpointer_cm = AsyncRedisSaver.from_conn_string(DB_URI)
             checkpointer = await agent_checkpointer_cm.__aenter__()
             await checkpointer.asetup()
+        # Middleware: context editing (trim old tool outputs) + model call limit (prevent runaway)
+        agent_middleware = [
+            ContextEditingMiddleware(
+                edits=[ClearToolUsesEdit(trigger=8000, keep=3, clear_tool_inputs=False)],
+            ),
+            ModelCallLimitMiddleware(run_limit=20, exit_behavior="end"),
+        ]
         active_agent = create_agent(
             model=chatBot,
             tools=all_tools,
             system_prompt=runtime_system_prompt,
+            middleware=agent_middleware,
             checkpointer=checkpointer,
         )
         active_search_agent = create_agent(
             model=chatBot,
             tools=search_tools,
             system_prompt=runtime_system_prompt,
+            middleware=agent_middleware,
             checkpointer=checkpointer,
         )
         logger.info("Agent 初始化成功！")
@@ -651,6 +665,43 @@ async def chat_send(
     }
     search_enabled = bool(enabled_tools & {"search", "academic_search", "web_search"})
     user_id = current_user.get("uid", "unknown")
+
+    # Task 1: Confirmation detection - if prev assistant asked "确认?" and user confirms
+    confirmation_detected = False
+    if chat_redis is not None:
+        try:
+            key = _chat_history_key(user_id, session_id)
+            recent_raw = await chat_redis.lrange(key, -2, -1)
+            last_assistant_text = ""
+            for item in recent_raw:
+                try:
+                    parsed = json.loads(item)
+                    if parsed.get("role") == "assistant":
+                        last_assistant_text = str(parsed.get("text") or "")
+                except Exception:
+                    continue
+            assistant_asked = bool(
+                last_assistant_text
+                and re.search(
+                    r"(确认|confirm|开始|execute|proceed)[^。\n]{0,10}[?？]",
+                    last_assistant_text[-200:], re.IGNORECASE,
+                )
+            )
+            user_confirmed = bool(
+                re.search(
+                    r"^\s*(确认|好|好的|可以|开始|执行|继续|go|ok|okay|yes|y|confirm|proceed|行|对)\s*[。！!.]?\s*$",
+                    user_message.strip(), re.IGNORECASE,
+                )
+                or re.search(r"(确认执行|开始执行|请执行)", user_message)
+            )
+            confirmation_detected = assistant_asked and user_confirmed
+            if confirmation_detected:
+                logger.info(
+                    "[confirm-detect] user confirmed user=%s session=%s",
+                    user_id, session_id,
+                )
+        except Exception as e:
+            logger.warning(f"Confirmation detection failed: {e}")
 
     await _append_chat_message(user_id, session_id, "user", user_message)
 
@@ -1059,6 +1110,11 @@ async def chat_send(
                     "role": "system",
                     "content": "本轮可用工具：search（智能搜索）。请自主判断并调用。",
                 })
+            if confirmation_detected:
+                input_messages.append({
+                    "role": "system",
+                    "content": "用户已确认执行上一条计划。立即调用仿真工具执行，不要再输出计划文字或再次询问确认。",
+                })
             input_messages.append({"role": "user", "content": user_message})
             # 同时订阅 messages(增量token) 与 values(状态事件)，保证前端实时流式显示。
             logger.info(
@@ -1098,49 +1154,8 @@ async def chat_send(
                         msg_id = _extract_message_id(msg)
                         if msg_id:
                             message_source_by_id[msg_id] = source
-                    if role_name in {"assistant", "ai"} and not _is_main_agent_message(_meta):
-                        node = ""
-                        path_text = ""
-                        if isinstance(_meta, dict):
-                            node = str(_meta.get("langgraph_node") or "")
-                            raw_path = _meta.get("langgraph_path")
-                            if isinstance(raw_path, (list, tuple)):
-                                path_text = "/".join(str(x) for x in raw_path)
-                            elif raw_path is not None:
-                                path_text = str(raw_path)
-
-                        target = ""
-                        lowered_path = path_text.lower()
-                        if "simulator" in lowered_path:
-                            target = "simulator"
-                        elif "data-analyzer" in lowered_path:
-                            target = "data-analyzer"
-
-                        if target:
-                            status_text = f"已转交 {target} 执行，正在处理中..."
-                        elif node and node != "model":
-                            status_text = f"正在执行节点：{node}"
-                        else:
-                            status_text = "正在调用子代理执行任务..."
-
-                        signature = f"subagent:{status_text}"
-                        if signature != last_status_signature:
-                            last_status_signature = signature
-                            current_status_text = status_text
-                            current_status_source = source
-                            yield json.dumps(
-                                {"type": "status", "text": status_text, "source": source},
-                                ensure_ascii=False,
-                            ) + "\n"
-                            yield json.dumps(
-                                _build_planning_payload(
-                                    current_planning_steps,
-                                    current_status_text,
-                                    current_status_source,
-                                    True,
-                                ),
-                                ensure_ascii=False,
-                            ) + "\n"
+                    # (Subagent transfer-status handling removed - no more task-based subagents
+                    # for simulator; MCP tools are called directly by main agent.)
 
                     if role_name in {"assistant", "ai"}:
                         thinking_text = _extract_thinking_from_message(msg)

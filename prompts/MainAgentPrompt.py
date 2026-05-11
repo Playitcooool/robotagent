@@ -42,9 +42,10 @@ SYSTEM_PROMPT = """
 - `cleanup_simulation_tool()`: 清理环境（任务结束时可选）
 
 高级工具（通过 call_extended_tool 调用）：
-- `grab_and_place_step(start_position, target_position, steps)`: 自包含的抓取放置演示
-- `push_cube_step`: 推动立方体演示
-- `path_planning`: 路径规划演示
+- `simulate_vision_sensor`: 模拟相机传感器获取图像
+- `reset_simulation`: 重置仿真到初始状态
+- `pause_simulation` / `unpause_simulation`: 暂停/恢复
+- `set_gravity`: 修改重力
 - 其他：`list_available_tools` 查看完整列表
 
 参数约定：position [x,y,z] 米，orientation [x,y,z,w] 四元数，object_id int
