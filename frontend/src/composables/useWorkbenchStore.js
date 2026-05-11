@@ -455,7 +455,13 @@ async function sendMessage(payload) {
             activeSource: event.source || planningState.value?.activeSource || 'main',
             isActive: true
           })
-          if (event.status_kind === 'search') streamState.loadingKind = 'search'
+          if (event.status_kind === 'search') {
+            streamState.loadingKind = 'search'
+          } else {
+            const src = normalizeSource(event.source)
+            if (src === 'simulator') streamState.loadingKind = 'simulator'
+            else if (src === 'analysis') streamState.loadingKind = 'analysis'
+          }
           streamState.lastStatusText = statusText
           if (idx !== -1) {
             conversation.value[idx].loading = true

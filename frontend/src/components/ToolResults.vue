@@ -32,28 +32,6 @@
         </div>
       </section>
 
-      <section v-else-if="simulatorStatus || simulatorOutputs.length" class="rail-section">
-        <div class="section-heading">{{ lang === 'zh' ? '仿真状态' : 'Simulation Status' }}</div>
-        <div v-if="simulatorStatus" class="rail-card">
-          <div class="card-top">
-            <span class="agent-chip simulator">Simulator</span>
-            <span class="card-status">{{ planning?.isActive ? (lang === 'zh' ? '执行中' : 'Running') : (lang === 'zh' ? '最近状态' : 'Latest') }}</span>
-          </div>
-          <p class="rail-text">{{ simulatorStatus }}</p>
-        </div>
-        <div v-for="item in simulatorOutputs" :key="item.id" class="rail-card">
-          <div class="card-top">
-            <span class="agent-chip simulator">{{ item.agentLabel }}</span>
-            <span class="card-status">{{ lang === 'zh' ? '文本结果' : 'Text result' }}</span>
-          </div>
-          <p class="rail-text">{{ item.outputText }}</p>
-        </div>
-        <div class="empty-state compact">
-          <strong>{{ lang === 'zh' ? '未收到画面帧' : 'No frame received' }}</strong>
-          <p>{{ lang === 'zh' ? '已显示 simulator 的状态或文本输出；收到画面后会自动切换到仿真画面。' : 'Simulator status or text output is shown here; the rail switches to frames when they arrive.' }}</p>
-        </div>
-      </section>
-
       <div v-if="!hasContent" class="empty-state">
         <strong>{{ lang === 'zh' ? '等待仿真画面' : 'Awaiting simulation frame' }}</strong>
         <p>{{ lang === 'zh' ? '仿真工具回传画面后会显示在这里。' : 'Simulation frames will appear here when returned by the simulator.' }}</p>
@@ -64,7 +42,6 @@
 
 <script>
 import { useI18n } from '../composables/useI18n.js'
-import { deriveResultRailData } from '../lib/workbench.js'
 
 export default {
   name: 'ToolResults',
@@ -85,21 +62,8 @@ export default {
     return { lang }
   },
   computed: {
-    railData () {
-      return deriveResultRailData(this.conversation)
-    },
-    simulatorStatus () {
-      if (this.planning?.activeSource === 'simulator') {
-        return String(this.planning?.statusText || '').trim()
-      }
-      const active = this.railData.activeTasks.find((item) => item.agentKey === 'simulator')
-      return active?.statusText || ''
-    },
-    simulatorOutputs () {
-      return this.railData.toolOutputs.filter((item) => item.agentKey === 'simulator')
-    },
     hasContent () {
-      return Boolean(this.liveFrame?.image_url || this.simulatorStatus || this.simulatorOutputs.length)
+      return Boolean(this.liveFrame?.image_url)
     }
   },
   watch: {

@@ -4,7 +4,7 @@
       <div v-if="message.loading" class="loading-state">
         <div class="loading-title">
           <span class="pulse-dot"></span>
-          <span>{{ message.loadingKind === 'search' ? (lang === 'zh' ? '正在检索资料...' : 'Searching references...') : (lang === 'zh' ? '正在执行任务...' : 'Executing task...') }}</span>
+          <span>{{ loadingText }}</span>
         </div>
         <div class="loading-lines">
           <span class="line short"></span>
@@ -208,6 +208,19 @@ export default {
       const text = String(props.message?.text || '')
       return text.startsWith('[后端错误]') || text.startsWith('[网络错误]') || text.startsWith('[错误]')
     })
+    const loadingText = computed(() => {
+      const kind = props.message?.loadingKind
+      if (kind === 'search') {
+        return props.lang === 'zh' ? '正在检索资料...' : 'Searching references...'
+      }
+      if (kind === 'simulator') {
+        return props.lang === 'zh' ? 'Simulator 正在执行任务...' : 'Simulator is executing...'
+      }
+      if (kind === 'analysis') {
+        return props.lang === 'zh' ? 'Analysis 正在分析...' : 'Analysis is analyzing...'
+      }
+      return props.lang === 'zh' ? '正在思考...' : 'Thinking...'
+    })
     const agentName = computed(() => {
       if (agentKey.value === 'simulator') return 'Simulator Agent'
       if (agentKey.value === 'analysis') return 'Analysis Agent'
@@ -276,6 +289,7 @@ export default {
       agentKey,
       isSubagent,
       isErrorMessage,
+      loadingText,
       agentName,
       agentIcon,
       truncatedThinking,

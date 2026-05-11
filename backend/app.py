@@ -81,6 +81,7 @@ _SIM_FRAME_CACHE = {
 logger = logging.getLogger("uvicorn")
 logger.setLevel(logging.INFO)
 DEBUG_STREAM_FIELDS = os.environ.get("DEBUG_STREAM_FIELDS", "0") == "1"
+DEBUG_STREAM_TOKENS = os.environ.get("DEBUG_STREAM_TOKENS", "0") == "1"
 
 # ========== 2. 全局变量定义（关键：提前声明active_agent） ==========
 active_agent = None  # 默认 agent：不加载联网搜索工具
@@ -936,9 +937,38 @@ async def chat_send(
         stream_values_events = 0
         tool_names_seen: set[str] = set()
         simulator_tool_names_seen: set[str] = set()
+        debug_stream_token_counts: dict[str, int] = {}
         try:
             analysis_tool_names = set(getattr(AnalysisTool, "__all__", []))
             main_tool_names = set(getattr(GeneralTool, "__all__", []))
+
+            def _debug_stream_token(
+                *,
+                source: str,
+                channel: str,
+                text: str,
+                msg_id: str = "",
+                role: str = "",
+                name: str = "",
+            ) -> None:
+                if not DEBUG_STREAM_TOKENS or not text:
+                    return
+                normalized_source = source or "main"
+                key = f"{normalized_source}:{channel}"
+                debug_stream_token_counts[key] = debug_stream_token_counts.get(key, 0) + 1
+                logger.info(
+                    "[stream-token] user=%s session=%s source=%s channel=%s seq=%s role=%s name=%s msg_id=%s chars=%s text=%r",
+                    user_id,
+                    session_id,
+                    normalized_source,
+                    channel,
+                    debug_stream_token_counts[key],
+                    role or "-",
+                    name or "-",
+                    msg_id or "-",
+                    len(text),
+                    text,
+                )
 
             def _resolve_agent_source(meta) -> str:
                 if not isinstance(meta, dict):
@@ -1475,6 +1505,13 @@ async def chat_send(
                             if thinking_delta:
                                 thinking_sent_text = thinking_text
                                 thinking_stream_text = thinking_text
+                                _debug_stream_token(
+                                    source=source,
+                                    channel="thinking",
+                                    text=thinking_delta,
+                                    msg_id=msg_id or "",
+                                    role=role_name,
+                                )
                                 yield json.dumps(
                                     {
                                         "type": "thinking",
@@ -1486,6 +1523,13 @@ async def chat_send(
 
                         delta = _extract_text_from_message(msg)
                         if delta:
+                            _debug_stream_token(
+                                source=source,
+                                channel="raw",
+                                text=delta,
+                                msg_id=msg_id or "",
+                                role=role_name,
+                            )
                             answer_delta, think_tag_delta, in_think_tag, think_tag_carry = (
                                 _split_think_and_answer_delta(
                                     delta,
@@ -1500,6 +1544,13 @@ async def chat_send(
                                     to_emit = think_tag_delta[:remain]
                                     thinking_stream_text += to_emit
                                     if to_emit:
+                                        _debug_stream_token(
+                                            source=source,
+                                            channel="think-tag",
+                                            text=to_emit,
+                                            msg_id=msg_id or "",
+                                            role=role_name,
+                                        )
                                         yield json.dumps(
                                             {
                                                 "type": "thinking",
@@ -1529,6 +1580,13 @@ async def chat_send(
                                 )
                                 if source == "main":
                                     main_stream_text += emit_delta
+                                _debug_stream_token(
+                                    source=source,
+                                    channel="answer",
+                                    text=emit_delta,
+                                    msg_id=msg_id or "",
+                                    role=role_name,
+                                )
                                 yield json.dumps(
                                     {
                                         "type": "delta",
@@ -1844,6 +1902,13 @@ async def chat_send(
                                 ).strip()
                                 if tool_thinking_text:
                                     tool_thinking_text = tool_thinking_text[:MAX_THINKING_CHARS]
+                                    _debug_stream_token(
+                                        source=tool_source,
+                                        channel="tool-thinking",
+                                        text=tool_thinking_text,
+                                        role=role_msg,
+                                        name=name_msg or "",
+                                    )
                                     yield json.dumps(
                                         {
                                             "type": "thinking",
@@ -1876,10 +1941,18 @@ async def chat_send(
                             )
                             if output_signature != last_tool_output_signature:
                                 last_tool_output_signature = output_signature
+                                display_tool_text = _truncate_text(tool_text, max_len=600)
+                                _debug_stream_token(
+                                    source=tool_source,
+                                    channel="tool-output",
+                                    text=display_tool_text,
+                                    role=role_msg,
+                                    name=name_msg or "",
+                                )
                                 yield json.dumps(
                                     {
                                         "type": "delta",
-                                        "text": _truncate_text(tool_text, max_len=600),
+                                        "text": display_tool_text,
                                         "source": tool_source,
                                     },
                                     ensure_ascii=False,
@@ -1924,6 +1997,12 @@ async def chat_send(
                             to_emit = think_tag_delta[:remain]
                             thinking_stream_text += to_emit
                             if to_emit:
+                                _debug_stream_token(
+                                    source="main",
+                                    channel="fallback-think-tag",
+                                    text=to_emit,
+                                    role="assistant",
+                                )
                                 yield json.dumps(
                                     {
                                         "type": "thinking",
@@ -1947,6 +2026,12 @@ async def chat_send(
                             + answer_delta
                         )
                         main_stream_text += emit_delta
+                        _debug_stream_token(
+                            source="main",
+                            channel="fallback-answer",
+                            text=emit_delta,
+                            role="assistant",
+                        )
                         yield json.dumps(
                             {"type": "delta", "text": emit_delta, "source": "main"},
                             ensure_ascii=False,
@@ -1993,6 +2078,12 @@ async def chat_send(
                 final_text_stripped = final_text.strip()
                 if final_text_stripped and final_text != main_stream_text:
                     main_stream_text = final_text
+                    _debug_stream_token(
+                        source="main",
+                        channel="final-rewrite",
+                        text=final_text,
+                        role="assistant",
+                    )
                     yield json.dumps(
                         {"type": "delta", "text": final_text, "source": "main"},
                         ensure_ascii=False,
@@ -2011,6 +2102,12 @@ async def chat_send(
                     final_text = diagnostic_text
                     final_text_stripped = final_text.strip()
                     main_stream_text = final_text
+                    _debug_stream_token(
+                        source="main",
+                        channel="diagnostic",
+                        text=diagnostic_text,
+                        role="assistant",
+                    )
                     yield json.dumps(
                         {"type": "delta", "text": diagnostic_text, "source": "main"},
                         ensure_ascii=False,
@@ -2026,6 +2123,12 @@ async def chat_send(
                     final_text = (final_text_stripped + "\n" + diagnostic_text).strip()
                     final_text_stripped = final_text.strip()
                     main_stream_text = final_text
+                    _debug_stream_token(
+                        source="main",
+                        channel="diagnostic",
+                        text="\n" + diagnostic_text,
+                        role="assistant",
+                    )
                     yield json.dumps(
                         {"type": "delta", "text": "\n" + diagnostic_text, "source": "main"},
                         ensure_ascii=False,

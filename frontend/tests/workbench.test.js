@@ -29,7 +29,7 @@ test('computeLandingMode stays true until a user message appears', () => {
   )
 })
 
-test('computeShowToolPanel shows simulator status, output, or live frames', () => {
+test('computeShowToolPanel only shows live simulation frames', () => {
   const baseConversation = [{ role: 'assistant', text: 'hello' }]
 
   assert.equal(computeShowToolPanel({ liveFrame: null, planningState: null, conversation: baseConversation }), false)
@@ -55,7 +55,7 @@ test('computeShowToolPanel shows simulator status, output, or live frames', () =
       planningState: { statusText: '仿真子代理执行中...', activeSource: 'simulator' },
       conversation: baseConversation
     }),
-    true
+    false
   )
   assert.equal(
     computeShowToolPanel({
@@ -71,7 +71,7 @@ test('computeShowToolPanel shows simulator status, output, or live frames', () =
       planningState: null,
       conversation: [{ role: 'assistant', text: 'hello', agent: 'simulator' }]
     }),
-    true
+    false
   )
 })
 
