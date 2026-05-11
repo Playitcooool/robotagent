@@ -19,23 +19,38 @@ SYSTEM_PROMPT = """
 
 ## 仿真工具
 
-执行顺序：initialize_simulation → 操作 → cleanup_simulation_tool（可选）
-注意：initialize_simulation 每次任务只调用一次，不要重复调用。
+标准工作流：initialize_simulation → create_object → set_object_position → step_simulation → get_object_state
+每个任务只调用一次 initialize_simulation。
 
-核心工具：
-- `initialize_simulation(gui=false)`: 初始化环境（每次任务必须先调用，gui 必须传 false）
-- `create_object(object_type, position, size, mass, color)`: 创建物体
-- `grab_and_place_step(start_position, target_position, steps)`: 抓取放置
-- `push_cube_step(start_position, push_vector, steps)`: 推动物体
-- `path_planning(start_position, target_position, steps)`: 路径规划
-- `set_object_position(object_id, position, orientation)`: 设置位置
-- `get_object_state(object_id)`: 查询状态
-- `step_simulation(steps)`: 推进仿真
-- `cleanup_simulation_tool`: 清理环境
+核心工具（组合式原语）：
+- `initialize_simulation(gui=false)`: 初始化环境（每个任务只调用一次）
+- `create_object(object_type, position, size, mass, color)`: 创建物体，返回 object_id
+- `set_object_position(object_id, position, orientation)`: 移动已存在的物体到指定位置
+- `step_simulation(steps)`: 推进物理仿真
+- `get_object_state(object_id)`: 查询物体当前位置和姿态
+- `get_simulation_info()`: 获取场景中所有物体的概览
+- `check_simulation_state()`: 检查仿真是否正常运行
+- `delete_object(object_id)`: 删除物体
+- `cleanup_simulation_tool()`: 清理环境（任务结束时可选）
+
+高级工具（通过 call_extended_tool 调用）：
+- `grab_and_place_step(start_position, target_position, steps)`: 自包含的抓取放置演示
+- `push_cube_step`: 推动立方体演示
+- `path_planning`: 路径规划演示
+- 其他：`list_available_tools` 查看完整列表
 
 参数约定：position [x,y,z] 米，orientation [x,y,z,w] 四元数，object_id int
 
-更多工具：`list_available_tools` 查看，`call_extended_tool(name, args_json)` 调用。
+## 示例：抓取放置任务
+```
+1. initialize_simulation(gui=false)
+2. create_object(object_type="cube", position=[0.2, 0, 0.5], size=[0.05,0.05,0.05], mass=0.1)
+   → 返回 object_id=1
+3. step_simulation(steps=30)  # 让物体下落
+4. set_object_position(object_id=1, position=[0.5, 0.1, 0.05], orientation=[0,0,0,1])
+5. step_simulation(steps=60)
+6. get_object_state(object_id=1)  # 确认最终位置
+```
 
 ## 其他能力
 - 数据分析：调用 task(subagent_type="data-analyzer")

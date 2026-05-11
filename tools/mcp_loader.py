@@ -21,17 +21,20 @@ with open(os.path.join(ROOT_DIR, "config", "config.yml"), "r", encoding="utf-8")
     _config = yaml.load(f.read(), yaml.FullLoader)
 
 # Core tools: always loaded with full schema
+# Strategy: only expose composition-friendly primitives as core.
+# "Demo-style" tools that create their own objects (grab_and_place_step, push_cube_step,
+# path_planning, multi_object_grab_and_place) are in extended tier to avoid confusing
+# the model into repeated initialization + object creation cycles.
 CORE_TOOL_NAMES = {
     "initialize_simulation",
-    "grab_and_place_step",
-    "push_cube_step",
-    "path_planning",
     "create_object",
     "set_object_position",
     "step_simulation",
     "get_object_state",
-    "cleanup_simulation_tool",
+    "delete_object",
+    "get_simulation_info",
     "check_simulation_state",
+    "cleanup_simulation_tool",
 }
 
 _mcp_tools_cache: list[BaseTool] | None = None
