@@ -11,17 +11,21 @@
       <section v-if="liveFrame?.image_url" class="rail-section">
         <div class="section-heading">{{ lang === 'zh' ? '仿真画面' : 'Simulation Feed' }}</div>
         <div class="frame-card">
-          <div v-if="imgLoading" class="frame-placeholder">{{ lang === 'zh' ? '画面加载中...' : 'Loading frame...' }}</div>
-          <div v-else-if="imgError" class="frame-placeholder error">
+          <div v-if="imgLoading && !displayedUrl" class="frame-placeholder">{{ lang === 'zh' ? '画面加载中...' : 'Loading frame...' }}</div>
+          <div v-else-if="imgError && !displayedUrl" class="frame-placeholder error">
             <span>{{ lang === 'zh' ? '画面加载失败' : 'Frame failed to load' }}</span>
             <button type="button" @click="retryImage">{{ lang === 'zh' ? '重试' : 'Retry' }}</button>
           </div>
           <img
-            v-show="!imgLoading && !imgError"
-            ref="imgRef"
-            :src="liveFrame.image_url"
+            v-show="displayedUrl"
+            :src="displayedUrl || ''"
             :alt="liveFrame.task || 'simulation frame'"
-            @load="onImgLoad"
+          />
+          <img
+            v-show="false"
+            ref="preloadImgRef"
+            :src="liveFrame.image_url"
+            @load="onPreloadLoad"
             @error="onImgError"
           />
           <div class="frame-meta">
@@ -57,6 +61,7 @@ export default {
       imgLoading: true,
       imgError: false,
       currentImageUrl: null,
+      displayedUrl: null,
       nowSec: Math.floor(Date.now() / 1000),
       _staleTimer: null
     }
@@ -89,19 +94,13 @@ export default {
       immediate: true,
       handler (nextValue) {
         if (nextValue?.image_url && nextValue.image_url !== this.currentImageUrl) {
-          // Only show loading placeholder on FIRST frame.
-          // Subsequent frame swaps keep old image visible until new one loads (prevents flicker).
-          const isFirstFrame = this.currentImageUrl === null
           this.currentImageUrl = nextValue.image_url
-          if (isFirstFrame) {
-            this.imgLoading = true
-          }
           this.imgError = false
           return
         }
-
         if (!nextValue?.image_url) {
           this.currentImageUrl = null
+          this.displayedUrl = null
           this.imgLoading = true
           this.imgError = false
         }
@@ -109,7 +108,9 @@ export default {
     }
   },
   methods: {
-    onImgLoad () {
+    onPreloadLoad () {
+      // New frame loaded successfully in hidden preloader → swap to visible img
+      this.displayedUrl = this.currentImageUrl
       this.imgLoading = false
       this.imgError = false
     },
@@ -118,12 +119,10 @@ export default {
       this.imgError = true
     },
     retryImage () {
-      this.imgLoading = true
       this.imgError = false
-      const img = this.$refs.imgRef
-      if (img && this.currentImageUrl) {
+      if (this.currentImageUrl) {
         const separator = this.currentImageUrl.includes('?') ? '&' : '?'
-        img.src = `${this.currentImageUrl}${separator}retry=${Date.now()}`
+        this.currentImageUrl = `${this.currentImageUrl}${separator}retry=${Date.now()}`
       }
     }
   }

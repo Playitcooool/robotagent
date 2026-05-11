@@ -144,3 +144,28 @@ def register_sim_routes(
                 "X-Accel-Buffering": "no",
             },
         )
+
+    @app.post("/api/sim/reset")
+    async def reset_sim_environment():
+        """Call MCP cleanup_simulation_tool to reset the PyBullet environment.
+        Used by frontend when user starts a new conversation.
+        """
+        try:
+            from fastmcp import Client
+            import yaml as _yaml
+            from pathlib import Path as _Path
+
+            config_path = _Path(__file__).resolve().parent.parent / "config" / "config.yml"
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = _yaml.load(f.read(), _yaml.FullLoader)
+            mcp_cfg = cfg.get("mcp") or {}
+            base = str(mcp_cfg.get("ip") or "http://127.0.0.1").rstrip("/")
+            port = str(mcp_cfg.get("port") or "18001")
+            url = f"{base}:{port}/mcp"
+
+            client = Client(url)
+            async with client:
+                await client.call_tool("cleanup_simulation_tool", {})
+            return {"ok": True, "message": "Simulation environment cleared"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
