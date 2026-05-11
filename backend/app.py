@@ -50,10 +50,7 @@ from backend.stream_utils import (
 from backend.routes_auth import register_auth_routes
 from backend.routes_sim import register_sim_routes
 from backend.utils.retry import with_retry_async
-from backend.workflow_utils import (
-    heuristic_simulator_intent,
-    restore_env_var,
-)
+from backend.workflow_utils import restore_env_var
 
 os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
 # Chat history Redis should be separated from agent checkpoint Redis.
@@ -91,6 +88,7 @@ AUTH_REDIS_URL = os.environ["AUTH_REDIS_URL"]
 CHAT_HISTORY_PREFIX = "robotagent:chat:messages"
 CHAT_HISTORY_MAX_LEN = int(os.environ.get("CHAT_HISTORY_MAX_LEN", "200"))
 CHAT_SESSIONS_ZSET_PREFIX = "robotagent:chat:sessions"
+PENDING_ACTION_PREFIX = "robotagent:chat:pending_action"
 AUTH_USER_PREFIX = "robotagent:auth:user"
 AUTH_SESSION_PREFIX = "robotagent:auth:session"
 AUTH_SESSION_TTL_SECONDS = int(
@@ -130,30 +128,38 @@ def _truncate_for_prefill(text: str, max_chars: int) -> str:
 
 
 # ========== Intent detection via small LLM ==========
-_INTENT_PROMPT = """判断用户意图。根据用户消息和最近一条助手消息，输出一个JSON：
-{"simulator_required": true/false, "execution_confirmed": true/false}
+_INTENT_PROMPT = """判断用户意图。根据用户消息、最近对话和待确认动作，输出一个JSON：
+{"simulator_required": true/false, "execution_confirmed": true/false, "confidence": 0.0-1.0}
 
 规则：
-- simulator_required: 用户想执行机器人仿真任务（机械臂、抓取、放置、仿真、轨迹规划等）
-- execution_confirmed: 用户在确认执行之前已提出的方案（如"确认"、"好的"、"开始"、"执行"等），且之前助手已给出了仿真方案
+- simulator_required: 当前用户消息是否需要机器人仿真/执行/物理环境工具。
+- execution_confirmed: 只有待确认动作为 simulator，且当前用户明确同意执行该待确认动作时才为 true。
+- 如果信息不足、用户只是在补充参数、或没有待确认动作，不要把 execution_confirmed 设为 true。
+- 不要依赖固定关键词；结合语义和上下文判断。
 
 只输出JSON，不要其他内容。/no_think"""
 
 
-def _heuristic_simulator_intent(user_message: str, last_assistant_message: str = "") -> dict:
-    return heuristic_simulator_intent(user_message, last_assistant_message)
-
-
-async def detect_intent(user_message: str, last_assistant_message: str = "") -> dict:
+async def detect_intent(
+    user_message: str,
+    recent_context: str = "",
+    pending_action: str = "",
+) -> dict:
     """Use small LLM to classify user intent for simulator routing."""
-    heuristic = _heuristic_simulator_intent(user_message, last_assistant_message)
     url = config.get("intent_model_url", config["model_url"])
     model = config.get("intent_llm", "Qwen:Qwen3-0.6B")
     api_key = config.get("intent_api_key", config.get("api_key", "no_need"))
 
     messages = [
         {"role": "system", "content": _INTENT_PROMPT},
-        {"role": "user", "content": f"助手上一条消息：{last_assistant_message[:300]}\n\n用户消息：{user_message}"},
+        {
+            "role": "user",
+            "content": (
+                f"待确认动作：{pending_action or '无'}\n\n"
+                f"最近对话：{recent_context[:1200]}\n\n"
+                f"当前用户消息：{user_message}"
+            ),
+        },
     ]
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -168,14 +174,17 @@ async def detect_intent(user_message: str, last_assistant_message: str = "") -> 
             content = content.strip("`").removeprefix("json").strip()
             result = json.loads(content)
             return {
-                "simulator_required": bool(result.get("simulator_required"))
-                or heuristic["simulator_required"],
-                "execution_confirmed": bool(result.get("execution_confirmed"))
-                or heuristic["execution_confirmed"],
+                "simulator_required": bool(result.get("simulator_required")),
+                "execution_confirmed": bool(result.get("execution_confirmed")),
+                "confidence": float(result.get("confidence") or 0.0),
             }
     except Exception as e:
-        logger.warning(f"Intent detection failed, falling back: {e}")
-        return heuristic
+        logger.warning(f"Intent detection failed, using conservative fallback: {e}")
+        return {
+            "simulator_required": pending_action == "simulator",
+            "execution_confirmed": False,
+            "confidence": 0.0,
+        }
 
 
 # ========== 4. 加载工具函数（保留并添加日志） ==========
@@ -401,6 +410,10 @@ def _chat_sessions_key(user_id: str) -> str:
     return f"{CHAT_SESSIONS_ZSET_PREFIX}:{user_id}"
 
 
+def _pending_action_key(user_id: str, session_id: str) -> str:
+    return f"{PENDING_ACTION_PREFIX}:{user_id}:{session_id}"
+
+
 def _auth_user_key(username: str) -> str:
     return f"{AUTH_USER_PREFIX}:{username.lower()}"
 
@@ -424,6 +437,46 @@ async def _append_chat_message(user_id: str, session_id: str, role: str, text: s
     await chat_redis.rpush(key, json.dumps(payload, ensure_ascii=False))
     await chat_redis.ltrim(key, -CHAT_HISTORY_MAX_LEN, -1)
     await chat_redis.zadd(_chat_sessions_key(user_id), {session_id: now_ts})
+
+
+async def _get_pending_action(user_id: str, session_id: str) -> str:
+    if chat_redis is None:
+        return ""
+    raw = await chat_redis.get(_pending_action_key(user_id, session_id))
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="ignore")
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return ""
+    return _normalize_text(payload.get("action") or "").strip()
+
+
+async def _set_pending_action(
+    user_id: str,
+    session_id: str,
+    action: str,
+    summary: str = "",
+) -> None:
+    if chat_redis is None:
+        return
+    payload = {
+        "action": action,
+        "summary": _truncate_text(_normalize_text(summary).strip(), max_len=600),
+        "created_at": time.time(),
+    }
+    await chat_redis.set(
+        _pending_action_key(user_id, session_id),
+        json.dumps(payload, ensure_ascii=False),
+        ex=3600,
+    )
+
+
+async def _clear_pending_action(user_id: str, session_id: str) -> None:
+    if chat_redis is not None:
+        await chat_redis.delete(_pending_action_key(user_id, session_id))
 
 # bind extracted module helpers so endpoint logic uses modularized implementations
 _validate_username = validate_username
@@ -750,28 +803,42 @@ async def chat_send(
         if str(t).strip()
     }
     search_enabled = bool(enabled_tools & {"search", "academic_search", "web_search"})
+    user_id = current_user.get("uid", "unknown")
 
-    # Use small LLM for intent detection
-    last_assistant_msg = ""
+    # Use small LLM for intent detection; pending actions carry plan/execute state.
+    recent_context_messages = []
     if chat_redis:
-        user_id_tmp = current_user.get("uid", "unknown")
-        key = _chat_history_key(user_id_tmp, session_id)
-        recent = await chat_redis.lrange(key, -4, -1)
+        key = _chat_history_key(user_id, session_id)
+        recent = await chat_redis.lrange(key, -12, -1)
         for item in reversed(recent or []):
             try:
                 parsed = json.loads(item)
-                if parsed.get("role") == "assistant":
-                    last_assistant_msg = parsed.get("content", "")
-                    break
+                content = _normalize_text(parsed.get("content", "")).strip()
+                if not content:
+                    continue
+                role = parsed.get("role")
+                if role in {"assistant", "user"}:
+                    recent_context_messages.append(f"{role}: {content}")
             except Exception:
                 continue
+    recent_context = "\n\n".join(recent_context_messages[:6])
+    pending_action = await _get_pending_action(user_id, session_id)
 
-    intent = await detect_intent(user_message, last_assistant_msg)
+    intent = await detect_intent(user_message, recent_context, pending_action)
     simulator_required = intent["simulator_required"]
     simulator_execution_confirmed = intent["execution_confirmed"]
+    logger.info(
+        "Intent detected: simulator_required=%s execution_confirmed=%s pending_action=%s confidence=%s context_chars=%s",
+        simulator_required,
+        simulator_execution_confirmed,
+        pending_action or "none",
+        intent.get("confidence"),
+        len(recent_context),
+    )
 
-    user_id = current_user.get("uid", "unknown")
     await _append_chat_message(user_id, session_id, "user", user_message)
+    if simulator_execution_confirmed:
+        await _clear_pending_action(user_id, session_id)
 
     # 核心修正：使用全局的active_agent，而非初始空工具的agent
     selected_agent = active_search_agent if search_enabled else active_agent
@@ -1287,7 +1354,7 @@ async def chat_send(
                                 if len(think_tag_delta) > max(remain, 0):
                                     thinking_truncated = True
 
-                            if answer_delta:
+                            if answer_delta and answer_delta.strip():
                                 print(f"[DEBUG] YIELDING DELTA: {repr(answer_delta[:100])} source={source}")
                                 if source == "main":
                                     main_stream_text += answer_delta
@@ -1665,7 +1732,7 @@ async def chat_send(
                                 ) + "\n"
                         if len(think_tag_delta) > max(remain, 0):
                             thinking_truncated = True
-                    if answer_delta:
+                    if answer_delta and answer_delta.strip():
                         main_stream_text += answer_delta
                         yield json.dumps(
                             {"type": "delta", "text": answer_delta, "source": "main"},
@@ -1725,6 +1792,13 @@ async def chat_send(
 
             if final_text_stripped:
                 await _append_chat_message(user_id, session_id, "assistant", final_text)
+                if simulator_required and not simulator_execution_confirmed:
+                    await _set_pending_action(
+                        user_id,
+                        session_id,
+                        "simulator",
+                        final_text_stripped,
+                    )
             final_usage_by_agent = {}
             for agent_name, usage_map in usage_by_agent_message.items():
                 summary = _sum_usage_map(usage_map)
