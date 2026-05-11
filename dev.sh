@@ -56,7 +56,7 @@ BACK_PID=$!
 
 echo "[dev] starting frontend on http://127.0.0.1:5173"
 (
-  cd "$ROOT_DIR/frontend"
+  cd "/Volumes/Samsung/Projects/robotagent/frontend"
   npm run dev
 ) &
 FRONT_PID=$!

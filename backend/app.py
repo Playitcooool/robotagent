@@ -1669,6 +1669,18 @@ async def chat_send(
 
             final_text = main_latest_text or main_stream_text
             final_text_stripped = final_text.strip()
+
+            # Fallback: if tools were called but model produced no text, synthesize summary
+            if not final_text_stripped and tool_names_seen:
+                fallback_text = f"已完成工具调用：{', '.join(sorted(tool_names_seen))}。"
+                final_text = fallback_text
+                final_text_stripped = fallback_text
+                main_stream_text = fallback_text
+                yield json.dumps(
+                    {"type": "delta", "text": fallback_text, "source": "main"},
+                    ensure_ascii=False,
+                ) + "\n"
+
             logger.info(
                 "[chat-stream] final user=%s session=%s message_events=%s values_events=%s tools=%s final_chars=%s final_preview=%r",
                 user_id,
