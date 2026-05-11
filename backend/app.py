@@ -1407,19 +1407,32 @@ async def chat_send(
                         if name_msg:
                             tool_names_seen.add(name_msg)
 
-                        # For simulation tools, auto-track as planning steps
+                        # For simulation tools, auto-track as planning steps (dedup by name)
                         if tool_source == "simulator" and name_msg:
-                            # Mark previous steps as completed, add current as in_progress
-                            updated = False
+                            # Find existing step for this tool name
+                            existing_step = None
                             for step in current_planning_steps:
-                                if step.get("status") == "in_progress":
-                                    step["status"] = "completed"
-                                    updated = True
-                            current_planning_steps.append({
-                                "id": str(len(current_planning_steps) + 1),
-                                "step": name_msg,
-                                "status": "in_progress",
-                            })
+                                if step.get("step") == name_msg:
+                                    existing_step = step
+                                    break
+
+                            if existing_step is None:
+                                # Mark previous in_progress as completed
+                                for step in current_planning_steps:
+                                    if step.get("status") == "in_progress":
+                                        step["status"] = "completed"
+                                current_planning_steps.append({
+                                    "id": str(len(current_planning_steps) + 1),
+                                    "step": name_msg,
+                                    "status": "in_progress",
+                                })
+                            else:
+                                # Reuse existing step, mark others completed
+                                for step in current_planning_steps:
+                                    if step is not existing_step and step.get("status") == "in_progress":
+                                        step["status"] = "completed"
+                                existing_step["status"] = "in_progress"
+
                             current_status_text = f"正在执行：{name_msg}"
                             current_status_source = "simulator"
                             yield json.dumps(
