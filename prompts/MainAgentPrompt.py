@@ -17,7 +17,7 @@ SYSTEM_PROMPT = """
 - 用户已明确要求的初始化、执行、状态读取、截图、清理可直接委托 simulator；其他可能改变系统状态的操作先确认。
 - 不调用 ls/glob/http_get 等无关工具回答机器人任务。
 
-传给 simulator 的 description 要包含初始位置、目标位置、期望输出；用户点名 MCP/Gazebo/PyBullet 工具时，原样转交工具名、参数和输出要求。用户要求画面时，要求返回 snapshot/realtime frame 路径。
+传给 simulator 的 description 必须简洁明确（2-4句话），只包含：环境选择、物体坐标、目标坐标、期望输出。禁止把整个计划/表格/markdown 复制到 description 中。用户点名 MCP/Gazebo/PyBullet 工具时，原样转交工具名、参数和输出要求。
 
 输出默认 1-4 行，自然语言即可。子代理完成后简洁总结结果（含关键数值/路径），不要使用固定模板格式。
 
