@@ -195,7 +195,10 @@ def _publish_realtime_frame(
     extra: dict[str, Any] | None = None,
 ):
     _ensure_stream_dir()
-    rgb = _capture_rgb_frame()
+    try:
+        rgb = _capture_rgb_frame()
+    except Exception:
+        return  # simulation not ready; skip silently
     png_bytes = _encode_png_rgb(rgb)
 
     ts = time.time()
@@ -210,12 +213,22 @@ def _publish_realtime_frame(
     if extra:
         payload.update(extra)
 
-    tmp_frame = LATEST_FRAME_FILE.with_suffix(".png.tmp")
-    with open(tmp_frame, "wb") as f:
-        f.write(png_bytes)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_frame, LATEST_FRAME_FILE)
+    # Use unique tmp file per call to avoid races between threads/tool calls
+    tmp_id = f"{os.getpid()}.{threading.get_ident()}.{int(ts * 1000000)}"
+    tmp_frame = LATEST_FRAME_FILE.with_suffix(f".png.{tmp_id}.tmp")
+    try:
+        with open(tmp_frame, "wb") as f:
+            f.write(png_bytes)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_frame, LATEST_FRAME_FILE)
+    except Exception:
+        try:
+            if tmp_frame.exists():
+                tmp_frame.unlink()
+        except Exception:
+            pass
+        return
     _write_json_atomic(LATEST_META_FILE, payload)
 
 
@@ -1306,7 +1319,15 @@ def create_object(args: CreateObjectArgs):
     geom = geom_map.get(args.object_type.lower(), p.GEOM_BOX)
     actual_type = next((k for k, v in geom_map.items() if v == geom), "cube")
 
-    # 校验 size
+    # 校验 size (宽容：允许 1-3 元素，自动 pad 到 3)
+    size_list = list(args.size) if isinstance(args.size, (list, tuple)) else [args.size]
+    if len(size_list) == 1:
+        size_list = [size_list[0]] * 3
+    elif len(size_list) == 2:
+        size_list = [size_list[0], size_list[0], size_list[1]]
+    elif len(size_list) > 3:
+        size_list = size_list[:3]
+    args.size = size_list
     try:
         _validate_vector(args.size, "size", size=3, allow_zero=False, allow_negative=False, max_val=10.0)
     except ValueError as e:
