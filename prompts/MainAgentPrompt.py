@@ -20,6 +20,7 @@ SYSTEM_PROMPT = """
 ## 仿真工具
 
 执行顺序：initialize_simulation → 操作 → cleanup_simulation_tool（可选）
+注意：initialize_simulation 每次任务只调用一次，不要重复调用。
 
 核心工具：
 - `initialize_simulation(gui=false)`: 初始化环境（每次任务必须先调用，gui 必须传 false）

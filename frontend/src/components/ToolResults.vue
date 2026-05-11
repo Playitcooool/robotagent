@@ -26,7 +26,6 @@
           />
           <div class="frame-meta">
             <span>{{ liveFrame.task || 'simulation' }}</span>
-            <span v-if="typeof liveFrame.step === 'number'">step {{ liveFrame.step }}/{{ liveFrame.total_steps || '?' }}</span>
             <span>{{ liveFrame.done ? (lang === 'zh' ? '完成' : 'Done') : (lang === 'zh' ? '运行中' : 'Live') }}</span>
           </div>
         </div>
