@@ -352,6 +352,7 @@ async function sendMessage(payload) {
         if (event.type === 'planning') {
           const nextPlanning = normalizePlanningPayload(event)
           planningState.value = nextPlanning
+          maybeStartSimStream(nextPlanning.activeSource, simFrameSinceTimestamp)
           maybeCloseCompletedPlanning(nextPlanning)
           continue
         }

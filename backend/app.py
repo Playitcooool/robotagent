@@ -884,6 +884,7 @@ async def chat_send(
         simulator_activity_seen = False
         simulator_task_call_seen = False
         last_simulator_output_text = ""
+        pending_answer_whitespace_by_source: dict[str, str] = {}
         debug_msg_count = 0
         try:
             analysis_tool_names = set(getattr(AnalysisTool, "__all__", []))
@@ -1441,14 +1442,24 @@ async def chat_send(
                                 and simulator_execution_confirmed
                                 and source == "main"
                             )
-                            if answer_delta and answer_delta.strip() and not suppress_confirmed_main_text:
-                                print(f"[DEBUG] YIELDING DELTA: {repr(answer_delta[:100])} source={source}")
+                            if answer_delta and not suppress_confirmed_main_text:
+                                if not answer_delta.strip():
+                                    pending_answer_whitespace_by_source[source] = (
+                                        pending_answer_whitespace_by_source.get(source, "")
+                                        + answer_delta
+                                    )
+                                    continue
+                                emit_delta = (
+                                    pending_answer_whitespace_by_source.pop(source, "")
+                                    + answer_delta
+                                )
+                                print(f"[DEBUG] YIELDING DELTA: {repr(emit_delta[:100])} source={source}")
                                 if source == "main":
-                                    main_stream_text += answer_delta
+                                    main_stream_text += emit_delta
                                 yield json.dumps(
                                     {
                                         "type": "delta",
-                                        "text": answer_delta,
+                                        "text": emit_delta,
                                         "source": source,
                                     },
                                     ensure_ascii=False,
@@ -1822,10 +1833,21 @@ async def chat_send(
                                 ) + "\n"
                         if len(think_tag_delta) > max(remain, 0):
                             thinking_truncated = True
-                    if answer_delta and answer_delta.strip():
-                        main_stream_text += answer_delta
+                    if answer_delta:
+                        if not answer_delta.strip():
+                            pending_answer_whitespace_by_source["main"] = (
+                                pending_answer_whitespace_by_source.get("main", "")
+                                + answer_delta
+                            )
+                            answer_delta = ""
+                    if answer_delta:
+                        emit_delta = (
+                            pending_answer_whitespace_by_source.pop("main", "")
+                            + answer_delta
+                        )
+                        main_stream_text += emit_delta
                         yield json.dumps(
-                            {"type": "delta", "text": answer_delta, "source": "main"},
+                            {"type": "delta", "text": emit_delta, "source": "main"},
                             ensure_ascii=False,
                         ) + "\n"
 
