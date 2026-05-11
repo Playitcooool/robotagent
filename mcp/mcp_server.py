@@ -118,12 +118,20 @@ def _pybullet_asset_status() -> dict[str, bool]:
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]):
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, path)
+    tmp_id = f"{os.getpid()}.{threading.get_ident()}.{int(time.time() * 1000000)}"
+    tmp_path = path.with_suffix(path.suffix + f".{tmp_id}.tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
 
 
 def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:
