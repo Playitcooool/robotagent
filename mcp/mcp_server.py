@@ -401,17 +401,21 @@ def step(n: int = 240, cid: int | None = None):
 # Tool 1: 初始化模拟环境
 # ======================
 class InitializeSimulationArgs(BaseModel):
+    """Arguments for initialize_simulation. All fields optional."""
     gui: bool = Field(
         default=False,
         description=(
-            "Whether to open PyBullet GUI. False is recommended for server/agent usage "
-            "because DIRECT mode is faster and headless."
+            "Whether to open PyBullet GUI. Default False (DIRECT mode, headless). "
+            "Optional — can be omitted."
         ),
     )
 
+    class Config:
+        extra = "ignore"
+
 
 @mcp_server.tool()
-def initialize_simulation(args: InitializeSimulationArgs):
+def initialize_simulation(args: InitializeSimulationArgs = InitializeSimulationArgs()):
     """
     Initialize a fresh PyBullet world.
 
@@ -493,419 +497,12 @@ def check_static_assets():
 
 
 # ======================
-# Tool 2: Push Cube Step-by-Step
+# Tool 2-6: High-level demo tools REMOVED
+# Previously: push_cube_step, grab_and_place_step, path_planning, adjust_physics,
+# multi_object_grab_and_place. They self-created objects via loadURDF, incompatible
+# with composition workflow. Use initialize_simulation → create_object → step_simulation
+# → set_object_position primitives instead.
 # ======================
-class PushCubeStepArgs(BaseModel):
-    start_position: list[float] = Field(
-        default=[0.0, 0.0, 0.02],
-        description=(
-            "Cube start position [x, y, z] in meters. "
-            "Recommended z around 0.02 to place cube on plane."
-        ),
-    )
-    push_vector: list[float] = Field(
-        default=[0.2, 0.0, 0.0],
-        description=(
-            "Translation vector [dx, dy, dz] applied over the full episode. "
-            "Positive x moves right in default camera view."
-        ),
-    )
-    steps: int = Field(
-        default=120,
-        description=(
-            "Number of incremental steps. Must be > 0. "
-            "Higher values create smoother motion and denser frame stream."
-        ),
-    )
-
-
-@mcp_server.tool()
-def push_cube_step(args: PushCubeStepArgs):
-    """
-    Run a deterministic cube pushing sequence with realtime frame streaming.
-
-    Best for simple motion-control demos and verifying scene updates.
-    Creates a cube, moves it incrementally, and publishes frame metadata on each step.
-
-    Returns:
-    - final_position
-    - object_id: 用于后续 get_object_state / delete_object
-    - stream_id / stream_meta_path for frame tracking
-    - human-readable message
-
-    When NOT to use:
-    - Do not use for articulated robot manipulation; this is a cube baseline.
-    - Do not use with non-positive steps.
-    """
-    try:
-        _validate_vector(args.start_position, "start_position", size=3, allow_negative=True, max_val=100.0)
-        _validate_vector(args.push_vector, "push_vector", size=3, allow_negative=True, max_val=100.0)
-    except ValueError as e:
-        return _tool_error("push_cube_step", str(e), "validation")
-
-    steps = max(1, min(int(args.steps), MAX_STEPS_PER_CALL))
-
-    try:
-        with with_simulation() as cid:
-            cube = p.loadURDF("cube_small.urdf", args.start_position, physicsClientId=cid)
-            run_id = str(uuid.uuid4())
-
-            # 线性插值推动
-            start_pos = args.start_position
-            dx = args.push_vector[0] / args.steps
-            dy = args.push_vector[1] / args.steps
-            dz = args.push_vector[2] / args.steps
-
-            _publish_realtime_frame(
-                run_id=run_id,
-                task="push_cube_step",
-                step_idx=0,
-                total_steps=steps,
-                done=False,
-            )
-
-            # 每次调用执行一个小步进
-            for i in range(steps):
-                new_pos = [
-                    start_pos[0] + dx * i,
-                    start_pos[1] + dy * i,
-                    start_pos[2] + dz * i,
-                ]
-                p.resetBasePositionAndOrientation(cube, new_pos, [0, 0, 0, 1], physicsClientId=cid)
-                _safe_step(cid, 1)
-                _publish_realtime_frame(
-                    run_id=run_id,
-                    task="push_cube_step",
-                    step_idx=i + 1,
-                    total_steps=steps,
-                    done=(i + 1 == steps),
-                )
-
-            final_pos, _ = p.getBasePositionAndOrientation(cube, physicsClientId=cid)
-
-        return {
-            "task": "push_cube_step",
-            "status": "success",
-            "stream_id": run_id,
-            "stream_meta_path": str(LATEST_META_FILE),
-            "final_position": final_pos,
-            "object_id": cube,
-            "message": f"Cube pushed along vector {args.push_vector}.",
-        }
-    except Exception as e:
-        raise RuntimeError(f"push_cube_step failed: {e}") from e
-
-
-# ======================
-# Tool 3: Grab and Place Step-by-Step
-# ======================
-class GrabAndPlaceStepArgs(BaseModel):
-    start_position: list[float] = Field(
-        default=[0.2, 0.0, 0.02],
-        description="Object start position [x, y, z] in meters.",
-    )
-    target_position: list[float] = Field(
-        default=[0.4, 0.4, 0.02],
-        description="Object target position [x, y, z] in meters.",
-    )
-    steps: int = Field(
-        default=120,
-        description=(
-            "Placement phase step count (after a fixed lift phase). Must be > 0."
-        ),
-    )
-
-
-@mcp_server.tool()
-def grab_and_place_step(args: GrabAndPlaceStepArgs):
-    """
-    Simulate a simplified pick-and-place episode with realtime frame streaming.
-
-    Workflow:
-    1) Lift object to a transport pose.
-    2) Move/place object to target.
-
-    Returns final position and stream metadata for visualization.
-
-    When NOT to use:
-    - Do not use for precise grasp/contact planning; this is a simplified teleport-style routine.
-    - Do not use with non-positive steps.
-    """
-    try:
-        _validate_vector(args.start_position, "start_position", size=3, allow_negative=True, max_val=100.0)
-        _validate_vector(args.target_position, "target_position", size=3, allow_negative=True, max_val=100.0)
-    except ValueError as e:
-        return _tool_error("grab_and_place_step", str(e), "validation")
-
-    steps = max(1, min(int(args.steps), MAX_STEPS_PER_CALL))
-
-    try:
-        with with_simulation() as cid:
-            cube = p.loadURDF("cube_small.urdf", args.start_position, physicsClientId=cid)
-            run_id = str(uuid.uuid4())
-            total_steps = 60 + steps
-
-            # Lift object (teleport)
-            p.resetBasePositionAndOrientation(cube, [0, 0.2, 0.2], [0, 0, 0, 1], physicsClientId=cid)
-            for i in range(60):
-                _safe_step(cid, 1)
-                _publish_realtime_frame(
-                    run_id=run_id,
-                    task="grab_and_place_step",
-                    step_idx=i + 1,
-                    total_steps=total_steps,
-                    done=False,
-                )
-
-            # Place object at the target position
-            p.resetBasePositionAndOrientation(cube, args.target_position, [0, 0, 0, 1], physicsClientId=cid)
-            for i in range(steps):
-                _safe_step(cid, 1)
-                current_step = 60 + i + 1
-                _publish_realtime_frame(
-                    run_id=run_id,
-                    task="grab_and_place_step",
-                    step_idx=current_step,
-                    total_steps=total_steps,
-                    done=(current_step == total_steps),
-                )
-
-            final_pos, _ = p.getBasePositionAndOrientation(cube, physicsClientId=cid)
-
-        return {
-            "task": "grab_and_place_step",
-            "status": "success",
-            "stream_id": run_id,
-            "stream_meta_path": str(LATEST_META_FILE),
-            "final_position": final_pos,
-            "object_id": cube,
-            "message": f"Object placed at target location {args.target_position}.",
-        }
-    except Exception as e:
-        raise RuntimeError(f"grab_and_place_step failed: {e}") from e
-
-
-# 路径规划工具
-class PathPlanningArgs(BaseModel):
-    start_position: list[float] = Field(
-        default=[0.2, 0.0, 0.02],
-        description="Robot base start position [x, y, z] in meters.",
-    )
-    target_position: list[float] = Field(
-        default=[0.4, 0.4, 0.02],
-        description="Robot base target position [x, y, z] in meters.",
-    )
-    steps: int = Field(
-        default=240,
-        description=(
-            "Linear interpolation steps from start to target. Must be > 0."
-        ),
-    )
-
-
-@mcp_server.tool()
-def path_planning(args: PathPlanningArgs):
-    """
-    Execute a simple path-planning baseline (linear path) for KUKA base motion.
-
-    Intended as a lightweight planning/control placeholder, not full IK or obstacle-aware planning.
-    Publishes frames at every step for downstream UI streaming.
-
-    Returns final robot position and stream metadata.
-
-    When NOT to use:
-    - Do not use when obstacle avoidance or IK-level realism is required.
-    - Do not use with non-positive steps.
-    """
-    try:
-        _validate_vector(args.start_position, "start_position", size=3, allow_negative=True, max_val=100.0)
-        _validate_vector(args.target_position, "target_position", size=3, allow_negative=True, max_val=100.0)
-    except ValueError as e:
-        return _tool_error("path_planning", str(e), "validation")
-
-    steps = max(1, min(int(args.steps), MAX_STEPS_PER_CALL))
-
-    try:
-        with with_simulation() as cid:
-            robot_id = p.loadURDF("kuka_iiwa/model.urdf", basePosition=args.start_position, physicsClientId=cid)
-            run_id = str(uuid.uuid4())
-
-            # 假设这里的路径规划为线性移动
-            move_vector = [
-                (args.target_position[0] - args.start_position[0]) / args.steps,
-                (args.target_position[1] - args.start_position[1]) / args.steps,
-                (args.target_position[2] - args.start_position[2]) / args.steps,
-            ]
-
-            _publish_realtime_frame(
-                run_id=run_id,
-                task="path_planning",
-                step_idx=0,
-                total_steps=steps,
-                done=False,
-            )
-
-            for i in range(steps):
-                new_pos = [
-                    args.start_position[0] + move_vector[0] * i,
-                    args.start_position[1] + move_vector[1] * i,
-                    args.start_position[2] + move_vector[2] * i,
-                ]
-                # Move the robot arm
-                p.resetBasePositionAndOrientation(robot_id, new_pos, [0, 0, 0, 1], physicsClientId=cid)
-                _safe_step(cid, 1)
-                _publish_realtime_frame(
-                    run_id=run_id,
-                    task="path_planning",
-                    step_idx=i + 1,
-                    total_steps=steps,
-                    done=(i + 1 == steps),
-                )
-
-            final_pos, _ = p.getBasePositionAndOrientation(robot_id, physicsClientId=cid)
-
-        return {
-            "task": "path_planning",
-            "status": "success",
-            "stream_id": run_id,
-            "stream_meta_path": str(LATEST_META_FILE),
-            "final_position": final_pos,
-            "object_id": robot_id,
-            "message": "Robot arm moved to target position.",
-        }
-    except Exception as e:
-        raise RuntimeError(f"path_planning failed: {e}") from e
-
-
-# 增加摩擦力和弹性
-class FrictionAndElasticityArgs(BaseModel):
-    friction: float = Field(
-        default=0.5,
-        description=(
-            "Lateral friction coefficient for test cube dynamics. Typical range: 0.0~2.0."
-        ),
-    )
-    restitution: float = Field(
-        default=0.9,
-        description=(
-            "Restitution (bounciness) for test cube. Typical range: 0.0~1.0."
-        ),
-    )
-
-
-@mcp_server.tool()
-def adjust_physics(args: FrictionAndElasticityArgs):
-    """
-    Create a cube and set its friction/restitution to test contact behavior.
-
-    Use before control experiments that depend on surface interaction.
-    Publishes a snapshot frame after applying dynamics.
-
-    When NOT to use:
-    - Do not use as a motion-control action; it only changes dynamics parameters.
-    - Do not expect global scene-wide physics update; this currently applies to the created test cube.
-    """
-    friction = float(args.friction)
-    restitution = float(args.restitution)
-    if not (0.0 <= friction <= 10.0):
-        return _tool_error("adjust_physics", "friction must be in [0.0, 10.0]", "validation")
-    if not (0.0 <= restitution <= 1.0):
-        return _tool_error("adjust_physics", "restitution must be in [0.0, 1.0]", "validation")
-
-    try:
-        with with_simulation() as cid:
-            cube = p.loadURDF("cube_small.urdf", [0, 0, 0.02], physicsClientId=cid)
-
-            # 调整摩擦力和弹性
-            p.changeDynamics(
-                cube, -1, lateralFriction=friction, restitution=restitution, physicsClientId=cid
-            )
-            _safe_step(cid, 1)
-            _publish_snapshot(
-                "adjust_physics",
-                done=True,
-                extra={"friction": friction, "restitution": restitution},
-            )
-
-            return {
-                "task": "adjust_physics",
-                "status": "success",
-                "object_id": cube,
-                "message": "Friction and elasticity adjusted for the cube.",
-            }
-    except Exception as e:
-        raise RuntimeError(f"adjust_physics failed: {e}") from e
-
-
-# 多物体抓取工具
-class MultiObjectGrabArgs(BaseModel):
-    object_positions: list[list[float]] = Field(
-        default=[[0.2, 0.0, 0.02], [0.4, 0.4, 0.02]],
-        description="List of object start positions, each as [x, y, z].",
-    )
-    target_position: list[float] = Field(
-        default=[0.6, 0.6, 0.02],
-        description="Shared target position [x, y, z] for all objects.",
-    )
-
-
-@mcp_server.tool()
-def multi_object_grab_and_place(args: MultiObjectGrabArgs):
-    """
-    Move multiple cubes to one target location in a single batch operation.
-
-    Useful for multi-object scene setup and quick state generation.
-    Publishes one snapshot frame after movement.
-
-    When NOT to use:
-    - Do not use for sequential pick-place with collision-aware planning.
-    - Do not use when object-specific trajectories are required.
-    """
-    try:
-        _validate_vector(args.target_position, "target_position", size=3, allow_negative=True, max_val=100.0)
-    except ValueError as e:
-        return _tool_error("multi_object_grab_and_place", str(e), "validation")
-
-    for i, pos in enumerate(args.object_positions):
-        try:
-            _validate_vector(pos, f"object_positions[{i}]", size=3, allow_negative=True, max_val=100.0)
-        except ValueError as e:
-            return _tool_error("multi_object_grab_and_place", str(e), "validation")
-
-    try:
-        with with_simulation() as cid:
-            cubes = []
-            errors = []
-            for pos in args.object_positions:
-                try:
-                    cube = p.loadURDF("cube_small.urdf", pos, physicsClientId=cid)
-                    cubes.append(cube)
-                except Exception as e:
-                    errors.append(f"Failed to load object at {pos}: {e}")
-
-            # 抓取并移动到目标位置（单个失败不影响其他）
-            for cube in cubes:
-                try:
-                    p.resetBasePositionAndOrientation(cube, args.target_position, [0, 0, 0, 1], physicsClientId=cid)
-                except Exception as e:
-                    errors.append(f"Failed to reposition object {cube}: {e}")
-
-            _safe_step(cid, 1)
-            _publish_snapshot(
-                "multi_object_grab_and_place",
-                done=True,
-                extra={"count": len(cubes), "errors": errors if errors else None},
-            )
-
-            return {
-                "task": "multi_object_grab_and_place",
-                "status": "success" if not errors else "warning",
-                "object_ids": cubes,
-                "target_position": args.target_position,
-                "message": f"{len(cubes)} objects moved to the target position." + (f" ({len(errors)} errors)" if errors else ""),
-            }
-    except Exception as e:
-        raise RuntimeError(f"multi_object_grab_and_place failed: {e}") from e
 
 
 # 模拟视觉传感器
@@ -1437,28 +1034,46 @@ def delete_object(args: DeleteObjectArgs):
 @mcp_server.tool()
 def get_simulation_info():
     """
-    获取仿真基本信息。
+    获取仿真全景信息，包含所有物体的 id/位置/姿态。
 
     返回：
     - timestep: 当前时间步
-    - num_bodies: 物体数量
+    - num_bodies: 物体数量（含 plane）
     - gravity: 重力设置
-    - time_elapsed: 已用仿真时间
+    - objects: 列表，每项 {id, position:[x,y,z], orientation:[x,y,z,w], num_joints}
+      （跳过 plane，plane_id=0）
     """
     try:
         with with_simulation() as cid:
             params = p.getPhysicsEngineParameters(physicsClientId=cid)
+            num = p.getNumBodies(physicsClientId=cid)
+            objects = []
+            for body_id in range(num):
+                if body_id == _plane_body_id:
+                    continue
+                try:
+                    pos, orn = p.getBasePositionAndOrientation(body_id, physicsClientId=cid)
+                    num_joints = p.getNumJoints(body_id, physicsClientId=cid)
+                    objects.append({
+                        "id": body_id,
+                        "position": [round(float(v), 4) for v in pos],
+                        "orientation": [round(float(v), 4) for v in orn],
+                        "num_joints": int(num_joints),
+                    })
+                except Exception:
+                    continue
             return {
                 "task": "get_simulation_info",
                 "status": "success",
                 "timestep": params.get('fixedTimeStep', 0.0),
-                "num_bodies": p.getNumBodies(physicsClientId=cid),
+                "num_bodies": num,
                 "gravity": [
                     params.get('gravityAccelerationX', 0.0),
                     params.get('gravityAccelerationY', 0.0),
                     params.get('gravityAccelerationZ', -9.8),
                 ],
-                "message": "Simulation info retrieved.",
+                "objects": objects,
+                "message": f"Scene has {len(objects)} object(s) (excluding plane).",
             }
     except Exception as e:
         raise RuntimeError(f"get_simulation_info failed: {e}") from e
