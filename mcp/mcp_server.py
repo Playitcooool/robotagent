@@ -355,6 +355,20 @@ def initialize_simulation(args: InitializeSimulationArgs):
     """
     if args.gui:
         print("[mcp_server] GUI mode requested but forcing DIRECT mode (no X server in container)")
+
+    # Idempotent: if already initialized, return current state without resetting
+    with _sim_lock:
+        if simulation_instance is not None and p.isConnected(simulation_instance):
+            cid = simulation_instance
+            _publish_snapshot("initialize_simulation", done=False, extra={"status": "already_running"})
+            return {
+                "task": "initialize_simulation",
+                "status": "success",
+                "message": "Simulation already running (reused existing environment).",
+                "physicsClientId": cid,
+                "reused": True,
+            }
+
     setup_simulation(gui=False)
     _publish_snapshot("initialize_simulation", done=False, extra={"status": "running"})
     asset_status = _pybullet_asset_status()
