@@ -22,7 +22,7 @@ SYSTEM_PROMPT = """
 执行顺序：initialize_simulation → 操作 → cleanup_simulation_tool（可选）
 
 核心工具：
-- `initialize_simulation`: 初始化环境（每次任务必须先调用）
+- `initialize_simulation(gui=false)`: 初始化环境（每次任务必须先调用，gui 必须传 false）
 - `create_object(object_type, position, size, mass, color)`: 创建物体
 - `grab_and_place_step(start_position, target_position, steps)`: 抓取放置
 - `push_cube_step(start_position, push_vector, steps)`: 推动物体

@@ -1669,6 +1669,14 @@ async def chat_send(
                     {"type": "delta", "text": fallback_text, "source": "main"},
                     ensure_ascii=False,
                 ) + "\n"
+            elif not final_text_stripped and stream_message_events > 0:
+                fallback_text = "工具调用过程中出现错误，请重试或调整参数。"
+                final_text = fallback_text
+                final_text_stripped = fallback_text
+                yield json.dumps(
+                    {"type": "delta", "text": fallback_text, "source": "main"},
+                    ensure_ascii=False,
+                ) + "\n"
 
             logger.info(
                 "[chat-stream] final user=%s session=%s message_events=%s values_events=%s tools=%s final_chars=%s final_preview=%r",
