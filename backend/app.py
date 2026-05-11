@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pathlib import Path
 import ast
-from deepagents import create_deep_agent
+from langchain.agents import create_agent
 from tools.mcp_loader import load_mcp_tools_progressive
 from prompts.context_loader import ContextLoader
 from prompts.MainAgentPrompt import build_system_prompt_with_context
@@ -238,13 +238,13 @@ async def startup_event():
             agent_checkpointer_cm = AsyncRedisSaver.from_conn_string(DB_URI)
             checkpointer = await agent_checkpointer_cm.__aenter__()
             await checkpointer.asetup()
-        active_agent = create_deep_agent(
+        active_agent = create_agent(
             model=chatBot,
             tools=all_tools,
             system_prompt=runtime_system_prompt,
             checkpointer=checkpointer,
         )
-        active_search_agent = create_deep_agent(
+        active_search_agent = create_agent(
             model=chatBot,
             tools=search_tools,
             system_prompt=runtime_system_prompt,
@@ -1070,7 +1070,10 @@ async def chat_send(
             async for mode, event in selected_agent.astream(
                 {"messages": input_messages},
                 stream_mode=["messages", "values"],
-                config={"configurable": {"thread_id": f"{user_id}:{session_id}"}},
+                config={
+                    "configurable": {"thread_id": f"{user_id}:{session_id}"},
+                    "recursion_limit": 15,
+                },
             ):
                 if mode == "messages":
                     stream_message_events += 1
