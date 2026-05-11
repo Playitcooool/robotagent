@@ -89,8 +89,13 @@ export default {
       immediate: true,
       handler (nextValue) {
         if (nextValue?.image_url && nextValue.image_url !== this.currentImageUrl) {
+          // Only show loading placeholder on FIRST frame.
+          // Subsequent frame swaps keep old image visible until new one loads (prevents flicker).
+          const isFirstFrame = this.currentImageUrl === null
           this.currentImageUrl = nextValue.image_url
-          this.imgLoading = true
+          if (isFirstFrame) {
+            this.imgLoading = true
+          }
           this.imgError = false
           return
         }
