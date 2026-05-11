@@ -1051,15 +1051,15 @@ async def chat_send(
                     "is_active": bool(is_active),
                 }
 
-            runtime_tool_note = (
-                "本轮可用工具：search（智能搜索，同时支持学术论文和网页）。请自主判断并调用 search。"
-                if search_enabled
-                else "本轮禁用工具：search。"
-            )
-            input_messages = [
-                {"role": "system", "content": runtime_tool_note},
-                {"role": "user", "content": user_message},
-            ]
+            # Only inject runtime note if search is enabled (it affects current turn's tool set).
+            # Otherwise rely on the agent's system_prompt (set at create_agent time) + checkpointer history.
+            input_messages = []
+            if search_enabled:
+                input_messages.append({
+                    "role": "system",
+                    "content": "本轮可用工具：search（智能搜索）。请自主判断并调用。",
+                })
+            input_messages.append({"role": "user", "content": user_message})
             # 同时订阅 messages(增量token) 与 values(状态事件)，保证前端实时流式显示。
             logger.info(
                 "[chat-stream] start user=%s session=%s search=%s",
