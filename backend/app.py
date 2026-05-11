@@ -61,7 +61,7 @@ os.environ.setdefault("AUTH_REDIS_URL", "redis://127.0.0.1:6379/2")
 # Shared realtime frame location written by mcp/mcp_server.py
 # Default path points to repo-mounted directory so host and docker can share files.
 ROOT_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_SIM_STREAM_DIR = (ROOT_DIR / "mcp" / ".sim_stream").resolve()
+DEFAULT_SIM_STREAM_DIR = Path("/Volumes/Samsung/Projects/robotagent/mcp/.sim_stream").resolve()
 SIM_STREAM_DIR = Path(
     os.environ.get("PYBULLET_STREAM_DIR", str(DEFAULT_SIM_STREAM_DIR))
 ).resolve()
@@ -1397,51 +1397,42 @@ async def chat_send(
                             )
 
                         if name_msg == "write_todos":
-                            planning_steps = _extract_planning_steps_from_write_todos(
-                                content_msg
-                            )
-                            status_text = "正在规划执行步骤..."
-                            signature = f"tool:{name_msg}:{status_text}"
-                            if signature != last_status_signature:
-                                last_status_signature = signature
-                                current_status_text = status_text
-                                current_status_source = "main"
-                                yield json.dumps(
-                                    {"type": "status", "text": status_text, "source": "main"},
-                                    ensure_ascii=False,
-                                ) + "\n"
-                                yield json.dumps(
-                                    _build_planning_payload(
-                                        current_planning_steps,
-                                        current_status_text,
-                                        current_status_source,
-                                        True,
-                                    ),
-                                    ensure_ascii=False,
-                                ) + "\n"
-                            if planning_steps:
-                                signature = json.dumps(
-                                    planning_steps, ensure_ascii=False, sort_keys=True
-                                )
-                                if signature != last_planning_signature:
-                                    last_planning_signature = signature
-                                    current_planning_steps = planning_steps
-                                    planning_payload = _build_planning_payload(
-                                        current_planning_steps,
-                                        current_status_text,
-                                        current_status_source,
-                                        True,
-                                    )
-                                    yield json.dumps(
-                                        planning_payload, ensure_ascii=False
-                                    ) + "\n"
-                            # write_todos 属于 planning 源，不写入右侧工具时间轴，避免重复展示。
                             continue
 
-                        # Timeline output disabled by product requirement.
+                        # Auto-generate planning steps from tool calls
                         tool_source = _resolve_tool_source(name_msg)
                         if name_msg:
                             tool_names_seen.add(name_msg)
+
+                        # For simulation tools, auto-track as planning steps
+                        if tool_source == "simulator" and name_msg:
+                            # Mark previous steps as completed, add current as in_progress
+                            updated = False
+                            for step in current_planning_steps:
+                                if step.get("status") == "in_progress":
+                                    step["status"] = "completed"
+                                    updated = True
+                            current_planning_steps.append({
+                                "id": str(len(current_planning_steps) + 1),
+                                "step": name_msg,
+                                "status": "in_progress",
+                            })
+                            current_status_text = f"正在执行：{name_msg}"
+                            current_status_source = "simulator"
+                            yield json.dumps(
+                                {"type": "status", "text": current_status_text, "source": "simulator"},
+                                ensure_ascii=False,
+                            ) + "\n"
+                            yield json.dumps(
+                                _build_planning_payload(
+                                    current_planning_steps,
+                                    current_status_text,
+                                    current_status_source,
+                                    True,
+                                ),
+                                ensure_ascii=False,
+                            ) + "\n"
+
                         is_web_search_tool = name_msg == "web_search"
                         is_academic_search_tool = name_msg == "academic_search"
                         is_unified_search_tool = name_msg == "search"
@@ -1453,8 +1444,6 @@ async def chat_send(
                             if is_academic_search_tool
                             else "联网搜索中..."
                             if is_web_search_tool
-                            else "仿真子代理执行中..."
-                            if name_msg == "task"
                             else f"正在执行：{name_msg or 'tool'}"
                         )
                         signature = f"tool:{name_msg}:{_truncate_text(_normalize_text(content_msg), max_len=60)}"
@@ -1707,10 +1696,13 @@ async def chat_send(
                     final_usage_by_agent,
                 )
             if current_planning_steps or current_status_text:
+                # Mark all steps as completed at end
+                for step in current_planning_steps:
+                    step["status"] = "completed"
                 yield json.dumps(
                     _build_planning_payload(
                         current_planning_steps,
-                        current_status_text,
+                        "执行完成" if current_planning_steps else current_status_text,
                         current_status_source,
                         False,
                     ),
