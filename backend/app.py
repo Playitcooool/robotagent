@@ -129,11 +129,12 @@ def _truncate_for_prefill(text: str, max_chars: int) -> str:
 
 # ========== Intent detection via small LLM ==========
 _INTENT_PROMPT = """判断用户意图。根据用户消息、最近对话和待确认动作，输出一个JSON：
-{"simulator_required": true/false, "execution_confirmed": true/false, "confidence": 0.0-1.0}
+{"simulator_required": true/false, "execution_confirmed": true/false, "pending_action_response": "confirmed|modify|rejected|unclear", "confidence": 0.0-1.0}
 
 规则：
 - simulator_required: 当前用户消息是否需要机器人仿真/执行/物理环境工具。
 - execution_confirmed: 只有待确认动作为 simulator，且当前用户明确同意执行该待确认动作时才为 true。
+- pending_action_response: 当存在待确认动作时，判断当前用户是在确认执行、修改参数、拒绝执行，还是含义不清。
 - 如果信息不足、用户只是在补充参数、或没有待确认动作，不要把 execution_confirmed 设为 true。
 - 不要依赖固定关键词；结合语义和上下文判断。
 
@@ -173,16 +174,36 @@ async def detect_intent(
             # Parse JSON from response (handle possible markdown wrapping)
             content = content.strip("`").removeprefix("json").strip()
             result = json.loads(content)
+            pending_response = str(
+                result.get("pending_action_response") or "unclear"
+            ).strip().lower()
+            if pending_response not in {"confirmed", "modify", "rejected", "unclear"}:
+                pending_response = "unclear"
+            confidence = float(result.get("confidence") or 0.0)
+            simulator_required = bool(result.get("simulator_required"))
+            execution_confirmed = bool(result.get("execution_confirmed"))
+            if pending_action == "simulator" and pending_response == "confirmed":
+                execution_confirmed = True
+                simulator_required = True
+            elif (
+                pending_action == "simulator"
+                and pending_response == "unclear"
+                and simulator_required
+                and confidence >= 0.75
+            ):
+                execution_confirmed = True
             return {
-                "simulator_required": bool(result.get("simulator_required")),
-                "execution_confirmed": bool(result.get("execution_confirmed")),
-                "confidence": float(result.get("confidence") or 0.0),
+                "simulator_required": simulator_required,
+                "execution_confirmed": execution_confirmed,
+                "pending_action_response": pending_response,
+                "confidence": confidence,
             }
     except Exception as e:
         logger.warning(f"Intent detection failed, using conservative fallback: {e}")
         return {
             "simulator_required": pending_action == "simulator",
             "execution_confirmed": False,
+            "pending_action_response": "unclear",
             "confidence": 0.0,
         }
 
@@ -827,11 +848,23 @@ async def chat_send(
     intent = await detect_intent(user_message, recent_context, pending_action)
     simulator_required = intent["simulator_required"]
     simulator_execution_confirmed = intent["execution_confirmed"]
+    if simulator_execution_confirmed and not simulator_required:
+        logger.warning(
+            "Intent inconsistency normalized: execution_confirmed=true but simulator_required=false user=%s session=%s pending_action=%s pending_response=%s confidence=%s message_preview=%r",
+            user_id,
+            session_id,
+            pending_action or "none",
+            intent.get("pending_action_response"),
+            intent.get("confidence"),
+            _truncate_text(user_message, max_len=220),
+        )
+        simulator_required = True
     logger.info(
-        "Intent detected: simulator_required=%s execution_confirmed=%s pending_action=%s confidence=%s context_chars=%s",
+        "Intent detected: simulator_required=%s execution_confirmed=%s pending_action=%s pending_response=%s confidence=%s context_chars=%s",
         simulator_required,
         simulator_execution_confirmed,
         pending_action or "none",
+        intent.get("pending_action_response"),
         intent.get("confidence"),
         len(recent_context),
     )
@@ -882,10 +915,15 @@ async def chat_send(
         current_status_text = ""
         current_status_source = "main"
         simulator_activity_seen = False
+        simulator_tool_activity_seen = False
         simulator_task_call_seen = False
         last_simulator_output_text = ""
         pending_answer_whitespace_by_source: dict[str, str] = {}
         debug_msg_count = 0
+        stream_message_events = 0
+        stream_values_events = 0
+        tool_names_seen: set[str] = set()
+        simulator_tool_names_seen: set[str] = set()
         try:
             analysis_tool_names = set(getattr(AnalysisTool, "__all__", []))
             main_tool_names = set(getattr(GeneralTool, "__all__", []))
@@ -1281,14 +1319,21 @@ async def chat_send(
                 {"role": "user", "content": user_message},
             ]
             # 同时订阅 messages(增量token) 与 values(状态事件)，保证前端实时流式显示。
-            print(f"[DEBUG] ====== Starting astream for user={user_id} session={session_id} ======")
+            logger.info(
+                "[chat-stream] start user=%s session=%s search=%s simulator_required=%s execution_confirmed=%s",
+                user_id,
+                session_id,
+                search_enabled,
+                simulator_required,
+                simulator_execution_confirmed,
+            )
             async for mode, event in selected_agent.astream(
                 {"messages": input_messages},
                 stream_mode=["messages", "values"],
                 config={"configurable": {"thread_id": f"{user_id}:{session_id}"}},
             ):
                 if mode == "messages":
-                    print(f"[DEBUG] ======== messages mode event ========")
+                    stream_message_events += 1
                     try:
                         msg, _meta = event
                     except Exception:
@@ -1308,14 +1353,18 @@ async def chat_send(
                     source = _resolve_agent_source(_meta)
                     if source == "simulator":
                         simulator_activity_seen = True
-                    print(f"[DEBUG] role_name={role_name} source={source}")
                     if role_name in {"assistant", "ai"}:
                         msg_id = _extract_message_id(msg)
                         if msg_id:
                             message_source_by_id[msg_id] = source
                         if _message_has_simulator_task_call(msg):
-                            simulator_activity_seen = True
                             simulator_task_call_seen = True
+                            logger.info(
+                                "[chat-stream] simulator task call detected user=%s session=%s message_id=%s",
+                                user_id,
+                                session_id,
+                                msg_id or "unknown",
+                            )
                             status_text = "正在调用 simulator 执行仿真..."
                             signature = f"task-call:{status_text}"
                             if signature != last_status_signature:
@@ -1386,7 +1435,6 @@ async def chat_send(
 
                     if role_name in {"assistant", "ai"}:
                         thinking_text = _extract_thinking_from_message(msg)
-                        print(f"[DEBUG] role={role_name} thinking_text={repr(thinking_text[:100]) if thinking_text else ''}")
                         if thinking_text:
                             if len(thinking_text) > MAX_THINKING_CHARS:
                                 thinking_text = thinking_text[:MAX_THINKING_CHARS]
@@ -1410,7 +1458,6 @@ async def chat_send(
                                 ) + "\n"
 
                         delta = _extract_text_from_message(msg)
-                        print(f"[DEBUG] delta={repr(delta[:200]) if delta else ''}")
                         if delta:
                             answer_delta, think_tag_delta, in_think_tag, think_tag_carry = (
                                 _split_think_and_answer_delta(
@@ -1453,7 +1500,6 @@ async def chat_send(
                                     pending_answer_whitespace_by_source.pop(source, "")
                                     + answer_delta
                                 )
-                                print(f"[DEBUG] YIELDING DELTA: {repr(emit_delta[:100])} source={source}")
                                 if source == "main":
                                     main_stream_text += emit_delta
                                 yield json.dumps(
@@ -1470,6 +1516,17 @@ async def chat_send(
                         tool_name = _extract_message_name(msg)
                         if tool_name and tool_name != "task":
                             simulator_activity_seen = True
+                            if source == "simulator":
+                                simulator_tool_activity_seen = True
+                                simulator_tool_names_seen.add(tool_name)
+                            tool_names_seen.add(tool_name)
+                            logger.info(
+                                "[chat-stream] subagent tool message user=%s session=%s source=%s tool=%s",
+                                user_id,
+                                session_id,
+                                source,
+                                tool_name,
+                            )
                             tool_status_text = f"正在执行：{tool_name}"
                             signature = f"subtool:{tool_name}"
                             if signature != last_status_signature:
@@ -1493,13 +1550,17 @@ async def chat_send(
                     continue
 
                 if mode != "values":
-                    print(f"[DEBUG] non-messages/values mode: {mode}")
+                    logger.info(
+                        "[chat-stream] ignored stream mode user=%s session=%s mode=%s",
+                        user_id,
+                        session_id,
+                        mode,
+                    )
                     continue
 
-                print(f"[DEBUG] ======== values mode event ========")
+                stream_values_events += 1
                 messages = event.get("messages") if isinstance(event, dict) else None
                 if isinstance(messages, list):
-                    print(f"[DEBUG] values messages list len={len(messages)}")
                     for message in messages:
                         role_name = _normalize_message_role(message)
                         if role_name not in {"assistant", "ai"}:
@@ -1654,8 +1715,12 @@ async def chat_send(
 
                         # Timeline output disabled by product requirement.
                         tool_source = _resolve_tool_source(name_msg)
-                        if tool_source == "simulator":
+                        if tool_source == "simulator" and name_msg != "task":
                             simulator_activity_seen = True
+                            simulator_tool_activity_seen = True
+                            simulator_tool_names_seen.add(name_msg or "unknown")
+                        if name_msg:
+                            tool_names_seen.add(name_msg)
                         is_web_search_tool = name_msg == "web_search"
                         is_academic_search_tool = name_msg == "academic_search"
                         is_unified_search_tool = name_msg == "search"
@@ -1768,6 +1833,14 @@ async def chat_send(
                             tool_text = _extract_tool_display_text(tool_text)
                             if tool_source == "simulator" and tool_text:
                                 last_simulator_output_text = tool_text
+                                logger.info(
+                                    "[chat-stream] simulator tool output user=%s session=%s tool=%s output_chars=%s output_preview=%r",
+                                    user_id,
+                                    session_id,
+                                    name_msg or "unknown",
+                                    len(tool_text),
+                                    _truncate_text(tool_text, max_len=220),
+                                )
 
                             output_signature = (
                                 f"{tool_source}:{name_msg}:"
@@ -1862,7 +1935,7 @@ async def chat_send(
             waiting_for_simulator_result = bool(
                 simulator_required
                 and simulator_execution_confirmed
-                and simulator_activity_seen
+                and simulator_tool_activity_seen
                 and final_text_stripped
                 and any(
                     phrase in final_text_stripped
@@ -1895,7 +1968,20 @@ async def chat_send(
                         {"type": "delta", "text": final_text, "source": "main"},
                         ensure_ascii=False,
                     ) + "\n"
-            print(f"[DEBUG] final_text={repr(final_text[:200]) if final_text else 'EMPTY'} main_latest_text={repr(main_latest_text[:100]) if main_latest_text else ''} main_stream_text={repr(main_stream_text[:100]) if main_stream_text else ''}")
+            logger.info(
+                "[chat-stream] final user=%s session=%s message_events=%s values_events=%s task_call_seen=%s simulator_activity_seen=%s simulator_tool_activity_seen=%s tools=%s simulator_tools=%s final_chars=%s final_preview=%r",
+                user_id,
+                session_id,
+                stream_message_events,
+                stream_values_events,
+                simulator_task_call_seen,
+                simulator_activity_seen,
+                simulator_tool_activity_seen,
+                sorted(tool_names_seen),
+                sorted(simulator_tool_names_seen),
+                len(final_text_stripped),
+                _truncate_text(final_text_stripped, max_len=300),
+            )
             misleading_simulator_claim = bool(
                 final_text_stripped
                 and any(
@@ -1903,10 +1989,18 @@ async def chat_send(
                     for phrase in (
                         "已委托",
                         "已经委托",
+                        "已调用",
+                        "已经调用",
+                        "已启动",
+                        "启动 PyBullet",
+                        "启动 Gazebo",
                         "正在等待",
                         "已将任务委托",
                         "已转交",
                         "正在执行",
+                        "执行机械臂",
+                        "执行仿真",
+                        "执行抓取",
                         "执行完成",
                     )
                 )
@@ -1914,11 +2008,19 @@ async def chat_send(
             if (
                 simulator_required
                 and simulator_execution_confirmed
-                and not simulator_activity_seen
+                and not simulator_tool_activity_seen
             ):
                 no_tool_error = (
                     "已收到执行确认，但没有触发 simulator 工具调用。"
                     "请重试，或检查 simulator 子代理/MCP 服务是否可用。"
+                )
+                logger.warning(
+                    "[chat-stream] confirmed execution without simulator MCP tool user=%s session=%s task_call_seen=%s tools=%s final_preview=%r",
+                    user_id,
+                    session_id,
+                    simulator_task_call_seen,
+                    sorted(tool_names_seen),
+                    _truncate_text(final_text_stripped, max_len=300),
                 )
                 await _append_chat_message(user_id, session_id, "assistant", no_tool_error)
                 yield json.dumps(
@@ -1926,10 +2028,22 @@ async def chat_send(
                     ensure_ascii=False,
                 ) + "\n"
                 return
-            if simulator_required and not simulator_activity_seen and misleading_simulator_claim:
+            if (
+                (simulator_required or simulator_execution_confirmed)
+                and not simulator_tool_activity_seen
+                and misleading_simulator_claim
+            ):
                 no_tool_error = (
                     "模型声称已委托或正在执行 simulator，但没有实际触发工具调用。"
                     "请先确认计划，确认后我会调用 simulator 执行。"
+                )
+                logger.warning(
+                    "[chat-stream] misleading simulator claim user=%s session=%s task_call_seen=%s tools=%s final_preview=%r",
+                    user_id,
+                    session_id,
+                    simulator_task_call_seen,
+                    sorted(tool_names_seen),
+                    _truncate_text(final_text_stripped, max_len=300),
                 )
                 await _append_chat_message(user_id, session_id, "assistant", no_tool_error)
                 yield json.dumps(
@@ -1963,7 +2077,7 @@ async def chat_send(
                 final_status_text = current_status_text
                 final_status_source = current_status_source
                 final_steps = current_planning_steps
-                if simulator_required and simulator_execution_confirmed and simulator_activity_seen:
+                if simulator_required and simulator_execution_confirmed and simulator_tool_activity_seen:
                     final_status_text = "仿真执行完成"
                     final_status_source = "simulator"
                     final_steps = [
@@ -1980,7 +2094,13 @@ async def chat_send(
                     ensure_ascii=False,
                 ) + "\n"
             # 发送完成信号
-            print(f"[DEBUG] ====== STREAM COMPLETE, yielding done ======")
+            logger.info(
+                "[chat-stream] done user=%s session=%s final_persisted=%s planning_status=%r",
+                user_id,
+                session_id,
+                bool(final_text_stripped),
+                current_status_text,
+            )
             yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
         except Exception as e:
             logger.error(
