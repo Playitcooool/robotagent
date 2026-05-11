@@ -7,6 +7,7 @@ import {
   computeShowToolPanel,
   createWelcomeMessage,
   deriveResultRailData,
+  hasRenderableAssistantContent,
   normalizePlanningPayload,
   resolveAgentKey
 } from '../src/lib/workbench.js'
@@ -111,6 +112,15 @@ test('computeShowPlanningPanel shows steps or status text only', () => {
   assert.equal(computeShowPlanningPanel({ steps: [], statusText: '' }), false)
   assert.equal(computeShowPlanningPanel({ steps: [], statusText: '正在执行工具：task' }), true)
   assert.equal(computeShowPlanningPanel({ steps: [{ id: '1', step: 'Plan', status: 'pending' }] }), true)
+})
+
+test('hasRenderableAssistantContent ignores status-only placeholders', () => {
+  assert.equal(hasRenderableAssistantContent({ text: '', thinking: '' }), false)
+  assert.equal(hasRenderableAssistantContent({ text: '正在执行：task', statusOnly: '正在执行：task' }), false)
+  assert.equal(hasRenderableAssistantContent({ text: '最终位置：[0, 0, 1]', statusOnly: '正在执行：task' }), true)
+  assert.equal(hasRenderableAssistantContent({ thinking: 'reasoning' }), true)
+  assert.equal(hasRenderableAssistantContent({ webSearchResults: [{ url: 'https://example.com' }] }), true)
+  assert.equal(hasRenderableAssistantContent({ error: '处理请求失败' }), true)
 })
 
 test('resolveAgentKey collapses simulator and analysis aliases', () => {

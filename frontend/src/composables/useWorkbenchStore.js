@@ -9,6 +9,7 @@ import {
   createEmptyPlanningState,
   createWelcomeConversation,
   createWelcomeMessage,
+  hasRenderableAssistantContent,
   normalizePlanningPayload,
   resolveAgentKey
 } from '../lib/workbench.js'
@@ -156,6 +157,7 @@ function ensureAgentMessage(assistantId, source) {
     thinking: '',
     thinkingTruncated: false,
     loadingKind: 'thinking',
+    lastStatusText: '',
     webSearchResults: [],
     ragReferences: []
   }
@@ -170,6 +172,7 @@ function ensureAgentMessage(assistantId, source) {
     thinkingTruncated: false,
     loading: true,
     loadingKind: 'thinking',
+    lastStatusText: '',
     webSearchResults: [],
     ragReferences: []
   }
@@ -351,6 +354,17 @@ async function sendMessage(payload) {
             if (streamState) {
               const finalText = streamState.text || conversation.value[idx].text || ''
               const finalThinking = streamState.thinking || conversation.value[idx].thinking || ''
+              if (!hasRenderableAssistantContent({
+                text: finalText,
+                thinking: finalThinking,
+                webSearchResults: streamState.webSearchResults || conversation.value[idx].webSearchResults || [],
+                ragReferences: streamState.ragReferences || conversation.value[idx].ragReferences || [],
+                statusOnly: streamState.lastStatusText
+              })) {
+                conversation.value.splice(idx, 1)
+                delete assistantStreams[messageId]
+                continue
+              }
               conversation.value[idx].thinkingTruncated = Boolean(streamState.thinkingTruncated || conversation.value[idx].thinkingTruncated)
               conversation.value[idx].loadingKind = streamState.loadingKind || 'thinking'
               conversation.value[idx].webSearchResults = streamState.webSearchResults || conversation.value[idx].webSearchResults || []
@@ -400,6 +414,7 @@ async function sendMessage(payload) {
             thinking: '',
             thinkingTruncated: false,
             loadingKind: 'thinking',
+            lastStatusText: '',
             webSearchResults: [],
             ragReferences: []
           }
@@ -416,6 +431,7 @@ async function sendMessage(payload) {
             isActive: true
           })
           if (event.status_kind === 'search') streamState.loadingKind = 'search'
+          streamState.lastStatusText = statusText
           if (idx !== -1) {
             conversation.value[idx].loading = true
             conversation.value[idx].loadingKind = streamState.loadingKind || 'thinking'

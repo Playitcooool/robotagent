@@ -50,6 +50,10 @@ from backend.stream_utils import (
 from backend.routes_auth import register_auth_routes
 from backend.routes_sim import register_sim_routes
 from backend.utils.retry import with_retry_async
+from backend.workflow_utils import (
+    heuristic_simulator_intent,
+    restore_env_var,
+)
 
 os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
 # Chat history Redis should be separated from agent checkpoint Redis.
@@ -136,8 +140,13 @@ _INTENT_PROMPT = """判断用户意图。根据用户消息和最近一条助手
 只输出JSON，不要其他内容。/no_think"""
 
 
+def _heuristic_simulator_intent(user_message: str, last_assistant_message: str = "") -> dict:
+    return heuristic_simulator_intent(user_message, last_assistant_message)
+
+
 async def detect_intent(user_message: str, last_assistant_message: str = "") -> dict:
     """Use small LLM to classify user intent for simulator routing."""
+    heuristic = _heuristic_simulator_intent(user_message, last_assistant_message)
     url = config.get("intent_model_url", config["model_url"])
     model = config.get("intent_llm", "Qwen:Qwen3-0.6B")
     api_key = config.get("intent_api_key", config.get("api_key", "no_need"))
@@ -159,12 +168,14 @@ async def detect_intent(user_message: str, last_assistant_message: str = "") -> 
             content = content.strip("`").removeprefix("json").strip()
             result = json.loads(content)
             return {
-                "simulator_required": bool(result.get("simulator_required")),
-                "execution_confirmed": bool(result.get("execution_confirmed")),
+                "simulator_required": bool(result.get("simulator_required"))
+                or heuristic["simulator_required"],
+                "execution_confirmed": bool(result.get("execution_confirmed"))
+                or heuristic["execution_confirmed"],
             }
     except Exception as e:
         logger.warning(f"Intent detection failed, falling back: {e}")
-        return {"simulator_required": False, "execution_confirmed": False}
+        return heuristic
 
 
 # ========== 4. 加载工具函数（保留并添加日志） ==========
@@ -1668,11 +1679,12 @@ async def chat_send(
                 ) + "\n"
 
             final_text = main_latest_text or main_stream_text
+            final_text_stripped = final_text.strip()
             print(f"[DEBUG] final_text={repr(final_text[:200]) if final_text else 'EMPTY'} main_latest_text={repr(main_latest_text[:100]) if main_latest_text else ''} main_stream_text={repr(main_stream_text[:100]) if main_stream_text else ''}")
             misleading_simulator_claim = bool(
-                final_text
+                final_text_stripped
                 and any(
-                    phrase in final_text
+                    phrase in final_text_stripped
                     for phrase in (
                         "已委托",
                         "已经委托",
@@ -1711,7 +1723,7 @@ async def chat_send(
                 ) + "\n"
                 return
 
-            if final_text:
+            if final_text_stripped:
                 await _append_chat_message(user_id, session_id, "assistant", final_text)
             final_usage_by_agent = {}
             for agent_name, usage_map in usage_by_agent_message.items():
@@ -1755,11 +1767,7 @@ async def chat_send(
                 ensure_ascii=False,
             ) + "\n"
         finally:
-            if prev_rag_disabled:
-                if prev_rag_disabled is None:
-                    os.environ.pop("RAG_DISABLED", None)
-                else:
-                    os.environ["RAG_DISABLED"] = prev_rag_disabled
+            restore_env_var("RAG_DISABLED", prev_rag_disabled)
 
     return StreamingResponse(
         event_stream(),

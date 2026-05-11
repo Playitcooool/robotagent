@@ -34,6 +34,26 @@ export function computeShowPlanningPanel(planning = null) {
   return steps.length > 0 || Boolean(statusText)
 }
 
+export function hasRenderableAssistantContent({
+  text = '',
+  thinking = '',
+  webSearchResults = [],
+  ragReferences = [],
+  error = '',
+  statusOnly = ''
+} = {}) {
+  const normalizedText = String(text || '').trim()
+  const normalizedStatus = String(statusOnly || '').trim()
+  const hasText = Boolean(normalizedText) && normalizedText !== normalizedStatus
+  return Boolean(
+    hasText ||
+    String(thinking || '').trim() ||
+    String(error || '').trim() ||
+    (Array.isArray(webSearchResults) && webSearchResults.length) ||
+    (Array.isArray(ragReferences) && ragReferences.length)
+  )
+}
+
 export function normalizePlanningPayload(payload = {}) {
   const incoming = Array.isArray(payload?.plan)
     ? payload.plan
