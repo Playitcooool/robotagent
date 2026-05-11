@@ -105,16 +105,16 @@ def register_sim_routes(
                         idle_ticks = 0
                         last_emit_ts = time.time()
                         yield (
-                            f"event: frame\\ndata: "
-                            f"{json.dumps(payload, ensure_ascii=False)}\\n\\n"
+                            f"event: frame\ndata: "
+                            f"{json.dumps(payload, ensure_ascii=False)}\n\n"
                         )
                     elif current_ts > last_ts:
                         last_ts = current_ts
                         idle_ticks = 0
                         last_emit_ts = time.time()
                         yield (
-                            f"event: frame\\ndata: "
-                            f"{json.dumps(payload, ensure_ascii=False)}\\n\\n"
+                            f"event: frame\ndata: "
+                            f"{json.dumps(payload, ensure_ascii=False)}\n\n"
                         )
                     else:
                         idle_ticks += 1
@@ -123,7 +123,7 @@ def register_sim_routes(
 
                 if idle_ticks >= 100:
                     idle_ticks = 0
-                    yield "event: ping\\ndata: {}\\n\\n"
+                    yield "event: ping\ndata: {}\n\n"
 
                 now = time.time()
                 is_running = payload.get("status") == "running"
