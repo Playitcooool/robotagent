@@ -50,7 +50,13 @@ from backend.stream_utils import (
 from backend.routes_auth import register_auth_routes
 from backend.routes_sim import register_sim_routes
 from backend.utils.retry import with_retry_async
-from backend.workflow_utils import restore_env_var
+from backend.workflow_utils import (
+    extract_chat_history_text,
+    normalize_intent_result,
+    restore_env_var,
+    text_claims_simulator_execution,
+    text_waits_for_simulator_result,
+)
 
 os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
 # Chat history Redis should be separated from agent checkpoint Redis.
@@ -135,6 +141,7 @@ _INTENT_PROMPT = """判断用户意图。根据用户消息、最近对话和待
 - simulator_required: 当前用户消息是否需要机器人仿真/执行/物理环境工具。
 - execution_confirmed: 只有待确认动作为 simulator，且当前用户明确同意执行该待确认动作时才为 true。
 - pending_action_response: 当存在待确认动作时，判断当前用户是在确认执行、修改参数、拒绝执行，还是含义不清。
+- 如果待确认动作是“无”，execution_confirmed 必须为 false；用户说“执行一个任务”只表示需要先规划/补齐参数/请求确认。
 - 如果信息不足、用户只是在补充参数、或没有待确认动作，不要把 execution_confirmed 设为 true。
 - 不要依赖固定关键词；结合语义和上下文判断。
 
@@ -174,38 +181,25 @@ async def detect_intent(
             # Parse JSON from response (handle possible markdown wrapping)
             content = content.strip("`").removeprefix("json").strip()
             result = json.loads(content)
-            pending_response = str(
-                result.get("pending_action_response") or "unclear"
-            ).strip().lower()
-            if pending_response not in {"confirmed", "modify", "rejected", "unclear"}:
-                pending_response = "unclear"
-            confidence = float(result.get("confidence") or 0.0)
-            simulator_required = bool(result.get("simulator_required"))
-            execution_confirmed = bool(result.get("execution_confirmed"))
-            if pending_action == "simulator" and pending_response == "confirmed":
-                execution_confirmed = True
-                simulator_required = True
-            elif (
-                pending_action == "simulator"
-                and pending_response == "unclear"
-                and simulator_required
-                and confidence >= 0.75
-            ):
-                execution_confirmed = True
-            return {
-                "simulator_required": simulator_required,
-                "execution_confirmed": execution_confirmed,
-                "pending_action_response": pending_response,
-                "confidence": confidence,
-            }
+            return normalize_intent_result(
+                result,
+                pending_action,
+                user_message=user_message,
+                recent_context=recent_context,
+            )
     except Exception as e:
         logger.warning(f"Intent detection failed, using conservative fallback: {e}")
-        return {
-            "simulator_required": pending_action == "simulator",
-            "execution_confirmed": False,
-            "pending_action_response": "unclear",
-            "confidence": 0.0,
-        }
+        return normalize_intent_result(
+            {
+                "simulator_required": pending_action == "simulator",
+                "execution_confirmed": False,
+                "pending_action_response": "unclear",
+                "confidence": 0.0,
+            },
+            pending_action,
+            user_message=user_message,
+            recent_context=recent_context,
+        )
 
 
 # ========== 4. 加载工具函数（保留并添加日志） ==========
@@ -834,7 +828,7 @@ async def chat_send(
         for item in reversed(recent or []):
             try:
                 parsed = json.loads(item)
-                content = _normalize_text(parsed.get("content", "")).strip()
+                content = _normalize_text(extract_chat_history_text(parsed)).strip()
                 if not content:
                     continue
                 role = parsed.get("role")
@@ -848,7 +842,22 @@ async def chat_send(
     intent = await detect_intent(user_message, recent_context, pending_action)
     simulator_required = intent["simulator_required"]
     simulator_execution_confirmed = intent["execution_confirmed"]
-    if simulator_execution_confirmed and not simulator_required:
+    if simulator_execution_confirmed and pending_action != "simulator":
+        logger.warning(
+            "Intent execution confirmation ignored without pending simulator action user=%s session=%s pending_action=%s pending_response=%s confidence=%s message_preview=%r",
+            user_id,
+            session_id,
+            pending_action or "none",
+            intent.get("pending_action_response"),
+            intent.get("confidence"),
+            _truncate_text(user_message, max_len=220),
+        )
+        simulator_execution_confirmed = False
+    if (
+        simulator_execution_confirmed
+        and pending_action == "simulator"
+        and not simulator_required
+    ):
         logger.warning(
             "Intent inconsistency normalized: execution_confirmed=true but simulator_required=false user=%s session=%s pending_action=%s pending_response=%s confidence=%s message_preview=%r",
             user_id,
@@ -871,6 +880,8 @@ async def chat_send(
 
     await _append_chat_message(user_id, session_id, "user", user_message)
     if simulator_execution_confirmed:
+        await _clear_pending_action(user_id, session_id)
+    elif pending_action == "simulator" and intent.get("pending_action_response") == "rejected":
         await _clear_pending_action(user_id, session_id)
 
     # 核心修正：使用全局的active_agent，而非初始空工具的agent
@@ -918,6 +929,7 @@ async def chat_send(
         simulator_tool_activity_seen = False
         simulator_task_call_seen = False
         last_simulator_output_text = ""
+        stream_started_at = time.time()
         pending_answer_whitespace_by_source: dict[str, str] = {}
         debug_msg_count = 0
         stream_message_events = 0
@@ -1043,6 +1055,21 @@ async def chat_send(
                 if m:
                     return m.group(1).strip()
                 return text
+
+            def _sim_frame_received_since_start() -> bool:
+                if not SIM_META_FILE.exists() or not SIM_FRAME_FILE.exists():
+                    return False
+                try:
+                    frame_mtime = SIM_FRAME_FILE.stat().st_mtime
+                except Exception:
+                    frame_mtime = 0.0
+                try:
+                    with open(SIM_META_FILE, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                    meta_ts = float(meta.get("timestamp") or 0.0)
+                except Exception:
+                    meta_ts = 0.0
+                return max(frame_mtime, meta_ts) >= stream_started_at - 1.0
 
             def _extract_web_search_refs(raw_text: str):
                 text = _normalize_text(raw_text).strip()
@@ -1715,10 +1742,11 @@ async def chat_send(
 
                         # Timeline output disabled by product requirement.
                         tool_source = _resolve_tool_source(name_msg)
-                        if tool_source == "simulator" and name_msg != "task":
+                        if tool_source == "simulator":
                             simulator_activity_seen = True
-                            simulator_tool_activity_seen = True
-                            simulator_tool_names_seen.add(name_msg or "unknown")
+                            if name_msg != "task":
+                                simulator_tool_activity_seen = True
+                                simulator_tool_names_seen.add(name_msg or "unknown")
                         if name_msg:
                             tool_names_seen.add(name_msg)
                         is_web_search_tool = name_msg == "web_search"
@@ -1932,21 +1960,17 @@ async def chat_send(
 
             final_text = main_latest_text or main_stream_text
             final_text_stripped = final_text.strip()
+            sim_frame_received = _sim_frame_received_since_start()
             waiting_for_simulator_result = bool(
                 simulator_required
                 and simulator_execution_confirmed
-                and simulator_tool_activity_seen
-                and final_text_stripped
-                and any(
-                    phrase in final_text_stripped
-                    for phrase in (
-                        "等待结果",
-                        "等待结果返回",
-                        "正在执行",
-                        "subagent 已启动",
-                        "正在等待",
-                    )
+                and (
+                    simulator_tool_activity_seen
+                    or simulator_task_call_seen
+                    or sim_frame_received
                 )
+                and final_text_stripped
+                and text_waits_for_simulator_result(final_text_stripped)
             )
             if waiting_for_simulator_result:
                 if last_simulator_output_text:
@@ -1955,17 +1979,55 @@ async def chat_send(
                         f"关键结果：{_truncate_text(last_simulator_output_text, max_len=700)}\n"
                         "下一步：可查看右侧最新帧或继续要求分析结果。"
                     )
+                elif sim_frame_received:
+                    final_text = (
+                        "结论：仿真执行已完成，已收到仿真画面帧。\n"
+                        "关键结果：右侧显示最新仿真帧；simulator 未返回额外文本摘要。\n"
+                        "下一步：可继续要求分析轨迹或导出结果。"
+                    )
                 else:
                     final_text = (
-                        "结论：仿真执行已完成，已收到 simulator 活动。\n"
-                        "关键结果：右侧显示最新仿真帧；详细工具结果未返回文本摘要。\n"
-                        "下一步：可继续要求分析轨迹或导出结果。"
+                        "simulator task 已调用，但尚未收到画面帧或 MCP 工具文本结果。"
+                        "请检查 simulator 子代理/MCP 服务日志。"
                     )
                 final_text_stripped = final_text.strip()
                 if final_text_stripped and final_text != main_stream_text:
                     main_stream_text = final_text
                     yield json.dumps(
                         {"type": "delta", "text": final_text, "source": "main"},
+                        ensure_ascii=False,
+                    ) + "\n"
+            if (
+                simulator_required
+                and simulator_execution_confirmed
+                and last_simulator_output_text
+                and not simulator_tool_activity_seen
+            ):
+                diagnostic_text = (
+                    "simulator 子代理已响应，但未收到仿真画面帧或 MCP 物理仿真工具输出。\n"
+                    f"子代理结果：{_truncate_text(last_simulator_output_text, max_len=700)}"
+                )
+                if diagnostic_text.strip() != final_text_stripped:
+                    final_text = diagnostic_text
+                    final_text_stripped = final_text.strip()
+                    main_stream_text = final_text
+                    yield json.dumps(
+                        {"type": "delta", "text": diagnostic_text, "source": "main"},
+                        ensure_ascii=False,
+                    ) + "\n"
+            elif (
+                simulator_required
+                and simulator_execution_confirmed
+                and simulator_tool_activity_seen
+                and not sim_frame_received
+            ):
+                diagnostic_text = "未收到画面帧；已保留 simulator 文本结果和工具状态用于诊断。"
+                if diagnostic_text not in final_text_stripped:
+                    final_text = (final_text_stripped + "\n" + diagnostic_text).strip()
+                    final_text_stripped = final_text.strip()
+                    main_stream_text = final_text
+                    yield json.dumps(
+                        {"type": "delta", "text": "\n" + diagnostic_text, "source": "main"},
                         ensure_ascii=False,
                     ) + "\n"
             logger.info(
@@ -1982,55 +2044,47 @@ async def chat_send(
                 len(final_text_stripped),
                 _truncate_text(final_text_stripped, max_len=300),
             )
-            misleading_simulator_claim = bool(
+            misleading_simulator_claim = text_claims_simulator_execution(
                 final_text_stripped
-                and any(
-                    phrase in final_text_stripped
-                    for phrase in (
-                        "已委托",
-                        "已经委托",
-                        "已调用",
-                        "已经调用",
-                        "已启动",
-                        "启动 PyBullet",
-                        "启动 Gazebo",
-                        "正在等待",
-                        "已将任务委托",
-                        "已转交",
-                        "正在执行",
-                        "执行机械臂",
-                        "执行仿真",
-                        "执行抓取",
-                        "执行完成",
-                    )
-                )
             )
             if (
                 simulator_required
                 and simulator_execution_confirmed
                 and not simulator_tool_activity_seen
             ):
-                no_tool_error = (
-                    "已收到执行确认，但没有触发 simulator 工具调用。"
-                    "请重试，或检查 simulator 子代理/MCP 服务是否可用。"
-                )
-                logger.warning(
-                    "[chat-stream] confirmed execution without simulator MCP tool user=%s session=%s task_call_seen=%s tools=%s final_preview=%r",
-                    user_id,
-                    session_id,
-                    simulator_task_call_seen,
-                    sorted(tool_names_seen),
-                    _truncate_text(final_text_stripped, max_len=300),
-                )
-                await _append_chat_message(user_id, session_id, "assistant", no_tool_error)
-                yield json.dumps(
-                    {"type": "error", "error": no_tool_error},
-                    ensure_ascii=False,
-                ) + "\n"
-                return
+                if simulator_task_call_seen or last_simulator_output_text:
+                    logger.warning(
+                        "[chat-stream] simulator task responded without MCP frame/tool user=%s session=%s task_call_seen=%s output_chars=%s frame_received=%s",
+                        user_id,
+                        session_id,
+                        simulator_task_call_seen,
+                        len(last_simulator_output_text),
+                        sim_frame_received,
+                    )
+                else:
+                    no_tool_error = (
+                        "已收到执行确认，但没有触发 simulator 工具调用。"
+                        "请重试，或检查 simulator 子代理/MCP 服务是否可用。"
+                    )
+                    logger.warning(
+                        "[chat-stream] confirmed execution without simulator MCP tool user=%s session=%s task_call_seen=%s tools=%s final_preview=%r",
+                        user_id,
+                        session_id,
+                        simulator_task_call_seen,
+                        sorted(tool_names_seen),
+                        _truncate_text(final_text_stripped, max_len=300),
+                    )
+                    await _append_chat_message(user_id, session_id, "assistant", no_tool_error)
+                    yield json.dumps(
+                        {"type": "error", "error": no_tool_error},
+                        ensure_ascii=False,
+                    ) + "\n"
+                    return
             if (
-                (simulator_required or simulator_execution_confirmed)
+                simulator_execution_confirmed
                 and not simulator_tool_activity_seen
+                and not simulator_task_call_seen
+                and not last_simulator_output_text
                 and misleading_simulator_claim
             ):
                 no_tool_error = (
@@ -2077,13 +2131,28 @@ async def chat_send(
                 final_status_text = current_status_text
                 final_status_source = current_status_source
                 final_steps = current_planning_steps
-                if simulator_required and simulator_execution_confirmed and simulator_tool_activity_seen:
-                    final_status_text = "仿真执行完成"
+                if (
+                    simulator_required
+                    and simulator_execution_confirmed
+                    and (simulator_tool_activity_seen or sim_frame_received)
+                ):
+                    final_status_text = (
+                        "仿真执行完成"
+                        if sim_frame_received
+                        else "仿真执行完成，未收到画面帧"
+                    )
                     final_status_source = "simulator"
                     final_steps = [
                         {**step, "status": "completed"}
                         for step in current_planning_steps
                     ]
+                elif (
+                    simulator_required
+                    and simulator_execution_confirmed
+                    and (simulator_task_call_seen or last_simulator_output_text)
+                ):
+                    final_status_text = "simulator 子代理已响应，未收到画面帧/MCP 工具输出"
+                    final_status_source = "simulator"
                 yield json.dumps(
                     _build_planning_payload(
                         final_steps,

@@ -24,8 +24,19 @@ export function computeLandingMode(conversation = []) {
   return !messages.some((message) => String(message?.role || '') === 'user')
 }
 
-export function computeShowToolPanel({ liveFrame = null } = {}) {
-  return Boolean(liveFrame?.image_url)
+export function computeShowToolPanel({ liveFrame = null, planningState = null, conversation = [] } = {}) {
+  if (liveFrame?.image_url) return true
+  if (
+    resolveAgentKey(planningState?.activeSource) === 'simulator' &&
+    String(planningState?.statusText || '').trim()
+  ) {
+    return true
+  }
+  return (Array.isArray(conversation) ? conversation : []).some((message) => (
+    String(message?.role || '') === 'assistant' &&
+    resolveAgentKey(message?.agent) === 'simulator' &&
+    (String(message?.text || '').trim() || message?.loading)
+  ))
 }
 
 export function computeShowPlanningPanel(planning = null) {
