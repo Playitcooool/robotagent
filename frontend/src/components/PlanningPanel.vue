@@ -246,6 +246,13 @@ export default {
   color: #a5f3c7;
 }
 
+.planning-item.completed .step {
+  color: #93a1b5;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: rgba(165, 243, 199, 0.65);
+}
+
 .planning-item.completed .status {
   color: #a5f3c7;
   background: rgba(32, 196, 120, 0.2);

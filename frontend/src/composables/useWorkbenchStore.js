@@ -43,6 +43,7 @@ const assistantTypewriters = {}
 const typewriterAccum = {}
 let sessionLoadController = null
 let chatAbortController = null
+let planningCloseTimer = null
 
 const hasLiveFrame = computed(() => Boolean(liveFrame.value?.image_url))
 const landingMode = computed(() => showLandingHero.value && computeLandingMode(conversation.value))
@@ -76,6 +77,10 @@ function stopAllTypewriters() {
 
 function resetConversation(newSessionId = null) {
   if (newSessionId) currentSessionId.value = newSessionId
+  if (planningCloseTimer) {
+    clearTimeout(planningCloseTimer)
+    planningCloseTimer = null
+  }
   stopLiveFrameStream()
   liveFrame.value = null
   planningState.value = createEmptyPlanningState()
@@ -143,6 +148,23 @@ function maybeStartSimStream(source, sinceTimestamp = null) {
   if (normalizeSource(source) !== 'simulator') return
   startLiveFrameStream(sinceTimestamp)
   refreshLatestFrame(sinceTimestamp)
+}
+
+function maybeCloseCompletedPlanning(nextPlanning) {
+  if (planningCloseTimer) {
+    clearTimeout(planningCloseTimer)
+    planningCloseTimer = null
+  }
+  const statusText = String(nextPlanning?.statusText || '')
+  const allStepsDone = Array.isArray(nextPlanning?.steps) &&
+    nextPlanning.steps.length > 0 &&
+    nextPlanning.steps.every((step) => step?.status === 'completed')
+  const completed = !nextPlanning?.isActive && (allStepsDone || /完成|completed/i.test(statusText))
+  if (!completed) return
+  planningCloseTimer = setTimeout(() => {
+    planningState.value = createEmptyPlanningState()
+    planningCloseTimer = null
+  }, 1800)
 }
 
 function ensureAgentMessage(assistantId, source) {
@@ -328,7 +350,9 @@ async function sendMessage(payload) {
         }
 
         if (event.type === 'planning') {
-          planningState.value = normalizePlanningPayload(event)
+          const nextPlanning = normalizePlanningPayload(event)
+          planningState.value = nextPlanning
+          maybeCloseCompletedPlanning(nextPlanning)
           continue
         }
 
@@ -531,6 +555,7 @@ function stopMessage() {
 }
 
 function teardown() {
+  if (planningCloseTimer) clearTimeout(planningCloseTimer)
   stopLiveFrameStream()
   if (chatAbortController) chatAbortController.abort()
   if (sessionLoadController) sessionLoadController.abort()

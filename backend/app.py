@@ -882,6 +882,8 @@ async def chat_send(
         current_status_text = ""
         current_status_source = "main"
         simulator_activity_seen = False
+        simulator_task_call_seen = False
+        last_simulator_output_text = ""
         debug_msg_count = 0
         try:
             analysis_tool_names = set(getattr(AnalysisTool, "__all__", []))
@@ -1205,6 +1207,59 @@ async def chat_send(
                     "is_active": bool(is_active),
                 }
 
+            def _message_has_simulator_task_call(message) -> bool:
+                candidates = []
+                if isinstance(message, dict):
+                    candidates.extend(
+                        [
+                            message.get("tool_calls"),
+                            message.get("invalid_tool_calls"),
+                            (message.get("additional_kwargs") or {}).get("tool_calls")
+                            if isinstance(message.get("additional_kwargs"), dict)
+                            else None,
+                        ]
+                    )
+                else:
+                    candidates.extend(
+                        [
+                            getattr(message, "tool_calls", None),
+                            getattr(message, "invalid_tool_calls", None),
+                        ]
+                    )
+                    additional_kwargs = getattr(message, "additional_kwargs", None)
+                    if isinstance(additional_kwargs, dict):
+                        candidates.append(additional_kwargs.get("tool_calls"))
+
+                for raw_calls in candidates:
+                    if not isinstance(raw_calls, list):
+                        continue
+                    for call in raw_calls:
+                        if not isinstance(call, dict):
+                            continue
+                        name = call.get("name")
+                        args = call.get("args") or call.get("arguments")
+                        function = call.get("function")
+                        if isinstance(function, dict):
+                            name = name or function.get("name")
+                            args = args or function.get("arguments")
+                        if name != "task":
+                            continue
+                        parsed_args = args
+                        if isinstance(args, str):
+                            parsed_args = None
+                            for parser in (json.loads, ast.literal_eval):
+                                try:
+                                    parsed_args = parser(args)
+                                    break
+                                except Exception:
+                                    continue
+                        if (
+                            isinstance(parsed_args, dict)
+                            and parsed_args.get("subagent_type") == "simulator"
+                        ):
+                            return True
+                return False
+
             runtime_tool_note = (
                 "本轮可用工具：search（智能搜索，同时支持学术论文和网页）。请自主判断并调用 search。"
                 if search_enabled
@@ -1257,6 +1312,33 @@ async def chat_send(
                         msg_id = _extract_message_id(msg)
                         if msg_id:
                             message_source_by_id[msg_id] = source
+                        if _message_has_simulator_task_call(msg):
+                            simulator_activity_seen = True
+                            simulator_task_call_seen = True
+                            status_text = "正在调用 simulator 执行仿真..."
+                            signature = f"task-call:{status_text}"
+                            if signature != last_status_signature:
+                                last_status_signature = signature
+                                current_status_text = status_text
+                                current_status_source = "simulator"
+                                yield json.dumps(
+                                    {
+                                        "type": "status",
+                                        "text": status_text,
+                                        "source": "simulator",
+                                        "status_kind": "tool",
+                                    },
+                                    ensure_ascii=False,
+                                ) + "\n"
+                                yield json.dumps(
+                                    _build_planning_payload(
+                                        current_planning_steps,
+                                        current_status_text,
+                                        current_status_source,
+                                        True,
+                                    ),
+                                    ensure_ascii=False,
+                                ) + "\n"
                     if role_name in {"assistant", "ai"} and not _is_main_agent_message(_meta):
                         node = ""
                         path_text = ""
@@ -1354,7 +1436,12 @@ async def chat_send(
                                 if len(think_tag_delta) > max(remain, 0):
                                     thinking_truncated = True
 
-                            if answer_delta and answer_delta.strip():
+                            suppress_confirmed_main_text = (
+                                simulator_required
+                                and simulator_execution_confirmed
+                                and source == "main"
+                            )
+                            if answer_delta and answer_delta.strip() and not suppress_confirmed_main_text:
                                 print(f"[DEBUG] YIELDING DELTA: {repr(answer_delta[:100])} source={source}")
                                 if source == "main":
                                     main_stream_text += answer_delta
@@ -1668,6 +1755,8 @@ async def chat_send(
                                 flags=re.IGNORECASE,
                             ).strip()
                             tool_text = _extract_tool_display_text(tool_text)
+                            if tool_source == "simulator" and tool_text:
+                                last_simulator_output_text = tool_text
 
                             output_signature = (
                                 f"{tool_source}:{name_msg}:"
@@ -1708,7 +1797,8 @@ async def chat_send(
                     main_latest_text = _normalize_text(content)
 
             # Fallback: if no/partial incremental output was emitted, flush final text.
-            if main_latest_text and main_latest_text != main_stream_text:
+            skip_main_fallback = simulator_required and simulator_execution_confirmed
+            if main_latest_text and main_latest_text != main_stream_text and not skip_main_fallback:
                 final_delta = _compute_missing_delta(main_stream_text, main_latest_text)
                 if final_delta:
                     answer_delta, think_tag_delta, in_think_tag, think_tag_carry = (
@@ -1747,6 +1837,42 @@ async def chat_send(
 
             final_text = main_latest_text or main_stream_text
             final_text_stripped = final_text.strip()
+            waiting_for_simulator_result = bool(
+                simulator_required
+                and simulator_execution_confirmed
+                and simulator_activity_seen
+                and final_text_stripped
+                and any(
+                    phrase in final_text_stripped
+                    for phrase in (
+                        "等待结果",
+                        "等待结果返回",
+                        "正在执行",
+                        "subagent 已启动",
+                        "正在等待",
+                    )
+                )
+            )
+            if waiting_for_simulator_result:
+                if last_simulator_output_text:
+                    final_text = (
+                        "结论：仿真执行已完成。\n"
+                        f"关键结果：{_truncate_text(last_simulator_output_text, max_len=700)}\n"
+                        "下一步：可查看右侧最新帧或继续要求分析结果。"
+                    )
+                else:
+                    final_text = (
+                        "结论：仿真执行已完成，已收到 simulator 活动。\n"
+                        "关键结果：右侧显示最新仿真帧；详细工具结果未返回文本摘要。\n"
+                        "下一步：可继续要求分析轨迹或导出结果。"
+                    )
+                final_text_stripped = final_text.strip()
+                if final_text_stripped and final_text != main_stream_text:
+                    main_stream_text = final_text
+                    yield json.dumps(
+                        {"type": "delta", "text": final_text, "source": "main"},
+                        ensure_ascii=False,
+                    ) + "\n"
             print(f"[DEBUG] final_text={repr(final_text[:200]) if final_text else 'EMPTY'} main_latest_text={repr(main_latest_text[:100]) if main_latest_text else ''} main_stream_text={repr(main_stream_text[:100]) if main_stream_text else ''}")
             misleading_simulator_claim = bool(
                 final_text_stripped
@@ -1812,11 +1938,21 @@ async def chat_send(
                     final_usage_by_agent,
                 )
             if current_planning_steps or current_status_text:
+                final_status_text = current_status_text
+                final_status_source = current_status_source
+                final_steps = current_planning_steps
+                if simulator_required and simulator_execution_confirmed and simulator_activity_seen:
+                    final_status_text = "仿真执行完成"
+                    final_status_source = "simulator"
+                    final_steps = [
+                        {**step, "status": "completed"}
+                        for step in current_planning_steps
+                    ]
                 yield json.dumps(
                     _build_planning_payload(
-                        current_planning_steps,
-                        current_status_text,
-                        current_status_source,
+                        final_steps,
+                        final_status_text,
+                        final_status_source,
                         False,
                     ),
                     ensure_ascii=False,
