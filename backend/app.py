@@ -1370,6 +1370,7 @@ async def chat_send(
                 runtime_tool_note += (
                     "\n本轮是机器人仿真规划请求：先给出简短计划、你选择的关键参数和确认问题；"
                     "未收到用户明确确认前不要调用 simulator。"
+                    "注意：你必须在最终回复中输出文字给用户（计划摘要+确认问题），不能只调用工具就结束。"
                 )
             input_messages = [
                 {"role": "system", "content": runtime_tool_note},
@@ -2218,6 +2219,20 @@ async def chat_send(
                         "simulator",
                         final_text_stripped,
                     )
+            elif current_planning_steps and simulator_required and not simulator_execution_confirmed:
+                # Model only called write_todos but produced no text reply; synthesize one.
+                steps_text = "\n".join(
+                    f"  {i+1}. {s.get('content', '')}" for i, s in enumerate(current_planning_steps)
+                )
+                fallback_text = f"已为您规划以下执行步骤：\n{steps_text}\n\n确认执行吗？"
+                final_text = fallback_text
+                main_stream_text = fallback_text
+                yield json.dumps(
+                    {"type": "delta", "text": fallback_text, "source": "main"},
+                    ensure_ascii=False,
+                ) + "\n"
+                await _append_chat_message(user_id, session_id, "assistant", fallback_text)
+                await _set_pending_action(user_id, session_id, "simulator", fallback_text)
             final_usage_by_agent = {}
             for agent_name, usage_map in usage_by_agent_message.items():
                 summary = _sum_usage_map(usage_map)

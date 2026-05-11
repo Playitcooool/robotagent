@@ -115,10 +115,10 @@ test('normalizePlanningPayload preserves structured status fields without steps'
   )
 })
 
-test('computeShowPlanningPanel shows steps or status text only', () => {
+test('computeShowPlanningPanel shows steps only', () => {
   assert.equal(computeShowPlanningPanel(null), false)
   assert.equal(computeShowPlanningPanel({ steps: [], statusText: '' }), false)
-  assert.equal(computeShowPlanningPanel({ steps: [], statusText: '正在执行工具：task' }), true)
+  assert.equal(computeShowPlanningPanel({ steps: [], statusText: '正在执行工具：task' }), false)
   assert.equal(computeShowPlanningPanel({ steps: [{ id: '1', step: 'Plan', status: 'pending' }] }), true)
 })
 

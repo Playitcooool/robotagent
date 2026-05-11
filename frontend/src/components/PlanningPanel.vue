@@ -1,15 +1,10 @@
 <template>
-  <div v-if="hasContent" class="planning-panel">
+  <div v-if="steps.length" class="planning-panel">
     <button class="planning-head" type="button" @click="toggleExpanded">
       <span class="title">计划</span>
-      <span v-if="steps.length" class="count">{{ doneCount }}/{{ steps.length }}</span>
-      <span v-if="statusText" :class="['source', activeSource]">{{ sourceLabel }}</span>
-      <span v-if="steps.length" :class="['caret', expanded ? 'open' : '']">▾</span>
+      <span class="count">{{ doneCount }}/{{ steps.length }}</span>
+      <span :class="['caret', expanded ? 'open' : '']">▾</span>
     </button>
-    <div v-if="statusText" :class="['planning-status', isActive ? 'active' : 'idle']">
-      <span class="pulse"></span>
-      <span>{{ statusText }}</span>
-    </div>
     <div v-if="expanded" class="planning-body">
       <ol class="planning-list">
         <li v-for="(item, idx) in steps" :key="item.id || idx" :class="['planning-item', item.status]">
@@ -45,15 +40,6 @@ export default {
     const doneCount = computed(
       () => steps.value.filter(item => item?.status === 'completed').length
     )
-    const statusText = computed(() => String(props.planning?.statusText || '').trim())
-    const activeSource = computed(() => String(props.planning?.activeSource || 'main'))
-    const isActive = computed(() => Boolean(props.planning?.isActive))
-    const hasContent = computed(() => steps.value.length > 0 || Boolean(statusText.value))
-    const sourceLabel = computed(() => {
-      if (activeSource.value === 'simulator') return 'Simulator'
-      if (activeSource.value === 'analysis') return 'Analysis'
-      return 'Main'
-    })
 
     watch(
       () => props.planning?.updatedAt,
@@ -91,13 +77,8 @@ export default {
     }
 
     return {
-      activeSource,
       doneCount,
       expanded,
-      hasContent,
-      isActive,
-      sourceLabel,
-      statusText,
       steps,
       toggleExpanded,
       statusLabel
@@ -137,25 +118,6 @@ export default {
   color: #9aa4b2;
 }
 
-.source {
-  border-radius: 999px;
-  padding: 2px 7px;
-  font-size: 10px;
-  font-weight: 700;
-  color: #aeb8c8;
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.source.simulator {
-  color: #9fc1ff;
-  background: rgba(47, 125, 255, 0.18);
-}
-
-.source.analysis {
-  color: #a5f3c7;
-  background: rgba(32, 196, 120, 0.18);
-}
-
 .caret {
   margin-left: auto;
   color: #9aa4b2;
@@ -164,29 +126,6 @@ export default {
 
 .caret.open {
   transform: rotate(180deg);
-}
-
-.planning-status {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 10px 8px;
-  color: #c5cedb;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.pulse {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: #7f8da3;
-  flex: 0 0 auto;
-}
-
-.planning-status.active .pulse {
-  background: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
 }
 
 .planning-body {

@@ -30,8 +30,7 @@ export function computeShowToolPanel({ liveFrame = null } = {}) {
 
 export function computeShowPlanningPanel(planning = null) {
   const steps = Array.isArray(planning?.steps) ? planning.steps : []
-  const statusText = String(planning?.statusText || '').trim()
-  return steps.length > 0 || Boolean(statusText)
+  return steps.length > 0
 }
 
 export function hasRenderableAssistantContent({

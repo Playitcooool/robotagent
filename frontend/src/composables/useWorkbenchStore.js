@@ -448,13 +448,6 @@ async function sendMessage(payload) {
         if (event.type === 'status') {
           const statusText = String(event.text || '').trim()
           if (!statusText) continue
-          planningState.value = normalizePlanningPayload({
-            steps: planningState.value?.steps || [],
-            updatedAt: Date.now() / 1000,
-            statusText,
-            activeSource: event.source || planningState.value?.activeSource || 'main',
-            isActive: true
-          })
           if (event.status_kind === 'search') {
             streamState.loadingKind = 'search'
           } else {
@@ -466,8 +459,8 @@ async function sendMessage(payload) {
           if (idx !== -1) {
             conversation.value[idx].loading = true
             conversation.value[idx].loadingKind = streamState.loadingKind || 'thinking'
-            if (!String(streamState.text || '').trim()) conversation.value[idx].text = statusText
           }
+          maybeStartSimStream(event.source, simFrameSinceTimestamp)
           continue
         }
 
