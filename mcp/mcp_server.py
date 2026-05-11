@@ -231,6 +231,56 @@ def _publish_snapshot(task: str, *, done: bool = False, extra: dict[str, Any] | 
     )
 
 
+# ======================
+# Live frame streaming (background thread)
+# ======================
+_live_stream_thread: threading.Thread | None = None
+_live_stream_stop: threading.Event = threading.Event()
+_LIVE_STREAM_FPS = float(os.environ.get("PYBULLET_LIVE_FPS", "5"))
+
+
+def _live_stream_loop():
+    """Continuously publish frames at configured FPS while simulation is connected."""
+    run_id = str(uuid.uuid4())
+    interval = 1.0 / max(0.5, _LIVE_STREAM_FPS)
+    print(f"[mcp_server] live stream thread started (fps={_LIVE_STREAM_FPS})")
+    while not _live_stream_stop.is_set():
+        try:
+            cid = simulation_instance
+            if cid is not None and p.isConnected(cid):
+                _publish_realtime_frame(
+                    run_id=run_id,
+                    task="live",
+                    step_idx=1,
+                    total_steps=1,
+                    done=False,
+                    extra={"live": True},
+                )
+        except Exception as e:
+            print(f"[mcp_server] live stream error: {e}")
+        _live_stream_stop.wait(interval)
+    print("[mcp_server] live stream thread stopped")
+
+
+def _start_live_stream():
+    global _live_stream_thread
+    if _live_stream_thread is not None and _live_stream_thread.is_alive():
+        return
+    _live_stream_stop.clear()
+    _live_stream_thread = threading.Thread(
+        target=_live_stream_loop, daemon=True, name="pybullet-live-stream"
+    )
+    _live_stream_thread.start()
+
+
+def _stop_live_stream():
+    global _live_stream_thread
+    _live_stream_stop.set()
+    if _live_stream_thread is not None:
+        _live_stream_thread.join(timeout=2.0)
+        _live_stream_thread = None
+
+
 def setup_simulation(gui: bool = False):
     """初始化PyBullet环境，每次调用都创建干净的环境。失败时抛出异常。"""
     global simulation_instance, _plane_body_id
@@ -270,6 +320,8 @@ def setup_simulation(gui: bool = False):
         if _plane_body_id < 0:
             raise RuntimeError("Failed to load plane.urdf")
         _ensure_stream_dir()
+    # Start background live streaming thread (outside the lock to avoid deadlock)
+    _start_live_stream()
 
 
 def ensure_simulation():
@@ -288,6 +340,8 @@ def with_simulation():
 def cleanup_simulation():
     """关闭PyBullet环境，释放所有资源。重试disconnect直到成功。"""
     global simulation_instance, _plane_body_id
+    # Stop live stream first (outside lock)
+    _stop_live_stream()
     with _sim_lock:
         if simulation_instance is not None:
             # 重试disconnect，因为PyBullet偶发报错
