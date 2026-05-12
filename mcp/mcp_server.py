@@ -20,8 +20,9 @@ from pydantic import BaseModel, Field
 # 公共常量和工具函数
 # ======================
 MAX_STEPS_PER_CALL = 10000  # 单次工具调用最多步进数，防止超时
-_sim_lock = threading.Lock()  # 保护 simulation_instance 全局状态
+_sim_lock = threading.RLock()  # 保护 simulation_instance 全局状态和 PyBullet 调用
 _plane_body_id = None  # 跟踪 plane 的 body_id，不假设为 0
+_scene_bounds_cache: dict[str, Any] = {"dirty": True, "aabb": None, "payload": None}
 _camera_state: dict[str, Any] = {
     "mode": "auto",
     "manual_locked": False,
@@ -132,14 +133,22 @@ def _pybullet_asset_status() -> dict[str, bool]:
         return {rel: False for rel in REQUIRED_PYBULLET_ASSETS}
 
 
-def _write_json_atomic(path: Path, payload: dict[str, Any]):
+def _invalidate_scene_bounds():
+    _scene_bounds_cache["dirty"] = True
+    _scene_bounds_cache["aabb"] = None
+    _scene_bounds_cache["payload"] = None
+    _camera_state["scene_bounds"] = None
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any], *, fsync_file: bool = False):
     tmp_id = f"{os.getpid()}.{threading.get_ident()}.{int(time.time() * 1000000)}"
     tmp_path = path.with_suffix(path.suffix + f".{tmp_id}.tmp")
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
             f.flush()
-            os.fsync(f.fileno())
+            if fsync_file:
+                os.fsync(f.fileno())
         os.replace(tmp_path, path)
     except Exception:
         try:
@@ -225,6 +234,21 @@ def _scene_bounds_payload(aabb: tuple[list[float], list[float]] | None) -> dict[
     }
 
 
+def _cached_scene_aabb(cid: int) -> tuple[list[float], list[float]] | None:
+    if _scene_bounds_cache["dirty"]:
+        aabb = _scene_aabb(cid)
+        _scene_bounds_cache["aabb"] = aabb
+        _scene_bounds_cache["payload"] = _scene_bounds_payload(aabb)
+        _scene_bounds_cache["dirty"] = False
+    return _scene_bounds_cache["aabb"]
+
+
+def _cached_scene_bounds_payload(cid: int) -> dict[str, Any] | None:
+    if _scene_bounds_cache["dirty"]:
+        _cached_scene_aabb(cid)
+    return _scene_bounds_cache["payload"]
+
+
 def _eye_from_orbit(target: list[float], yaw: float, pitch: float, distance: float) -> list[float]:
     yaw_rad = np.radians(float(yaw))
     pitch_rad = np.radians(float(pitch))
@@ -253,8 +277,8 @@ def _orbit_from_eye_target(eye: list[float], target: list[float]) -> tuple[float
 
 
 def _auto_camera_from_scene(cid: int, width: int, height: int) -> dict[str, Any]:
-    aabb = _scene_aabb(cid)
-    scene_bounds = _scene_bounds_payload(aabb)
+    aabb = _cached_scene_aabb(cid)
+    scene_bounds = _cached_scene_bounds_payload(cid)
     if aabb is None:
         target = [0.2, 0.0, 0.15]
         radius = 0.8
@@ -325,7 +349,7 @@ def _current_camera_state(cid: int | None = None, width: int = 320, height: int 
         if not bool(_camera_state.get("manual_locked")) and _camera_state.get("mode") == "auto":
             _camera_state.update(_auto_camera_from_scene(cid, width, height))
         else:
-            _camera_state["scene_bounds"] = _scene_bounds_payload(_scene_aabb(cid))
+            _camera_state["scene_bounds"] = _cached_scene_bounds_payload(cid)
     _camera_state.update(_normalize_camera_state(_camera_state))
     return dict(_camera_state)
 
@@ -373,10 +397,15 @@ def _publish_realtime_frame(
     total_steps: int,
     done: bool = False,
     extra: dict[str, Any] | None = None,
+    width: int = 640,
+    height: int = 480,
+    fsync_file: bool = False,
 ):
     _ensure_stream_dir()
     try:
-        rgb = _capture_rgb_frame()
+        with _sim_lock:
+            rgb = _capture_rgb_frame(width=width, height=height)
+            camera = _current_camera_state(simulation_instance, width=width, height=height)
     except Exception:
         return  # simulation not ready; skip silently
     png_bytes = _encode_png_rgb(rgb)
@@ -389,7 +418,7 @@ def _publish_realtime_frame(
         "total_steps": int(total_steps),
         "done": bool(done),
         "timestamp": ts,
-        "camera": _current_camera_state(simulation_instance),
+        "camera": camera,
     }
     if extra:
         payload.update(extra)
@@ -401,7 +430,8 @@ def _publish_realtime_frame(
         with open(tmp_frame, "wb") as f:
             f.write(png_bytes)
             f.flush()
-            os.fsync(f.fileno())
+            if fsync_file:
+                os.fsync(f.fileno())
         os.replace(tmp_frame, LATEST_FRAME_FILE)
     except Exception:
         try:
@@ -410,7 +440,7 @@ def _publish_realtime_frame(
         except Exception:
             pass
         return
-    _write_json_atomic(LATEST_META_FILE, payload)
+    _write_json_atomic(LATEST_META_FILE, payload, fsync_file=fsync_file)
 
 
 def _publish_snapshot(task: str, *, done: bool = False, extra: dict[str, Any] | None = None):
@@ -430,7 +460,8 @@ def _publish_snapshot(task: str, *, done: bool = False, extra: dict[str, Any] | 
 # ======================
 _live_stream_thread: threading.Thread | None = None
 _live_stream_stop: threading.Event = threading.Event()
-_LIVE_STREAM_FPS = float(os.environ.get("PYBULLET_LIVE_FPS", "5"))
+_step_simulation_active = threading.Event()
+_LIVE_STREAM_FPS = float(os.environ.get("PYBULLET_LIVE_FPS", "2"))
 
 
 def _live_stream_loop():
@@ -441,15 +472,17 @@ def _live_stream_loop():
     while not _live_stream_stop.is_set():
         try:
             cid = simulation_instance
-            if cid is not None and p.isConnected(cid):
-                _publish_realtime_frame(
-                    run_id=run_id,
-                    task="live",
-                    step_idx=1,
-                    total_steps=1,
-                    done=False,
-                    extra={"live": True},
-                )
+            if cid is not None and not _step_simulation_active.is_set():
+                with _sim_lock:
+                    if cid == simulation_instance and p.isConnected(cid):
+                        _publish_realtime_frame(
+                            run_id=run_id,
+                            task="live",
+                            step_idx=1,
+                            total_steps=1,
+                            done=False,
+                            extra={"live": True},
+                        )
         except Exception as e:
             print(f"[mcp_server] live stream error: {e}")
         _live_stream_stop.wait(interval)
@@ -505,6 +538,7 @@ def setup_simulation(gui: bool = False):
             simulation_instance = None
             _plane_body_id = None
             _camera_state = dict(_DEFAULT_CAMERA_STATE)
+            _invalidate_scene_bounds()
 
         if gui:
             simulation_instance = p.connect(p.GUI)
@@ -525,6 +559,7 @@ def setup_simulation(gui: bool = False):
         if _plane_body_id < 0:
             raise RuntimeError("Failed to load plane.urdf")
         _camera_state = dict(_DEFAULT_CAMERA_STATE)
+        _invalidate_scene_bounds()
         _ensure_stream_dir()
     # Start background live streaming thread (outside the lock to avoid deadlock)
     _start_live_stream()
@@ -540,7 +575,8 @@ def with_simulation():
     """Context manager that ensures simulation is initialized and yields the correct client ID.
     All PyBullet API calls MUST use this client ID to target the correct simulation instance."""
     ensure_simulation()
-    yield simulation_instance
+    with _sim_lock:
+        yield simulation_instance
 
 
 def cleanup_simulation():
@@ -566,6 +602,7 @@ def cleanup_simulation():
             simulation_instance = None
             _plane_body_id = None
             _camera_state = dict(_DEFAULT_CAMERA_STATE)
+            _invalidate_scene_bounds()
             # 清理帧文件
             try:
                 if LATEST_META_FILE.exists():
@@ -714,6 +751,8 @@ def set_camera_view(args: SetCameraViewArgs):
             state = _current_camera_state(cid)
 
             if action in {"reset_auto", "set_auto", "fit_scene"}:
+                if action == "fit_scene":
+                    _invalidate_scene_bounds()
                 _camera_state = dict(_DEFAULT_CAMERA_STATE)
                 _camera_state["mode"] = "auto"
                 _camera_state["manual_locked"] = False
@@ -965,6 +1004,8 @@ def reset_simulation(args: ResetSimulationArgs):
                     except Exception as e:
                         removed_ids.append(f"error_{body_id}: {e}")
 
+            _invalidate_scene_bounds()
+
         _publish_snapshot("reset_simulation", done=True, extra={"keep_objects": args.keep_objects})
 
         return {
@@ -1117,6 +1158,7 @@ def set_object_position(args: SetObjectPositionArgs):
                 }
             p.resetBasePositionAndOrientation(object_id, args.position, args.orientation, physicsClientId=cid)
             p.resetBaseVelocity(object_id, [0, 0, 0], [0, 0, 0], physicsClientId=cid)
+            _invalidate_scene_bounds()
 
             _publish_snapshot("set_object_position", done=False, extra={"object_id": object_id})
 
@@ -1140,6 +1182,22 @@ class StepSimulationArgs(BaseModel):
         default=1,
         description="执行的仿真步数",
     )
+    publish_frames: bool = Field(
+        default=True,
+        description="是否发布实时预览帧。False 时只推进物理状态，不渲染预览。",
+    )
+    max_preview_frames: int = Field(
+        default=12,
+        description="本次 step 最多发布的预览帧数；最后一帧总会包含最终状态。",
+    )
+    preview_width: int = Field(
+        default=640,
+        description="预览帧宽度，默认 640。",
+    )
+    preview_height: int = Field(
+        default=480,
+        description="预览帧高度，默认 480。",
+    )
 
 
 @mcp_server.tool()
@@ -1153,34 +1211,50 @@ def step_simulation(args: StepSimulationArgs):
     - 实现闭环控制
     """
     steps = max(1, min(int(args.steps), MAX_STEPS_PER_CALL))
+    max_preview_frames = max(1, min(int(args.max_preview_frames), steps))
+    preview_width = max(1, min(int(args.preview_width), 4096))
+    preview_height = max(1, min(int(args.preview_height), 4096))
     try:
+        _step_simulation_active.set()
         with with_simulation() as cid:
-            # Publish frames during stepping so the frontend sees continuous motion
-            # (not a jump from initial to final state).
             run_id = str(uuid.uuid4())
-            # Target ~30fps output. Physics at 240Hz default → 8 steps ~= 33ms sim time.
-            steps_per_frame = max(1, min(8, steps // 20)) if steps >= 20 else 1
-            done_count = 0
-            while done_count < steps:
-                batch = min(steps_per_frame, steps - done_count)
-                _safe_step(cid, batch)
-                done_count += batch
-                _publish_realtime_frame(
-                    run_id=run_id,
-                    task="step_simulation",
-                    step_idx=done_count,
-                    total_steps=steps,
-                    done=(done_count >= steps),
-                )
+            if not bool(args.publish_frames):
+                _safe_step(cid, steps)
+            else:
+                publish_steps = sorted({
+                    max(1, min(steps, round(i * steps / max_preview_frames)))
+                    for i in range(1, max_preview_frames + 1)
+                })
+                if publish_steps[-1] != steps:
+                    publish_steps.append(steps)
+
+                done_count = 0
+                for publish_step in publish_steps:
+                    batch = publish_step - done_count
+                    if batch > 0:
+                        _safe_step(cid, batch)
+                        done_count = publish_step
+                    _publish_realtime_frame(
+                        run_id=run_id,
+                        task="step_simulation",
+                        step_idx=done_count,
+                        total_steps=steps,
+                        done=(done_count >= steps),
+                        width=preview_width,
+                        height=preview_height,
+                    )
 
         return {
             "task": "step_simulation",
             "status": "success",
             "steps": steps,
+            "published_frames": len(publish_steps) if bool(args.publish_frames) else 0,
             "message": f"Executed {steps} simulation steps.",
         }
     except Exception as e:
         raise RuntimeError(f"step_simulation failed: {e}") from e
+    finally:
+        _step_simulation_active.clear()
 
 
 # ======================
@@ -1275,6 +1349,7 @@ def create_object(args: CreateObjectArgs):
                 basePosition=args.position,
                 physicsClientId=cid,
             )
+            _invalidate_scene_bounds()
 
             _publish_snapshot("create_object", done=False, extra={"object_id": object_id})
 
@@ -1353,6 +1428,7 @@ def load_urdf(args: LoadUrdfArgs):
                     "load_failed",
                 )
             num_joints = p.getNumJoints(body_id, physicsClientId=cid)
+            _invalidate_scene_bounds()
             _publish_snapshot("load_urdf", done=False, extra={"object_id": body_id})
             return {
                 "task": "load_urdf",
@@ -1677,6 +1753,7 @@ def delete_object(args: DeleteObjectArgs):
                     "message": f"Object ID {object_id} does not exist. Available IDs: 0 to {p.getNumBodies(physicsClientId=cid) - 1}",
                 }
             p.removeBody(object_id, physicsClientId=cid)
+            _invalidate_scene_bounds()
             return {
                 "task": "delete_object",
                 "status": "success",

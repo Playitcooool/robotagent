@@ -48,7 +48,9 @@ SYSTEM_PROMPT = """
   - 然后调用 grasp_object 抓住
   - 之后再 move_end_effector 到新位置 + step_simulation，物体会跟着走
 - `release_object(object_id)`: 释放物体（移除约束，物体恢复自由落体）
-- `step_simulation(steps)`: 推进物理仿真
+- `step_simulation(steps, publish_frames=true, max_preview_frames=12)`: 推进物理仿真
+  - 机械臂常规动作继续用 steps=200/300；工具会自动发布少量预览帧，不要拆成很多小 step 调用
+  - 只需要快速推进/稳定物理状态时，使用 publish_frames=false；需要更少预览可降低 max_preview_frames
 - `set_camera_view(action, ...)`: 调整实时画面视角。用户说“看不全/调整视角/自动对准/放大/缩小/旋转/平移”时使用。
   - action: "orbit" / "pan" / "zoom" / "reset_auto" / "set_auto"
   - 手动 orbit/pan/zoom 会锁定视角；"reset_auto" 或 "set_auto" 恢复自动对准整个场景

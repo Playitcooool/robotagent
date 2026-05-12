@@ -24,6 +24,7 @@ Gazebo 任务：initialize_ros_connection → 具体工具 → clear_simulation_
 - get_object_state：object_id 是 int（如 1、2），不是字符串
 - set_object_position：position [x, y, z]，orientation [x, y, z, w] 四元数
 - create_object：mass > 0，size 每个元素 > 0
+- step_simulation：常规机械臂动作使用 steps=200/300；默认最多发布 12 张预览帧。快速稳定或只要最终状态时设置 publish_frames=false，不要用多个小 step_simulation 调用模拟动画。
 - 工具返回 dict 时，读取 dict["object_id"]、dict["position"] 等具体字段，不要把整个 dict 当字符串
 - 用户要求最终画面时，优先返回工具生成的 stream_meta_path，并说明最新帧位于共享 realtime frame（latest.png / /api/sim/latest.png）；不要返回 base64。
 
