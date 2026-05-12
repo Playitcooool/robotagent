@@ -96,6 +96,7 @@ class GazeboMCPNode(Node):
         self.unpause_client = self.create_client(Empty, "/unpause_physics")
         self.reset_sim_client = self.create_client(Empty, "/reset_simulation")
         self.reset_world_client = self.create_client(Empty, "/reset_world")
+        self._available_services: set[str] = set()
 
         # State subscribers
         self._lock = threading.Lock()
@@ -226,10 +227,17 @@ class GazeboMCPNode(Node):
     # Synchronous service call helper
     # ------------------------------------------------------------------
     def call_service_sync(self, client, request, timeout: float = 5.0):
-        if not client.wait_for_service(timeout_sec=timeout):
-            raise RuntimeError(
-                f"Service '{client.srv_name}' not available within {timeout}s"
-            )
+        started = time.perf_counter()
+        wait_seconds = 0.0
+        service_name = getattr(client, "srv_name", "")
+        if service_name not in self._available_services:
+            wait_started = time.perf_counter()
+            if not client.wait_for_service(timeout_sec=timeout):
+                raise RuntimeError(
+                    f"Service '{client.srv_name}' not available within {timeout}s"
+                )
+            wait_seconds = time.perf_counter() - wait_started
+            self._available_services.add(service_name)
         future = client.call_async(request)
         event = threading.Event()
         future.add_done_callback(lambda _: event.set())
@@ -238,6 +246,10 @@ class GazeboMCPNode(Node):
                 f"Service call to '{client.srv_name}' timed out after {timeout}s"
             )
         result = future.result()
+        elapsed = time.perf_counter() - started
+        print(
+            f"[gazebo_mcp_server] service={service_name} total_s={elapsed:.4f} wait_s={wait_seconds:.4f}"
+        )
         # 注意：某些ROS2服务可能正常返回空结果，不一定是错误
         return result
 
@@ -252,13 +264,9 @@ _ros_thread: threading.Thread | None = None
 
 def ensure_ros() -> GazeboMCPNode:
     global _ros_node, _ros_executor, _ros_thread
-    # Always create a fresh ROS node to avoid cross-query contamination.
-    # Cleanup any existing node first.
-    if _ros_node is not None or _ros_executor is not None or _ros_thread is not None:
-        try:
-            cleanup_ros()
-        except Exception:
-            pass
+    if _ros_node is not None and _ros_executor is not None and _ros_thread is not None:
+        if _ros_thread.is_alive():
+            return _ros_node
 
     if not rclpy.ok():
         rclpy.init()
@@ -313,10 +321,7 @@ def cleanup_ros():
 @mcp_server.tool()
 def initialize_ros_connection():
     """
-    Initialize a fresh ROS2 node for Gazebo services/topics.
-
-    Always creates a clean ROS2 node, shutting down any existing connection first.
-    Safe to call at the start of each query to ensure a clean state.
+    Initialize or reuse a ROS2 node for Gazebo services/topics.
 
     Returns:
     - task/status
@@ -732,6 +737,7 @@ def reset_simulation():
     """
     node = ensure_ros()
     node.call_service_sync(node.reset_sim_client, Empty.Request())
+    node.clear_state()
     return {"task": "reset_simulation", "status": "success", "message": "Simulation reset."}
 
 
@@ -750,6 +756,7 @@ def reset_world():
     """
     node = ensure_ros()
     node.call_service_sync(node.reset_world_client, Empty.Request())
+    node.clear_state()
     return {"task": "reset_world", "status": "success", "message": "World reset."}
 
 

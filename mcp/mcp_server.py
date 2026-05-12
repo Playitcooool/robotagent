@@ -26,12 +26,11 @@ _scene_bounds_cache: dict[str, Any] = {"dirty": True, "aabb": None, "payload": N
 _camera_state: dict[str, Any] = {
     "mode": "auto",
     "manual_locked": False,
-    "eye": [0.9348, 0.7348, 0.75],
-    "target": [0.2, 0.0, 0.15],
+    "target": [0.0, 0.0, 0.35],
     "yaw": 45.0,
-    "pitch": -30.0,
-    "distance": 1.2,
-    "fov": 60.0,
+    "pitch": -32.0,
+    "distance": 3.5,
+    "fov": 72.0,
     "scene_bounds": None,
 }
 _DEFAULT_CAMERA_STATE = dict(_camera_state)
@@ -116,10 +115,29 @@ REQUIRED_PYBULLET_ASSETS = [
     "cube_small.urdf",
     "kuka_iiwa/model.urdf",
 ]
+PREVIEW_WIDTH = int(os.environ.get("PYBULLET_PREVIEW_WIDTH", "480"))
+PREVIEW_HEIGHT = int(os.environ.get("PYBULLET_PREVIEW_HEIGHT", "360"))
+MAX_PREVIEW_FRAMES = int(os.environ.get("PYBULLET_MAX_PREVIEW_FRAMES", "8"))
+PNG_COMPRESS_LEVEL = max(0, min(9, int(os.environ.get("PYBULLET_PNG_COMPRESS_LEVEL", "1"))))
+SNAPSHOT_DEBOUNCE_SECONDS = max(
+    0.0, float(os.environ.get("PYBULLET_SNAPSHOT_DEBOUNCE_MS", "120")) / 1000.0
+)
 
 
 def _ensure_stream_dir():
     STREAM_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _cleanup_stream_tmp_files():
+    try:
+        _ensure_stream_dir()
+        for path in STREAM_DIR.glob("*.tmp"):
+            try:
+                path.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def _pybullet_asset_status() -> dict[str, bool]:
@@ -176,7 +194,7 @@ def _encode_png_rgb(rgb: np.ndarray) -> bytes:
 
     height, width, _ = rgb.shape
     scanlines = b"".join(b"\x00" + rgb[row].tobytes() for row in range(height))
-    compressed = zlib.compress(scanlines, level=6)
+    compressed = zlib.compress(scanlines, level=PNG_COMPRESS_LEVEL)
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
 
     return (
@@ -280,25 +298,24 @@ def _auto_camera_from_scene(cid: int, width: int, height: int) -> dict[str, Any]
     aabb = _cached_scene_aabb(cid)
     scene_bounds = _cached_scene_bounds_payload(cid)
     if aabb is None:
-        target = [0.2, 0.0, 0.15]
+        target = [0.0, 0.0, 0.35]
         radius = 0.8
     else:
         aabb_min, aabb_max = aabb
         target = [(aabb_min[i] + aabb_max[i]) / 2.0 for i in range(3)]
         extents = [max(0.05, aabb_max[i] - aabb_min[i]) for i in range(3)]
-        radius = float(np.linalg.norm(extents) / 2.0)
-        target[2] = max(target[2], aabb_min[2] + extents[2] * 0.5)
+        radius = max(float(np.linalg.norm(extents) / 2.0), max(extents) * 0.75)
 
-    fov = _clamp(float(_camera_state.get("fov", 60.0)), 25.0, 90.0)
+    fov = _clamp(float(_camera_state.get("fov", 72.0)), 25.0, 90.0)
     aspect = max(0.1, width / max(1, height))
     half_fov = np.radians(fov / 2.0)
     vertical_fit = radius / max(0.1, np.tan(half_fov))
-    horizontal_fit = vertical_fit / max(0.35, aspect)
+    horizontal_fit = radius / max(0.1, np.tan(half_fov) * aspect)
     fit_distance = max(vertical_fit, horizontal_fit)
 
-    distance = _clamp(fit_distance * 2.4, 0.8, 35.0)
-    yaw = float(_DEFAULT_CAMERA_STATE.get("yaw", 45.0))
-    pitch = float(_DEFAULT_CAMERA_STATE.get("pitch", -30.0))
+    distance = _clamp(fit_distance * 5.0, 3.5, 60.0)
+    yaw = float(_camera_state.get("yaw", 45.0))
+    pitch = float(_camera_state.get("pitch", -32.0))
     return {
         "mode": "auto",
         "manual_locked": False,
@@ -320,7 +337,7 @@ def _normalize_camera_state(state: dict[str, Any]) -> dict[str, Any]:
         target = list(_DEFAULT_CAMERA_STATE["target"])
     yaw = float(state.get("yaw", _DEFAULT_CAMERA_STATE["yaw"])) % 360.0
     pitch = _clamp(float(state.get("pitch", _DEFAULT_CAMERA_STATE["pitch"])), -89.0, 89.0)
-    distance = _clamp(float(state.get("distance", _DEFAULT_CAMERA_STATE["distance"])), 0.15, 50.0)
+    distance = _clamp(float(state.get("distance", _DEFAULT_CAMERA_STATE["distance"])), 0.15, 60.0)
     eye = state.get("eye")
     if eye is not None:
         try:
@@ -336,7 +353,7 @@ def _normalize_camera_state(state: dict[str, Any]) -> dict[str, Any]:
         "eye": [float(v) for v in eye],
         "target": [float(v) for v in target],
         "yaw": yaw,
-        "pitch": pitch,
+        "pitch": _clamp(pitch, -89.0, 10.0),
         "distance": distance,
         "fov": _clamp(float(state.get("fov", _DEFAULT_CAMERA_STATE["fov"])), 25.0, 90.0),
         "scene_bounds": state.get("scene_bounds"),
@@ -354,7 +371,7 @@ def _current_camera_state(cid: int | None = None, width: int = 320, height: int 
     return dict(_camera_state)
 
 
-def _capture_rgb_frame(width: int = 800, height: int = 600) -> np.ndarray:
+def _capture_rgb_frame(width: int = PREVIEW_WIDTH, height: int = PREVIEW_HEIGHT) -> np.ndarray:
     cid = simulation_instance
     if cid is None or not p.isConnected(cid):
         # Return black frame if simulation is not connected
@@ -397,8 +414,8 @@ def _publish_realtime_frame(
     total_steps: int,
     done: bool = False,
     extra: dict[str, Any] | None = None,
-    width: int = 640,
-    height: int = 480,
+    width: int = PREVIEW_WIDTH,
+    height: int = PREVIEW_HEIGHT,
     fsync_file: bool = False,
 ):
     _ensure_stream_dir()
@@ -443,6 +460,11 @@ def _publish_realtime_frame(
     _write_json_atomic(LATEST_META_FILE, payload, fsync_file=fsync_file)
 
 
+_snapshot_lock = threading.Lock()
+_snapshot_timer: threading.Timer | None = None
+_snapshot_pending: dict[str, Any] | None = None
+
+
 def _publish_snapshot(task: str, *, done: bool = False, extra: dict[str, Any] | None = None):
     """Publish one snapshot frame for tools that do not iterate steps."""
     _publish_realtime_frame(
@@ -453,6 +475,42 @@ def _publish_snapshot(task: str, *, done: bool = False, extra: dict[str, Any] | 
         done=done,
         extra=extra,
     )
+
+
+def _publish_snapshot_async(task: str, *, done: bool = False, extra: dict[str, Any] | None = None):
+    """Debounced background snapshot for non-critical tool previews."""
+    global _snapshot_timer, _snapshot_pending
+    payload = {"task": task, "done": done, "extra": extra}
+
+    def fire():
+        global _snapshot_timer, _snapshot_pending
+        with _snapshot_lock:
+            current = _snapshot_pending
+            _snapshot_pending = None
+            _snapshot_timer = None
+        if current is not None:
+            _publish_snapshot(current["task"], done=current["done"], extra=current["extra"])
+
+    with _snapshot_lock:
+        _snapshot_pending = payload
+        if _snapshot_timer is not None:
+            _snapshot_timer.cancel()
+        _snapshot_timer = threading.Timer(SNAPSHOT_DEBOUNCE_SECONDS, fire)
+        _snapshot_timer.daemon = True
+        _snapshot_timer.start()
+
+
+def _flush_snapshot_async():
+    global _snapshot_timer, _snapshot_pending
+    with _snapshot_lock:
+        timer = _snapshot_timer
+        current = _snapshot_pending
+        _snapshot_timer = None
+        _snapshot_pending = None
+        if timer is not None:
+            timer.cancel()
+    if current is not None:
+        _publish_snapshot(current["task"], done=current["done"], extra=current["extra"])
 
 
 # ======================
@@ -482,6 +540,8 @@ def _live_stream_loop():
                             total_steps=1,
                             done=False,
                             extra={"live": True},
+                            width=PREVIEW_WIDTH,
+                            height=PREVIEW_HEIGHT,
                         )
         except Exception as e:
             print(f"[mcp_server] live stream error: {e}")
@@ -509,10 +569,12 @@ def _stop_live_stream():
 
 
 def setup_simulation(gui: bool = False):
-    """初始化PyBullet环境，每次调用都创建干净的环境。失败时抛出异常。"""
+    """初始化PyBullet环境，优先复用现有 DIRECT 连接并重置为干净世界。"""
     global simulation_instance, _plane_body_id, _camera_state
     # Stop any existing live stream thread FIRST (before sim instance is torn down)
     _stop_live_stream()
+    _flush_snapshot_async()
+    _cleanup_stream_tmp_files()
     # Delete stale frame files so frontend doesn't see the previous task's scene
     try:
         if LATEST_META_FILE.exists():
@@ -522,8 +584,19 @@ def setup_simulation(gui: bool = False):
     except Exception:
         pass
     with _sim_lock:
-        # 先清理旧环境（如果存在）
-        if simulation_instance is not None:
+        reuse_existing = (
+            not gui
+            and simulation_instance is not None
+            and p.isConnected(simulation_instance)
+        )
+        if reuse_existing:
+            try:
+                p.resetSimulation(physicsClientId=simulation_instance)
+            except Exception:
+                reuse_existing = False
+
+        # 不能复用时再清理旧环境
+        if simulation_instance is not None and not reuse_existing:
             for attempt in range(3):
                 try:
                     if p.isConnected(simulation_instance):
@@ -540,10 +613,11 @@ def setup_simulation(gui: bool = False):
             _camera_state = dict(_DEFAULT_CAMERA_STATE)
             _invalidate_scene_bounds()
 
-        if gui:
-            simulation_instance = p.connect(p.GUI)
-        else:
-            simulation_instance = p.connect(p.DIRECT)
+        if not reuse_existing:
+            if gui:
+                simulation_instance = p.connect(p.GUI)
+            else:
+                simulation_instance = p.connect(p.DIRECT)
 
         # 验证连接成功
         if not p.isConnected(simulation_instance):
@@ -584,6 +658,7 @@ def cleanup_simulation():
     global simulation_instance, _plane_body_id, _camera_state
     # Stop live stream first (outside lock)
     _stop_live_stream()
+    _flush_snapshot_async()
     with _sim_lock:
         if simulation_instance is not None:
             # 重试disconnect，因为PyBullet偶发报错
@@ -611,6 +686,7 @@ def cleanup_simulation():
                     LATEST_FRAME_FILE.unlink()
             except Exception:
                 pass
+            _cleanup_stream_tmp_files()
 
 
 def step(n: int = 240, cid: int | None = None):
@@ -1187,16 +1263,16 @@ class StepSimulationArgs(BaseModel):
         description="是否发布实时预览帧。False 时只推进物理状态，不渲染预览。",
     )
     max_preview_frames: int = Field(
-        default=12,
+        default=MAX_PREVIEW_FRAMES,
         description="本次 step 最多发布的预览帧数；最后一帧总会包含最终状态。",
     )
     preview_width: int = Field(
-        default=640,
-        description="预览帧宽度，默认 640。",
+        default=PREVIEW_WIDTH,
+        description="预览帧宽度。",
     )
     preview_height: int = Field(
-        default=480,
-        description="预览帧高度，默认 480。",
+        default=PREVIEW_HEIGHT,
+        description="预览帧高度。",
     )
 
 
@@ -1211,9 +1287,11 @@ def step_simulation(args: StepSimulationArgs):
     - 实现闭环控制
     """
     steps = max(1, min(int(args.steps), MAX_STEPS_PER_CALL))
-    max_preview_frames = max(1, min(int(args.max_preview_frames), steps))
+    max_preview_frames = max(1, min(int(args.max_preview_frames), steps, MAX_PREVIEW_FRAMES))
     preview_width = max(1, min(int(args.preview_width), 4096))
     preview_height = max(1, min(int(args.preview_height), 4096))
+    started = time.perf_counter()
+    render_seconds = 0.0
     try:
         _step_simulation_active.set()
         with with_simulation() as cid:
@@ -1234,6 +1312,7 @@ def step_simulation(args: StepSimulationArgs):
                     if batch > 0:
                         _safe_step(cid, batch)
                         done_count = publish_step
+                    render_started = time.perf_counter()
                     _publish_realtime_frame(
                         run_id=run_id,
                         task="step_simulation",
@@ -1243,7 +1322,13 @@ def step_simulation(args: StepSimulationArgs):
                         width=preview_width,
                         height=preview_height,
                     )
+                    render_seconds += time.perf_counter() - render_started
 
+        elapsed = time.perf_counter() - started
+        print(
+            f"[mcp_server] tool=step_simulation total_s={elapsed:.4f} "
+            f"render_write_s={render_seconds:.4f} steps={steps} frames={len(publish_steps) if bool(args.publish_frames) else 0}"
+        )
         return {
             "task": "step_simulation",
             "status": "success",
@@ -1351,7 +1436,7 @@ def create_object(args: CreateObjectArgs):
             )
             _invalidate_scene_bounds()
 
-            _publish_snapshot("create_object", done=False, extra={"object_id": object_id})
+            _publish_snapshot_async("create_object", done=False, extra={"object_id": object_id})
 
             return {
                 "task": "create_object",
@@ -1429,7 +1514,7 @@ def load_urdf(args: LoadUrdfArgs):
                 )
             num_joints = p.getNumJoints(body_id, physicsClientId=cid)
             _invalidate_scene_bounds()
-            _publish_snapshot("load_urdf", done=False, extra={"object_id": body_id})
+            _publish_snapshot_async("load_urdf", done=False, extra={"object_id": body_id})
             return {
                 "task": "load_urdf",
                 "status": "success",
@@ -1508,7 +1593,7 @@ def set_joint_positions(args: SetJointPositionsArgs):
                     physicsClientId=cid,
                 )
 
-            _publish_snapshot("set_joint_positions", done=False, extra={"object_id": args.object_id})
+            _publish_snapshot_async("set_joint_positions", done=False, extra={"object_id": args.object_id})
             return {
                 "task": "set_joint_positions",
                 "status": "success",
@@ -1598,7 +1683,7 @@ def move_end_effector(args: MoveEndEffectorArgs):
                     physicsClientId=cid,
                 )
 
-            _publish_snapshot("move_end_effector", done=False, extra={"object_id": args.object_id})
+            _publish_snapshot_async("move_end_effector", done=False, extra={"object_id": args.object_id})
             return {
                 "task": "move_end_effector",
                 "status": "success",
@@ -1677,7 +1762,7 @@ def grasp_object(args: GraspObjectArgs):
                 physicsClientId=cid,
             )
             _active_grasp_constraints[args.object_id] = constraint_id
-            _publish_snapshot("grasp_object", done=False, extra={"object_id": args.object_id})
+            _publish_snapshot_async("grasp_object", done=False, extra={"object_id": args.object_id})
             return {
                 "task": "grasp_object",
                 "status": "success",
@@ -1710,7 +1795,7 @@ def release_object(args: ReleaseObjectArgs):
                 }
             constraint_id = _active_grasp_constraints.pop(args.object_id)
             p.removeConstraint(constraint_id, physicsClientId=cid)
-            _publish_snapshot("release_object", done=False, extra={"object_id": args.object_id})
+            _publish_snapshot_async("release_object", done=False, extra={"object_id": args.object_id})
             return {
                 "task": "release_object",
                 "status": "success",
@@ -1871,6 +1956,7 @@ async def start_mcp_server():
 # Run MCP Server
 # ======================
 if __name__ == "__main__":
+    _cleanup_stream_tmp_files()
     # 显式运行异步事件循环，避免隐式配置问题
     # 启动异步服务并阻塞，直到服务停止
     asyncio.run(start_mcp_server())

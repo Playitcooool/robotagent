@@ -17,19 +17,24 @@ def register_sim_routes(
     sim_frame_file: Path,
     sim_frame_cache: dict[str, Any],
 ):
-    async def call_mcp_tool(tool_name: str, payload: dict[str, Any] | None = None):
-        from fastmcp import Client
-        import yaml as _yaml
-        from pathlib import Path as _Path
+    mcp_camera_lock = asyncio.Lock()
+    mcp_client_state: dict[str, Any] = {"url": None, "client": None, "entered": False}
 
-        config_path = _Path(__file__).resolve().parent.parent / "config" / "config.yml"
+    def resolve_pybullet_mcp_url() -> str:
+        import yaml as _yaml
+
+        config_path = Path(__file__).resolve().parent.parent / "config" / "config.yml"
         with open(config_path, "r", encoding="utf-8") as f:
             cfg = _yaml.load(f.read(), _yaml.FullLoader)
         mcp_cfg = cfg.get("mcp") or {}
         base = str(mcp_cfg.get("ip") or "http://127.0.0.1").rstrip("/")
         port = str(mcp_cfg.get("port") or "18001")
-        url = f"{base}:{port}/mcp"
+        return f"{base}:{port}/mcp"
 
+    async def call_mcp_tool(tool_name: str, payload: dict[str, Any] | None = None):
+        from fastmcp import Client
+
+        url = resolve_pybullet_mcp_url()
         client = Client(url)
         async with client:
             try:
@@ -38,6 +43,28 @@ def register_sim_routes(
                 if payload and "args" not in payload:
                     return await client.call_tool(tool_name, {"args": payload})
                 raise
+
+    async def call_camera_mcp_tool(payload: dict[str, Any]):
+        from fastmcp import Client
+
+        started = time.perf_counter()
+        async with mcp_camera_lock:
+            url = resolve_pybullet_mcp_url()
+            client = mcp_client_state.get("client")
+            if client is None or mcp_client_state.get("url") != url or not mcp_client_state.get("entered"):
+                client = Client(url)
+                await client.__aenter__()
+                mcp_client_state.update({"url": url, "client": client, "entered": True})
+            try:
+                result = await client.call_tool("set_camera_view", payload)
+            except Exception:
+                if "args" not in payload:
+                    result = await client.call_tool("set_camera_view", {"args": payload})
+                else:
+                    raise
+            elapsed = time.perf_counter() - started
+            print(f"[routes_sim] tool=set_camera_view total_s={elapsed:.4f}")
+            return result
 
     def load_latest_frame_payload():
         if not sim_meta_file.exists() or not sim_frame_file.exists():
@@ -110,7 +137,7 @@ def register_sim_routes(
             payload = await request.json()
             if not isinstance(payload, dict):
                 raise ValueError("camera payload must be an object")
-            result = await call_mcp_tool("set_camera_view", payload)
+            result = await call_camera_mcp_tool(payload)
             sim_frame_cache.clear()
             return {"ok": True, "result": jsonable_encoder(result)}
         except Exception as e:

@@ -6,9 +6,8 @@
 
     <div class="results-body">
       <section v-if="liveFrame?.image_url" class="rail-section frame-section">
-        <div class="section-heading">
-          <span>{{ lang === 'zh' ? '仿真画面' : 'Simulation Feed' }}</span>
-          <span v-if="isStale" class="stale-badge">{{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}</span>
+        <div v-if="isStale" class="section-heading">
+          <span class="stale-badge">{{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}</span>
         </div>
         <div class="frame-stage">
           <div
@@ -107,7 +106,11 @@ export default {
       },
       cameraFormTimer: null,
       pendingCameraField: '',
-      syncingCameraForm: false
+      syncingCameraForm: false,
+      lastCameraSignature: '',
+      cameraSendTimer: null,
+      cameraInFlight: false,
+      queuedCameraPayload: null
     }
   },
   setup () {
@@ -122,6 +125,7 @@ export default {
   beforeUnmount () {
     if (this._staleTimer) clearInterval(this._staleTimer)
     if (this.cameraFormTimer) clearTimeout(this.cameraFormTimer)
+    if (this.cameraSendTimer) clearTimeout(this.cameraSendTimer)
   },
   watch: {
     'liveFrame.camera': {
@@ -129,12 +133,15 @@ export default {
         this.syncCameraForm(camera)
       },
       immediate: true,
-      deep: true
+      deep: false
     }
   },
   methods: {
     syncCameraForm (camera) {
       if (!camera) return
+      const signature = this.cameraSignature(camera)
+      if (signature === this.lastCameraSignature) return
+      this.lastCameraSignature = signature
       this.syncingCameraForm = true
       const eye = Array.isArray(camera.eye) ? camera.eye : []
       const target = Array.isArray(camera.target) ? camera.target : []
@@ -156,6 +163,19 @@ export default {
       const num = Number(value)
       if (!Number.isFinite(num)) return fallback
       return Number(num.toFixed(3))
+    },
+    cameraSignature (camera) {
+      const eye = Array.isArray(camera.eye) ? camera.eye : []
+      const target = Array.isArray(camera.target) ? camera.target : []
+      return [
+        camera.mode,
+        ...eye,
+        ...target,
+        camera.distance,
+        camera.yaw,
+        camera.pitch,
+        camera.fov
+      ].map((value) => this.roundCameraValue(value, value ?? '')).join('|')
     },
     queueCameraFormSend (fieldKey) {
       if (this.syncingCameraForm) return
@@ -201,10 +221,6 @@ export default {
       this.cameraDrag.x = event.clientX
       this.cameraDrag.y = event.clientY
 
-      const now = Date.now()
-      if (now - this.lastCameraSend < 40) return
-      this.lastCameraSend = now
-
       if (this.cameraDrag.mode === 'pan') {
         this.sendCameraAction({ action: 'pan', delta_x: -dx, delta_y: dy })
       } else {
@@ -222,6 +238,21 @@ export default {
       this.sendCameraAction({ action: 'zoom', zoom_factor: factor })
     },
     async sendCameraAction (payload) {
+      this.queuedCameraPayload = payload
+      const now = Date.now()
+      const delay = Math.max(0, 90 - (now - this.lastCameraSend))
+      if (this.cameraSendTimer) return
+      this.cameraSendTimer = setTimeout(() => {
+        this.cameraSendTimer = null
+        this.flushCameraAction()
+      }, delay)
+    },
+    async flushCameraAction () {
+      if (this.cameraInFlight || !this.queuedCameraPayload) return
+      const payload = this.queuedCameraPayload
+      this.queuedCameraPayload = null
+      this.cameraInFlight = true
+      this.lastCameraSend = Date.now()
       try {
         this.cameraError = ''
         const response = await fetch('/api/sim/camera', {
@@ -236,6 +267,14 @@ export default {
       } catch (error) {
         this.cameraError = error?.message || String(error)
         console.warn('camera action failed', error)
+      } finally {
+        this.cameraInFlight = false
+        if (this.queuedCameraPayload) {
+          this.cameraSendTimer = setTimeout(() => {
+            this.cameraSendTimer = null
+            this.flushCameraAction()
+          }, 90)
+        }
       }
     }
   },
@@ -269,9 +308,7 @@ export default {
       return this.nowSec - ts > 10
     },
     mjpegUrl () {
-      // Use run_id as cache-buster so stream reconnects when sim is reset
-      const rid = this.liveFrame?.run_id || 'default'
-      return `/api/sim/mjpeg?rid=${encodeURIComponent(rid)}`
+      return '/api/sim/mjpeg'
     }
   }
 }
@@ -290,7 +327,7 @@ export default {
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
-  padding-bottom: 12px;
+  padding-bottom: 8px;
 }
 
 .eyebrow {
@@ -333,9 +370,9 @@ export default {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  display: grid;
-  gap: 16px;
-  padding-right: 4px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .rail-section {
@@ -355,12 +392,11 @@ export default {
 }
 
 .frame-section {
-  gap: 8px;
+  gap: 6px;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   justify-content: center;
-  flex: 1;
   width: 100%;
 }
 
@@ -376,10 +412,9 @@ export default {
   width: 100%;
   max-width: 960px;
   aspect-ratio: 4 / 3;
-  max-height: min(70vh, calc(100vh - 250px));
-  min-height: 300px;
+  max-height: calc(100vh - 170px);
   background: #000;
-  border-radius: 8px;
+  border-radius: 10px;
   overflow: hidden;
   position: relative;
   cursor: grab;
@@ -416,8 +451,9 @@ export default {
 .camera-button {
   display: inline-grid;
   place-items: center;
-  min-width: 30px;
+  min-width: 46px;
   height: 30px;
+  padding: 0 10px;
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   background: rgba(9, 14, 23, 0.78);
