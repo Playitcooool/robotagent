@@ -169,9 +169,31 @@ def _capture_rgb_frame(width: int = 320, height: int = 240) -> np.ndarray:
         # Return black frame if simulation is not connected
         return np.zeros((height, width, 3), dtype=np.uint8)
     aspect = width / max(1, height)
+
+    # Auto-frame: compute bounding box center of all objects
+    num_bodies = p.getNumBodies(physicsClientId=cid)
+    positions = []
+    for body_id in range(num_bodies):
+        try:
+            pos, _ = p.getBasePositionAndOrientation(body_id, physicsClientId=cid)
+            positions.append(pos)
+        except Exception:
+            continue
+    if positions:
+        xs = [p[0] for p in positions]
+        ys = [p[1] for p in positions]
+        zs = [p[2] for p in positions]
+        center = [(min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, (min(zs) + max(zs)) / 2]
+        # Distance based on scene extent (at least 1.2m, scale with spread)
+        spread = max(max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs), 0.5)
+        distance = max(1.2, spread * 1.8)
+    else:
+        center = [0.0, 0.0, 0.2]
+        distance = 1.5
+
     view_matrix = p.computeViewMatrixFromYawPitchRoll(
-        cameraTargetPosition=[0.2, 0.0, 0.2],
-        distance=1.8,
+        cameraTargetPosition=center,
+        distance=distance,
         yaw=45.0,
         pitch=-25.0,
         roll=0.0,
