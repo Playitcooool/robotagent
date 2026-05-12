@@ -170,10 +170,10 @@ def _capture_rgb_frame(width: int = 320, height: int = 240) -> np.ndarray:
         return np.zeros((height, width, 3), dtype=np.uint8)
     aspect = width / max(1, height)
     view_matrix = p.computeViewMatrixFromYawPitchRoll(
-        cameraTargetPosition=[0.0, 0.0, 0.3],
-        distance=2.5,
+        cameraTargetPosition=[0.2, 0.0, 0.2],
+        distance=1.8,
         yaw=45.0,
-        pitch=-30.0,
+        pitch=-25.0,
         roll=0.0,
         upAxisIndex=2,
         physicsClientId=cid,

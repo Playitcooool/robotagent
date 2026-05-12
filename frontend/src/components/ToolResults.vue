@@ -1,18 +1,8 @@
 <template>
   <div class="results-shell">
-    <header class="results-header">
-      <div>
-        <p class="eyebrow">Execution Rail</p>
-        <h2>{{ lang === 'zh' ? '执行结果' : 'Execution Results' }}</h2>
-      </div>
-    </header>
-
     <div class="results-body">
       <section v-if="liveFrame?.image_url" class="rail-section frame-section">
-        <div class="section-heading">
-          <span>{{ lang === 'zh' ? '仿真画面' : 'Simulation Feed' }}</span>
-          <span v-if="isStale" class="stale-badge">{{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}</span>
-        </div>
+        <span v-if="isStale" class="stale-badge">{{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}</span>
         <div class="frame-wrap" @wheel.prevent="onWheel">
           <img
             class="frame-img"
