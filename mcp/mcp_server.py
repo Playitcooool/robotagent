@@ -305,6 +305,16 @@ def _stop_live_stream():
 def setup_simulation(gui: bool = False):
     """初始化PyBullet环境，每次调用都创建干净的环境。失败时抛出异常。"""
     global simulation_instance, _plane_body_id
+    # Stop any existing live stream thread FIRST (before sim instance is torn down)
+    _stop_live_stream()
+    # Delete stale frame files so frontend doesn't see the previous task's scene
+    try:
+        if LATEST_META_FILE.exists():
+            LATEST_META_FILE.unlink()
+        if LATEST_FRAME_FILE.exists():
+            LATEST_FRAME_FILE.unlink()
+    except Exception:
+        pass
     with _sim_lock:
         # 先清理旧环境（如果存在）
         if simulation_instance is not None:
@@ -435,19 +445,9 @@ def initialize_simulation(args: InitializeSimulationArgs = InitializeSimulationA
     if args.gui:
         print("[mcp_server] GUI mode requested but forcing DIRECT mode (no X server in container)")
 
-    # Idempotent: if already initialized, return current state without resetting
-    with _sim_lock:
-        if simulation_instance is not None and p.isConnected(simulation_instance):
-            cid = simulation_instance
-            _publish_snapshot("initialize_simulation", done=False, extra={"status": "already_running"})
-            return {
-                "task": "initialize_simulation",
-                "status": "success",
-                "message": "Simulation already running (reused existing environment).",
-                "physicsClientId": cid,
-                "reused": True,
-            }
-
+    # Always do a fresh setup - ensures new tasks start with a clean scene.
+    # Stale frame files are deleted inside setup_simulation→cleanup to prevent
+    # frontend from showing previous task's screenshot.
     setup_simulation(gui=False)
     _publish_snapshot("initialize_simulation", done=False, extra={"status": "running"})
     asset_status = _pybullet_asset_status()
