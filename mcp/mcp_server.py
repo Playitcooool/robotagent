@@ -654,6 +654,7 @@ def _stop_live_stream():
 def setup_simulation(gui: bool = False):
     """初始化PyBullet环境，优先复用现有 DIRECT 连接并重置为干净世界。"""
     global simulation_instance, _plane_body_id, _camera_state
+    _active_grasp_constraints.clear()
     # Stop any existing live stream thread FIRST (before sim instance is torn down)
     _stop_live_stream()
     _flush_snapshot_async()
@@ -739,6 +740,7 @@ def with_simulation():
 def cleanup_simulation():
     """关闭PyBullet环境，释放所有资源。重试disconnect直到成功。"""
     global simulation_instance, _plane_body_id, _camera_state
+    _active_grasp_constraints.clear()
     # Stop live stream first (outside lock)
     _stop_live_stream()
     _flush_snapshot_async()
@@ -1791,7 +1793,7 @@ class GraspObjectArgs(BaseModel):
         description="Link index of end effector. -1 = last non-fixed link.",
     )
     max_grasp_distance: float = Field(
-        default=0.20,
+        default=0.08,
         description="Maximum allowed distance in meters between end effector and object AABB/center.",
     )
     snap_to_tool: bool = Field(

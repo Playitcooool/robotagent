@@ -267,7 +267,7 @@ Create a single rigid body (cube/sphere/cylinder) with custom mass and color.
 Load a robot or articulated URDF model.
 
 **Parameters:**
-- `urdf_path` (str): Built-in examples include `kuka_iiwa/model.urdf` and `franka_panda/panda.urdf`.
+- `urdf_path` (str): Built-in examples include `kuka_iiwa/model.urdf` and `franka_panda/panda.urdf`. Use KUKA for the current fixed-constraint grasp demo; Panda needs gripper-specific open/close tooling for realistic grasping.
 - `position` (list[3], default=[0,0,0]): Base position.
 - `orientation` (list[4], default=[0,0,0,1]): Base quaternion.
 - `use_fixed_base` (bool, default=True): Keep robot base fixed.
@@ -302,7 +302,7 @@ Attach a nearby object to the selected robot end-effector with a fixed constrain
 - `robot_id` (int): Robot body ID.
 - `object_id` (int): Object body ID to grasp.
 - `end_effector_index` (int, default=-1): Explicit link override; `-1` uses the shared auto-detection used by `move_end_effector`.
-- `max_grasp_distance` (float, default=0.20): Maximum allowed distance from tool to object AABB/center.
+- `max_grasp_distance` (float, default=0.08): Maximum allowed distance from tool to object AABB/center. Keep this tight so objects do not appear to attach from far away.
 - `snap_to_tool` (bool, default=False): Keep the object in place by default so the robot visibly reaches it. Set true only for explicit snap/quick-demo behavior.
 
 **Returns:**
@@ -397,6 +397,11 @@ teleport the object; use `snap_to_tool=true` only when snap-to-gripper behavior
 is explicitly desired. If the object moves before `grasp_object`, the arm path
 or target height is colliding with the object; use a higher pregrasp point and
 keep the grasp target slightly above the object.
+
+For fixed-constraint pick-and-place, prefer `kuka_iiwa/model.urdf`. The bundled
+Panda model exposes a hand/finger structure, but these tools do not yet open and
+close the gripper, so Panda IK may stop too far from the cube for a visually
+credible grasp.
 
 ### Workflow C: Multi-Object Scene Setup
 

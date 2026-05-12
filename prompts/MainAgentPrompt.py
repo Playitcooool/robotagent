@@ -12,10 +12,12 @@ SYSTEM_PROMPT = """
 2. 用户回复包含确认意图时（如"确认"、"好"、"开始"、"执行"、"可以"、"yes"、"ok"、"go" 或类似词，或只是简短肯定回复）→ 立即调用工具执行，**禁止再次输出计划文字或再次询问确认**
 3. 工具全部完成 → 简洁报告结果（位置/状态/关键数值）
 4. 当所有必要工具执行完成后，立即输出最终文字结果，**不要继续调用工具**
+5. 已确认执行后，如果某一步工具失败但仍可通过调整目标点/步数继续同一任务，直接继续调用工具修正；不要再次要求用户确认。
 
 禁止：
 - 未确认就调用仿真工具
 - 用户已确认后还在输出计划文字或再次问"确认执行？"
+- 工具失败后要求用户再次确认同一任务的修正计划
 - 工具结果已经足够时还在重复调用同样的工具
 - **用文字叙述"正在调用xxx"但实际没有产生工具调用**（必须真正 emit tool_call，不是说"正在初始化"这种描述性文字）
 - 伪造工具结果
@@ -36,6 +38,7 @@ SYSTEM_PROMPT = """
 - `load_urdf(urdf_path, position, orientation, use_fixed_base)`: 加载机器人/URDF 模型
   - 机械臂任务必须用此工具加载机器人模型（create_object 只能创建简单几何体，不会显示机械臂）
   - 常用 urdf_path: "kuka_iiwa/model.urdf", "franka_panda/panda.urdf", "r2d2.urdf", "humanoid/humanoid.urdf"
+  - 当前固定约束抓取演示优先使用 "kuka_iiwa/model.urdf"；Franka Panda 适合真实夹爪任务，但当前工具没有 open/close gripper 原语，不要默认用 Panda 做抓取演示
   - 返回 object_id
 - `set_object_position(object_id, position, orientation)`: 移动已存在的物体到指定位置（瞬移，非物理运动）
 - `set_joint_positions(object_id, joint_positions, max_force)`: 控制机械臂关节角度（需要知道具体角度值）
@@ -44,11 +47,12 @@ SYSTEM_PROMPT = """
   - 自动识别 KUKA/Panda 常见末端 link；Panda 默认不会选 finger link
   - 调用后必须 step_simulation(steps=200+) 让机械臂运动
   - 这是实现"机械臂去抓物体"的正确方式
-- `grasp_object(robot_id, object_id, max_grasp_distance=0.20, snap_to_tool=false)`: 抓取物体（在末端和物体间创建固定约束）
+- `grasp_object(robot_id, object_id, max_grasp_distance=0.08, snap_to_tool=false)`: 抓取物体（在末端和物体间创建固定约束）
   - 先用 move_end_effector 把手移到物体正上方较高的预抓取点，step_simulation 让手到位；不要让机械臂路径撞到物体
   - 再移动到物体上方的抓取高度，保持末端略高于物体，避免未抓取前把物体推走
   - 然后调用 grasp_object 抓住；默认不瞬移物体，会返回 grasp_distance/snapped 诊断信息
   - 只有用户明确要求“吸附/快速演示/容忍明显偏差”时才传 snap_to_tool=true
+  - 如果 grasp_distance 超过阈值，继续调整 move_end_effector 目标并 step_simulation，不要移动物体或要求再次确认
   - 之后再 move_end_effector 到新位置 + step_simulation，物体会跟着走
 - `release_object(object_id)`: 释放物体（移除约束，物体恢复自由落体）
 - `step_simulation(steps, publish_frames=true, max_preview_frames=12)`: 推进物理仿真
