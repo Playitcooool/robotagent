@@ -1079,6 +1079,84 @@ def load_urdf(args: LoadUrdfArgs):
 
 
 # ======================
+# Tool: Set Joint Positions (robot arm control)
+# ======================
+class SetJointPositionsArgs(BaseModel):
+    object_id: int = Field(description="Body ID of the robot (from load_urdf).")
+    joint_positions: list[float] = Field(
+        description=(
+            "Target joint angles in radians. Length must match the robot's number of "
+            "controllable joints. For KUKA IIWA: 7 values. For Franka Panda: 7 arm joints "
+            "(ignore finger joints). Values typically in [-3.14, 3.14]."
+        ),
+    )
+    max_force: float = Field(
+        default=500.0,
+        description="Maximum motor force applied to each joint.",
+    )
+
+
+@mcp_server.tool()
+def set_joint_positions(args: SetJointPositionsArgs):
+    """
+    Set target joint positions for a robot arm using position control.
+
+    This makes the robot arm MOVE to the specified joint configuration.
+    After calling this, use step_simulation to let the physics engine
+    actually move the joints (the arm will animate toward the target).
+
+    Typical workflow:
+    1. load_urdf → get robot object_id
+    2. set_joint_positions(object_id, joint_positions=[...]) → set target
+    3. step_simulation(steps=100) → arm moves to target (visible in live feed)
+    4. get_object_state(object_id) → verify final position
+
+    Returns:
+    - joints_set: number of joints controlled
+    """
+    try:
+        with with_simulation() as cid:
+            if not _is_body_valid(cid, args.object_id):
+                return _tool_error(
+                    "set_joint_positions",
+                    f"Object ID {args.object_id} not found.",
+                    "validation",
+                )
+            num_joints = p.getNumJoints(args.object_id, physicsClientId=cid)
+            # Find controllable (non-fixed) joints
+            controllable = []
+            for i in range(num_joints):
+                info = p.getJointInfo(args.object_id, i, physicsClientId=cid)
+                joint_type = info[2]
+                if joint_type != p.JOINT_FIXED:
+                    controllable.append(i)
+
+            positions = args.joint_positions
+            n = min(len(positions), len(controllable))
+            for i in range(n):
+                p.setJointMotorControl2(
+                    bodyUniqueId=args.object_id,
+                    jointIndex=controllable[i],
+                    controlMode=p.POSITION_CONTROL,
+                    targetPosition=positions[i],
+                    force=args.max_force,
+                    physicsClientId=cid,
+                )
+
+            _publish_snapshot("set_joint_positions", done=False, extra={"object_id": args.object_id})
+            return {
+                "task": "set_joint_positions",
+                "status": "success",
+                "object_id": args.object_id,
+                "joints_set": n,
+                "controllable_joints": len(controllable),
+                "message": f"Set {n} joint targets. Call step_simulation to animate.",
+            }
+    except Exception as e:
+        raise RuntimeError(f"set_joint_positions failed: {e}") from e
+
+
+# ======================
 # Tool: Delete Object
 # ======================
 class DeleteObjectArgs(BaseModel):
