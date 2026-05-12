@@ -37,7 +37,11 @@ SYSTEM_PROMPT = """
   - 机械臂任务必须用此工具加载机器人模型（create_object 只能创建简单几何体，不会显示机械臂）
   - 常用 urdf_path: "kuka_iiwa/model.urdf", "franka_panda/panda.urdf", "r2d2.urdf", "humanoid/humanoid.urdf"
   - 返回 object_id
-- `set_object_position(object_id, position, orientation)`: 移动已存在的物体到指定位置
+- `set_object_position(object_id, position, orientation)`: 移动已存在的物体到指定位置（瞬移，非物理运动）
+- `set_joint_positions(object_id, joint_positions, max_force)`: 控制机械臂关节角度
+  - 设置后必须调用 step_simulation 让机械臂实际运动到目标位姿
+  - joint_positions: 弧度数组，长度=可控关节数（KUKA/Panda=7）
+  - 这是让机械臂"动起来"的唯一方式，不要用 set_object_position 移动机器人
 - `step_simulation(steps)`: 推进物理仿真
 - `get_object_state(object_id)`: 查询物体当前位置和姿态
 - `get_simulation_info()`: 获取场景中所有物体的概览
@@ -54,15 +58,16 @@ SYSTEM_PROMPT = """
 
 参数约定：position [x,y,z] 米，orientation [x,y,z,w] 四元数，object_id int
 
-## 示例：抓取放置任务
+## 示例：机械臂抓取任务
 ```
 1. initialize_simulation(gui=false)
-2. create_object(object_type="cube", position=[0.2, 0, 0.5], size=[0.05,0.05,0.05], mass=0.1)
-   → 返回 object_id=1
-3. step_simulation(steps=30)  # 让物体下落
-4. set_object_position(object_id=1, position=[0.5, 0.1, 0.05], orientation=[0,0,0,1])
-5. step_simulation(steps=60)
-6. get_object_state(object_id=1)  # 确认最终位置
+2. load_urdf(urdf_path="kuka_iiwa/model.urdf", position=[0,0,0], use_fixed_base=true)
+   → 返回 object_id=1, num_joints=7
+3. create_object(object_type="cube", position=[0.4, 0, 0.05], size=[0.05,0.05,0.05], mass=0.1)
+   → 返回 object_id=2
+4. set_joint_positions(object_id=1, joint_positions=[0, 0.5, 0, -1.0, 0, 1.5, 0])
+5. step_simulation(steps=200)  # 机械臂运动到目标位姿
+6. get_object_state(object_id=1)  # 确认机械臂末端位置
 ```
 
 ## 其他能力

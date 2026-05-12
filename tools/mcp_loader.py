@@ -29,6 +29,7 @@ CORE_TOOL_NAMES = {
     "initialize_simulation",
     "create_object",
     "load_urdf",
+    "set_joint_positions",
     "set_object_position",
     "step_simulation",
     "get_object_state",
