@@ -14,7 +14,7 @@
           <div class="frame-wrap">
             <img
               class="frame-img"
-              :src="liveFrame.image_url"
+              :src="mjpegUrl"
               :alt="liveFrame.task || 'simulation frame'"
             />
           </div>
@@ -73,6 +73,11 @@ export default {
       if (!ts || !Number.isFinite(ts)) return false
       if (this.liveFrame?.done) return false
       return this.nowSec - ts > 10
+    },
+    mjpegUrl () {
+      // Use run_id as cache-buster so stream reconnects when sim is reset
+      const rid = this.liveFrame?.run_id || 'default'
+      return `/api/sim/mjpeg?rid=${encodeURIComponent(rid)}`
     }
   }
 }

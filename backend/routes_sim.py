@@ -169,3 +169,50 @@ def register_sim_routes(
             return {"ok": True, "message": "Simulation environment cleared"}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    @app.get("/api/sim/mjpeg")
+    async def mjpeg_stream(request: Request):
+        """Serve the simulation frames as an MJPEG (multipart/x-mixed-replace) stream.
+
+        The browser renders this natively via <img src="..."/> with zero flicker,
+        because each new frame atomically replaces the previous pixel buffer.
+        """
+        boundary = b"frame"
+
+        async def generate():
+            last_mtime = 0.0
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    if not sim_frame_file.exists():
+                        await asyncio.sleep(0.1)
+                        continue
+                    mtime = sim_frame_file.stat().st_mtime
+                    if mtime <= last_mtime:
+                        await asyncio.sleep(0.05)
+                        continue
+                    last_mtime = mtime
+                    with open(sim_frame_file, "rb") as f:
+                        data = f.read()
+                    if not data:
+                        await asyncio.sleep(0.05)
+                        continue
+                    yield b"--" + boundary + b"\r\n"
+                    yield b"Content-Type: image/png\r\n"
+                    yield f"Content-Length: {len(data)}\r\n\r\n".encode("ascii")
+                    yield data
+                    yield b"\r\n"
+                except Exception:
+                    await asyncio.sleep(0.1)
+
+        return StreamingResponse(
+            generate(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate, private",
+                "Pragma": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
