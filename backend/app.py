@@ -134,6 +134,10 @@ def _truncate_for_prefill(text: str, max_chars: int) -> str:
     return text[:max_chars].rstrip() + "\n\n[...context truncated for faster prefill...]"
 
 
+AGENT_MODEL_CALL_LIMIT = _env_int("AGENT_MODEL_CALL_LIMIT", 60, minimum=1)
+AGENT_RECURSION_LIMIT = _env_int("AGENT_RECURSION_LIMIT", 120, minimum=2)
+
+
 # ========== 4. 加载工具函数（保留并添加日志） ==========
 def get_tools(enabled_general_tools: set[str] | None = None):
     try:
@@ -249,7 +253,7 @@ async def startup_event():
             ContextEditingMiddleware(
                 edits=[ClearToolUsesEdit(trigger=8000, keep=3, clear_tool_inputs=False)],
             ),
-            ModelCallLimitMiddleware(run_limit=20, exit_behavior="end"),
+            ModelCallLimitMiddleware(run_limit=AGENT_MODEL_CALL_LIMIT, exit_behavior="end"),
         ]
         active_agent = create_agent(
             model=chatBot,
@@ -1129,7 +1133,7 @@ async def chat_send(
                 stream_mode=["messages", "values"],
                 config={
                     "configurable": {"thread_id": f"{user_id}:{session_id}"},
-                    "recursion_limit": 40,
+                    "recursion_limit": AGENT_RECURSION_LIMIT,
                 },
             ):
                 if mode == "messages":
