@@ -170,23 +170,23 @@ def _capture_rgb_frame(width: int = 320, height: int = 240) -> np.ndarray:
         return np.zeros((height, width, 3), dtype=np.uint8)
     aspect = width / max(1, height)
 
-    # Auto-frame: compute bounding box center of all objects
+    # Auto-frame: compute AABB of all objects for proper framing (includes robot arm height)
     num_bodies = p.getNumBodies(physicsClientId=cid)
-    positions = []
+    all_mins = []
+    all_maxs = []
     for body_id in range(num_bodies):
         try:
-            pos, _ = p.getBasePositionAndOrientation(body_id, physicsClientId=cid)
-            positions.append(pos)
+            aabb_min, aabb_max = p.getAABB(body_id, physicsClientId=cid)
+            all_mins.append(aabb_min)
+            all_maxs.append(aabb_max)
         except Exception:
             continue
-    if positions:
-        xs = [p[0] for p in positions]
-        ys = [p[1] for p in positions]
-        zs = [p[2] for p in positions]
-        center = [(min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, (min(zs) + max(zs)) / 2]
-        # Distance based on scene extent (at least 1.2m, scale with spread)
-        spread = max(max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs), 0.5)
-        distance = max(1.2, spread * 1.8)
+    if all_mins:
+        scene_min = [min(m[i] for m in all_mins) for i in range(3)]
+        scene_max = [max(m[i] for m in all_maxs) for i in range(3)]
+        center = [(scene_min[i] + scene_max[i]) / 2 for i in range(3)]
+        spread = max(scene_max[i] - scene_min[i] for i in range(3))
+        distance = max(1.0, spread * 1.5)
     else:
         center = [0.0, 0.0, 0.2]
         distance = 1.5
@@ -1176,6 +1176,97 @@ def set_joint_positions(args: SetJointPositionsArgs):
             }
     except Exception as e:
         raise RuntimeError(f"set_joint_positions failed: {e}") from e
+
+
+# ======================
+# Tool: Move End Effector (IK-based)
+# ======================
+class MoveEndEffectorArgs(BaseModel):
+    object_id: int = Field(description="Body ID of the robot (from load_urdf).")
+    target_position: list[float] = Field(
+        description="Target [x, y, z] position for the end effector in world coordinates.",
+    )
+    end_effector_index: int = Field(
+        default=-1,
+        description="Link index of end effector. -1 = last link (auto-detect).",
+    )
+    max_force: float = Field(default=500.0, description="Motor force per joint.")
+
+
+@mcp_server.tool()
+def move_end_effector(args: MoveEndEffectorArgs):
+    """
+    Move robot end effector to a target position using inverse kinematics.
+
+    This computes the required joint angles automatically and applies position control.
+    After calling this, use step_simulation(steps=200+) to let the arm actually move.
+
+    Use this instead of set_joint_positions when you know WHERE you want the
+    end effector to go but don't know the joint angles.
+
+    Returns:
+    - computed joint_positions
+    - end_effector_link used
+    """
+    try:
+        _validate_vector(args.target_position, "target_position", size=3, allow_negative=True, max_val=100.0)
+    except ValueError as e:
+        return _tool_error("move_end_effector", str(e), "validation")
+
+    try:
+        with with_simulation() as cid:
+            if not _is_body_valid(cid, args.object_id):
+                return _tool_error("move_end_effector", f"Object ID {args.object_id} not found.", "validation")
+
+            num_joints = p.getNumJoints(args.object_id, physicsClientId=cid)
+            # Auto-detect end effector: use last non-fixed link
+            ee_index = args.end_effector_index
+            if ee_index < 0:
+                ee_index = num_joints - 1
+                for i in range(num_joints - 1, -1, -1):
+                    info = p.getJointInfo(args.object_id, i, physicsClientId=cid)
+                    if info[2] != p.JOINT_FIXED:
+                        ee_index = i
+                        break
+
+            # Compute IK
+            joint_positions = p.calculateInverseKinematics(
+                args.object_id,
+                ee_index,
+                args.target_position,
+                physicsClientId=cid,
+            )
+
+            # Apply position control to all controllable joints
+            controllable = []
+            for i in range(num_joints):
+                info = p.getJointInfo(args.object_id, i, physicsClientId=cid)
+                if info[2] != p.JOINT_FIXED:
+                    controllable.append(i)
+
+            n = min(len(joint_positions), len(controllable))
+            for i in range(n):
+                p.setJointMotorControl2(
+                    bodyUniqueId=args.object_id,
+                    jointIndex=controllable[i],
+                    controlMode=p.POSITION_CONTROL,
+                    targetPosition=joint_positions[i],
+                    force=args.max_force,
+                    physicsClientId=cid,
+                )
+
+            _publish_snapshot("move_end_effector", done=False, extra={"object_id": args.object_id})
+            return {
+                "task": "move_end_effector",
+                "status": "success",
+                "object_id": args.object_id,
+                "end_effector_link": ee_index,
+                "target_position": args.target_position,
+                "joint_positions": [round(float(v), 4) for v in joint_positions[:n]],
+                "message": f"IK solved. Call step_simulation(steps=200) to animate arm to target.",
+            }
+    except Exception as e:
+        raise RuntimeError(f"move_end_effector failed: {e}") from e
 
 
 # ======================

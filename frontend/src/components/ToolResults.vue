@@ -2,7 +2,10 @@
   <div class="results-shell">
     <div class="results-body">
       <section v-if="liveFrame?.image_url" class="rail-section frame-section">
-        <span v-if="isStale" class="stale-badge">{{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}</span>
+        <div class="section-heading">
+          <span>{{ lang === 'zh' ? '仿真画面' : 'Simulation Feed' }}</span>
+          <span v-if="isStale" class="stale-badge">{{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}</span>
+        </div>
         <div class="frame-wrap" @wheel.prevent="onWheel">
           <img
             class="frame-img"
