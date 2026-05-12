@@ -105,16 +105,16 @@ def register_sim_routes(
                         idle_ticks = 0
                         last_emit_ts = time.time()
                         yield (
-                            f"event: frame\\ndata: "
-                            f"{json.dumps(payload, ensure_ascii=False)}\\n\\n"
+                            f"event: frame\ndata: "
+                            f"{json.dumps(payload, ensure_ascii=False)}\n\n"
                         )
                     elif current_ts > last_ts:
                         last_ts = current_ts
                         idle_ticks = 0
                         last_emit_ts = time.time()
                         yield (
-                            f"event: frame\\ndata: "
-                            f"{json.dumps(payload, ensure_ascii=False)}\\n\\n"
+                            f"event: frame\ndata: "
+                            f"{json.dumps(payload, ensure_ascii=False)}\n\n"
                         )
                     else:
                         idle_ticks += 1
@@ -123,7 +123,7 @@ def register_sim_routes(
 
                 if idle_ticks >= 100:
                     idle_ticks = 0
-                    yield "event: ping\\ndata: {}\\n\\n"
+                    yield "event: ping\ndata: {}\n\n"
 
                 now = time.time()
                 is_running = payload.get("status") == "running"
@@ -140,6 +140,78 @@ def register_sim_routes(
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.post("/api/sim/reset")
+    async def reset_sim_environment():
+        """Call MCP cleanup_simulation_tool to reset the PyBullet environment.
+        Used by frontend when user starts a new conversation.
+        """
+        try:
+            from fastmcp import Client
+            import yaml as _yaml
+            from pathlib import Path as _Path
+
+            config_path = _Path(__file__).resolve().parent.parent / "config" / "config.yml"
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = _yaml.load(f.read(), _yaml.FullLoader)
+            mcp_cfg = cfg.get("mcp") or {}
+            base = str(mcp_cfg.get("ip") or "http://127.0.0.1").rstrip("/")
+            port = str(mcp_cfg.get("port") or "18001")
+            url = f"{base}:{port}/mcp"
+
+            client = Client(url)
+            async with client:
+                await client.call_tool("cleanup_simulation_tool", {})
+            return {"ok": True, "message": "Simulation environment cleared"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.get("/api/sim/mjpeg")
+    async def mjpeg_stream(request: Request):
+        """Serve the simulation frames as an MJPEG (multipart/x-mixed-replace) stream.
+
+        The browser renders this natively via <img src="..."/> with zero flicker,
+        because each new frame atomically replaces the previous pixel buffer.
+        """
+        boundary = b"frame"
+
+        async def generate():
+            last_mtime = 0.0
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    if not sim_frame_file.exists():
+                        await asyncio.sleep(0.1)
+                        continue
+                    mtime = sim_frame_file.stat().st_mtime
+                    if mtime <= last_mtime:
+                        await asyncio.sleep(0.05)
+                        continue
+                    last_mtime = mtime
+                    with open(sim_frame_file, "rb") as f:
+                        data = f.read()
+                    if not data:
+                        await asyncio.sleep(0.05)
+                        continue
+                    yield b"--" + boundary + b"\r\n"
+                    yield b"Content-Type: image/png\r\n"
+                    yield f"Content-Length: {len(data)}\r\n\r\n".encode("ascii")
+                    yield data
+                    yield b"\r\n"
+                except Exception:
+                    await asyncio.sleep(0.1)
+
+        return StreamingResponse(
+            generate(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate, private",
+                "Pragma": "no-cache",
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no",
             },

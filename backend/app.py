@@ -8,8 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pathlib import Path
 import ast
-from deepagents import create_deep_agent
-from tools.SubAgentTool import init_subagents, _load_agent_experiences, build_experience_suffix
+from langchain.agents import create_agent
+from langchain.agents.middleware.context_editing import (
+    ClearToolUsesEdit,
+    ContextEditingMiddleware,
+)
+from langchain.agents.middleware.model_call_limit import ModelCallLimitMiddleware
+from tools.mcp_loader import load_mcp_tools_progressive
 from prompts.context_loader import ContextLoader
 from prompts.MainAgentPrompt import build_system_prompt_with_context
 import logging
@@ -21,7 +26,6 @@ import time
 from langchain_openai import ChatOpenAI
 import re
 import hashlib
-import httpx
 from prompts import MainAgentPrompt
 from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 from redis.asyncio import Redis
@@ -46,16 +50,13 @@ from backend.stream_utils import (
     extract_message_token_usage,
     extract_message_id,
     sum_usage_map,
+    strip_pseudo_thought_prefix,
 )
 from backend.routes_auth import register_auth_routes
 from backend.routes_sim import register_sim_routes
 from backend.utils.retry import with_retry_async
 from backend.workflow_utils import (
-    extract_chat_history_text,
-    normalize_intent_result,
     restore_env_var,
-    text_claims_simulator_execution,
-    text_waits_for_simulator_result,
 )
 
 os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
@@ -66,7 +67,7 @@ os.environ.setdefault("AUTH_REDIS_URL", "redis://127.0.0.1:6379/2")
 # Shared realtime frame location written by mcp/mcp_server.py
 # Default path points to repo-mounted directory so host and docker can share files.
 ROOT_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_SIM_STREAM_DIR = (ROOT_DIR / "mcp" / ".sim_stream").resolve()
+DEFAULT_SIM_STREAM_DIR = Path("/Volumes/Samsung/Projects/robotagent/mcp/.sim_stream").resolve()
 SIM_STREAM_DIR = Path(
     os.environ.get("PYBULLET_STREAM_DIR", str(DEFAULT_SIM_STREAM_DIR))
 ).resolve()
@@ -95,7 +96,6 @@ AUTH_REDIS_URL = os.environ["AUTH_REDIS_URL"]
 CHAT_HISTORY_PREFIX = "robotagent:chat:messages"
 CHAT_HISTORY_MAX_LEN = int(os.environ.get("CHAT_HISTORY_MAX_LEN", "200"))
 CHAT_SESSIONS_ZSET_PREFIX = "robotagent:chat:sessions"
-PENDING_ACTION_PREFIX = "robotagent:chat:pending_action"
 AUTH_USER_PREFIX = "robotagent:auth:user"
 AUTH_SESSION_PREFIX = "robotagent:auth:session"
 AUTH_SESSION_TTL_SECONDS = int(
@@ -132,75 +132,6 @@ def _truncate_for_prefill(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars].rstrip() + "\n\n[...context truncated for faster prefill...]"
-
-
-# ========== Intent detection via small LLM ==========
-_INTENT_PROMPT = """判断用户意图。根据用户消息、最近对话和待确认动作，输出一个JSON：
-{"simulator_required": true/false, "execution_confirmed": true/false, "pending_action_response": "confirmed|modify|rejected|unclear", "confidence": 0.0-1.0}
-
-规则：
-- simulator_required: 当前用户消息是否需要机器人仿真/执行/物理环境工具。
-- execution_confirmed: 只有待确认动作为 simulator，且当前用户明确同意执行该待确认动作时才为 true。
-- pending_action_response: 当存在待确认动作时，判断当前用户是在确认执行、修改参数、拒绝执行，还是含义不清。
-- 如果待确认动作是“无”，execution_confirmed 必须为 false；用户说“执行一个任务”只表示需要先规划/补齐参数/请求确认。
-- 如果信息不足、用户只是在补充参数、或没有待确认动作，不要把 execution_confirmed 设为 true。
-- 不要依赖固定关键词；结合语义和上下文判断。
-
-只输出JSON，不要其他内容。/no_think"""
-
-
-async def detect_intent(
-    user_message: str,
-    recent_context: str = "",
-    pending_action: str = "",
-) -> dict:
-    """Use small LLM to classify user intent for simulator routing."""
-    url = config.get("intent_model_url", config["model_url"])
-    model = config.get("intent_llm", "Qwen:Qwen3-0.6B")
-    api_key = config.get("intent_api_key", config.get("api_key", "no_need"))
-
-    messages = [
-        {"role": "system", "content": _INTENT_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                f"待确认动作：{pending_action or '无'}\n\n"
-                f"最近对话：{recent_context[:1200]}\n\n"
-                f"当前用户消息：{user_message}"
-            ),
-        },
-    ]
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={"model": model, "messages": messages, "temperature": 0, "max_tokens": 50},
-            )
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"].strip()
-            # Parse JSON from response (handle possible markdown wrapping)
-            content = content.strip("`").removeprefix("json").strip()
-            result = json.loads(content)
-            return normalize_intent_result(
-                result,
-                pending_action,
-                user_message=user_message,
-                recent_context=recent_context,
-            )
-    except Exception as e:
-        logger.warning(f"Intent detection failed, using conservative fallback: {e}")
-        return normalize_intent_result(
-            {
-                "simulator_required": pending_action == "simulator",
-                "execution_confirmed": False,
-                "pending_action_response": "unclear",
-                "confidence": 0.0,
-            },
-            pending_action,
-            user_message=user_message,
-            recent_context=recent_context,
-        )
 
 
 # ========== 4. 加载工具函数（保留并添加日志） ==========
@@ -284,60 +215,13 @@ async def startup_event():
         if not all_tools:
             logger.warning("未加载到任何工具，agent将使用空工具列表")
 
-        # 加载 experience（从 agent_experiences.json）。
-        # 为了降低 prefill，默认不注入；需要时设置 ENABLE_EXPERIENCE=1。
-        # WITHOUT_EXPERIENCE=1 继续作为强制关闭开关。
-        inject_experiences = (
-            _env_bool("ENABLE_EXPERIENCE", False)
-            and not _env_bool("WITHOUT_EXPERIENCE", False)
-        )
-        if inject_experiences:
-            experiences = _load_agent_experiences()
-            logger.info(f"已加载 {len(experiences)} 条 agent experiences")
-        else:
-            experiences = []
-            logger.info("已跳过 experience 注入；设置 ENABLE_EXPERIENCE=1 可开启")
+        # 加载 MCP 工具（直接挂载到主代理）
+        mcp_tools = await load_mcp_tools_progressive()
+        all_tools = all_tools + mcp_tools
+        search_tools = search_tools + mcp_tools
+        logger.info(f"已加载 {len(mcp_tools)} 个 MCP 工具")
 
-        subagents = list(
-            await init_subagents(
-                experiences=experiences,
-                max_experiences_in_subagent=_env_int(
-                    "MAX_EXPERIENCES_IN_SUBAGENT", 3, minimum=0
-                ),
-            )
-        )
-
-        def _subagent_name(sa) -> str:
-            if isinstance(sa, dict):
-                return str(sa.get("name") or "").strip()
-            return str(getattr(sa, "name", "") or "").strip()
-
-        available_subagents = [_subagent_name(sa) for sa in subagents]
-        available_subagents = [n for n in available_subagents if n]
-        logger.info(f"可用子代理：{available_subagents}")
-
-        prompt_suffix = (
-            "\n\n[Runtime Subagent Availability]\n"
-            f"- Available subagents now: {available_subagents or ['none']}\n"
-        )
-        if "simulator" not in available_subagents:
-            prompt_suffix += (
-                "- simulator is currently unavailable. "
-                "Do NOT invoke simulator. "
-                "For simulation requests, first explain simulator is unavailable and ask user to start MCP services.\n"
-            )
-        if "data-analyzer" not in available_subagents:
-            prompt_suffix += (
-                "- data-analyzer is currently unavailable. "
-                "Do NOT invoke data-analyzer.\n"
-            )
-
-        # 注入 experience 到 MainAgent（simulation 和 analysis subagent 已通过 init_subagents 注入）
-        # 注意：MainAgent 只接收 main_agent 的经验，不接收 simulation/analysis 的经验，避免干扰
-        if experiences:
-            exp_suffix = build_experience_suffix(experiences, agent_filter="main")
-        else:
-            exp_suffix = ""
+        prompt_suffix = ""
 
         # 加载 robot_context.md
         context = context_loader.load_context() if context_loader else ""
@@ -350,10 +234,7 @@ async def startup_event():
         runtime_system_prompt = build_system_prompt_with_context(
             MainAgentPrompt.SYSTEM_PROMPT,
             context,
-            _truncate_for_prefill(
-                exp_suffix,
-                _env_int("MAIN_EXPERIENCE_MAX_CHARS", 1500, minimum=0),
-            )
+            "",
         ) + prompt_suffix
 
         # 创建带工具的agent（核心修正）
@@ -363,18 +244,25 @@ async def startup_event():
             agent_checkpointer_cm = AsyncRedisSaver.from_conn_string(DB_URI)
             checkpointer = await agent_checkpointer_cm.__aenter__()
             await checkpointer.asetup()
-        active_agent = create_deep_agent(
+        # Middleware: context editing (trim old tool outputs) + model call limit (prevent runaway)
+        agent_middleware = [
+            ContextEditingMiddleware(
+                edits=[ClearToolUsesEdit(trigger=8000, keep=3, clear_tool_inputs=False)],
+            ),
+            ModelCallLimitMiddleware(run_limit=20, exit_behavior="end"),
+        ]
+        active_agent = create_agent(
             model=chatBot,
             tools=all_tools,
             system_prompt=runtime_system_prompt,
-            subagents=subagents,
+            middleware=agent_middleware,
             checkpointer=checkpointer,
         )
-        active_search_agent = create_deep_agent(
+        active_search_agent = create_agent(
             model=chatBot,
             tools=search_tools,
             system_prompt=runtime_system_prompt,
-            subagents=subagents,
+            middleware=agent_middleware,
             checkpointer=checkpointer,
         )
         logger.info("Agent 初始化成功！")
@@ -426,10 +314,6 @@ def _chat_sessions_key(user_id: str) -> str:
     return f"{CHAT_SESSIONS_ZSET_PREFIX}:{user_id}"
 
 
-def _pending_action_key(user_id: str, session_id: str) -> str:
-    return f"{PENDING_ACTION_PREFIX}:{user_id}:{session_id}"
-
-
 def _auth_user_key(username: str) -> str:
     return f"{AUTH_USER_PREFIX}:{username.lower()}"
 
@@ -455,44 +339,6 @@ async def _append_chat_message(user_id: str, session_id: str, role: str, text: s
     await chat_redis.zadd(_chat_sessions_key(user_id), {session_id: now_ts})
 
 
-async def _get_pending_action(user_id: str, session_id: str) -> str:
-    if chat_redis is None:
-        return ""
-    raw = await chat_redis.get(_pending_action_key(user_id, session_id))
-    if raw is None:
-        return ""
-    if isinstance(raw, bytes):
-        raw = raw.decode("utf-8", errors="ignore")
-    try:
-        payload = json.loads(raw)
-    except Exception:
-        return ""
-    return _normalize_text(payload.get("action") or "").strip()
-
-
-async def _set_pending_action(
-    user_id: str,
-    session_id: str,
-    action: str,
-    summary: str = "",
-) -> None:
-    if chat_redis is None:
-        return
-    payload = {
-        "action": action,
-        "summary": _truncate_text(_normalize_text(summary).strip(), max_len=600),
-        "created_at": time.time(),
-    }
-    await chat_redis.set(
-        _pending_action_key(user_id, session_id),
-        json.dumps(payload, ensure_ascii=False),
-        ex=3600,
-    )
-
-
-async def _clear_pending_action(user_id: str, session_id: str) -> None:
-    if chat_redis is not None:
-        await chat_redis.delete(_pending_action_key(user_id, session_id))
 
 # bind extracted module helpers so endpoint logic uses modularized implementations
 _validate_username = validate_username
@@ -821,69 +667,44 @@ async def chat_send(
     search_enabled = bool(enabled_tools & {"search", "academic_search", "web_search"})
     user_id = current_user.get("uid", "unknown")
 
-    # Use small LLM for intent detection; pending actions carry plan/execute state.
-    recent_context_messages = []
-    if chat_redis:
-        key = _chat_history_key(user_id, session_id)
-        recent = await chat_redis.lrange(key, -12, -1)
-        for item in reversed(recent or []):
-            try:
-                parsed = json.loads(item)
-                content = _normalize_text(extract_chat_history_text(parsed)).strip()
-                if not content:
+    # Task 1: Confirmation detection - if prev assistant asked "确认?" and user confirms
+    confirmation_detected = False
+    if chat_redis is not None:
+        try:
+            key = _chat_history_key(user_id, session_id)
+            recent_raw = await chat_redis.lrange(key, -2, -1)
+            last_assistant_text = ""
+            for item in recent_raw:
+                try:
+                    parsed = json.loads(item)
+                    if parsed.get("role") == "assistant":
+                        last_assistant_text = str(parsed.get("text") or "")
+                except Exception:
                     continue
-                role = parsed.get("role")
-                if role in {"assistant", "user"}:
-                    recent_context_messages.append(f"{role}: {content}")
-            except Exception:
-                continue
-    recent_context = "\n\n".join(recent_context_messages[:6])
-    pending_action = await _get_pending_action(user_id, session_id)
-
-    intent = await detect_intent(user_message, recent_context, pending_action)
-    simulator_required = intent["simulator_required"]
-    simulator_execution_confirmed = intent["execution_confirmed"]
-    if simulator_execution_confirmed and pending_action != "simulator":
-        logger.warning(
-            "Intent execution confirmation ignored without pending simulator action user=%s session=%s pending_action=%s pending_response=%s confidence=%s message_preview=%r",
-            user_id,
-            session_id,
-            pending_action or "none",
-            intent.get("pending_action_response"),
-            intent.get("confidence"),
-            _truncate_text(user_message, max_len=220),
-        )
-        simulator_execution_confirmed = False
-    if (
-        simulator_execution_confirmed
-        and pending_action == "simulator"
-        and not simulator_required
-    ):
-        logger.warning(
-            "Intent inconsistency normalized: execution_confirmed=true but simulator_required=false user=%s session=%s pending_action=%s pending_response=%s confidence=%s message_preview=%r",
-            user_id,
-            session_id,
-            pending_action or "none",
-            intent.get("pending_action_response"),
-            intent.get("confidence"),
-            _truncate_text(user_message, max_len=220),
-        )
-        simulator_required = True
-    logger.info(
-        "Intent detected: simulator_required=%s execution_confirmed=%s pending_action=%s pending_response=%s confidence=%s context_chars=%s",
-        simulator_required,
-        simulator_execution_confirmed,
-        pending_action or "none",
-        intent.get("pending_action_response"),
-        intent.get("confidence"),
-        len(recent_context),
-    )
+            assistant_asked = bool(
+                last_assistant_text
+                and re.search(
+                    r"(确认|confirm|开始|execute|proceed)[^。\n]{0,10}[?？]",
+                    last_assistant_text[-200:], re.IGNORECASE,
+                )
+            )
+            user_confirmed = bool(
+                re.search(
+                    r"^\s*(确认|好|好的|可以|开始|执行|继续|go|ok|okay|yes|y|confirm|proceed|行|对)\s*[。！!.]?\s*$",
+                    user_message.strip(), re.IGNORECASE,
+                )
+                or re.search(r"(确认执行|开始执行|请执行)", user_message)
+            )
+            confirmation_detected = assistant_asked and user_confirmed
+            if confirmation_detected:
+                logger.info(
+                    "[confirm-detect] user confirmed user=%s session=%s",
+                    user_id, session_id,
+                )
+        except Exception as e:
+            logger.warning(f"Confirmation detection failed: {e}")
 
     await _append_chat_message(user_id, session_id, "user", user_message)
-    if simulator_execution_confirmed:
-        await _clear_pending_action(user_id, session_id)
-    elif pending_action == "simulator" and intent.get("pending_action_response") == "rejected":
-        await _clear_pending_action(user_id, session_id)
 
     # 核心修正：使用全局的active_agent，而非初始空工具的agent
     selected_agent = active_search_agent if search_enabled else active_agent
@@ -926,17 +747,11 @@ async def chat_send(
         current_planning_steps = []
         current_status_text = ""
         current_status_source = "main"
-        simulator_activity_seen = False
-        simulator_tool_activity_seen = False
-        simulator_task_call_seen = False
-        last_simulator_output_text = ""
-        stream_started_at = time.time()
         pending_answer_whitespace_by_source: dict[str, str] = {}
         debug_msg_count = 0
         stream_message_events = 0
         stream_values_events = 0
         tool_names_seen: set[str] = set()
-        simulator_tool_names_seen: set[str] = set()
         debug_stream_token_counts: dict[str, int] = {}
         try:
             analysis_tool_names = set(getattr(AnalysisTool, "__all__", []))
@@ -1085,21 +900,6 @@ async def chat_send(
                 if m:
                     return m.group(1).strip()
                 return text
-
-            def _sim_frame_received_since_start() -> bool:
-                if not SIM_META_FILE.exists() or not SIM_FRAME_FILE.exists():
-                    return False
-                try:
-                    frame_mtime = SIM_FRAME_FILE.stat().st_mtime
-                except Exception:
-                    frame_mtime = 0.0
-                try:
-                    with open(SIM_META_FILE, "r", encoding="utf-8") as f:
-                        meta = json.load(f)
-                    meta_ts = float(meta.get("timestamp") or 0.0)
-                except Exception:
-                    meta_ts = 0.0
-                return max(frame_mtime, meta_ts) >= stream_started_at - 1.0
 
             def _extract_web_search_refs(raw_text: str):
                 text = _normalize_text(raw_text).strip()
@@ -1303,92 +1103,34 @@ async def chat_send(
                     "is_active": bool(is_active),
                 }
 
-            def _message_has_simulator_task_call(message) -> bool:
-                candidates = []
-                if isinstance(message, dict):
-                    candidates.extend(
-                        [
-                            message.get("tool_calls"),
-                            message.get("invalid_tool_calls"),
-                            (message.get("additional_kwargs") or {}).get("tool_calls")
-                            if isinstance(message.get("additional_kwargs"), dict)
-                            else None,
-                        ]
-                    )
-                else:
-                    candidates.extend(
-                        [
-                            getattr(message, "tool_calls", None),
-                            getattr(message, "invalid_tool_calls", None),
-                        ]
-                    )
-                    additional_kwargs = getattr(message, "additional_kwargs", None)
-                    if isinstance(additional_kwargs, dict):
-                        candidates.append(additional_kwargs.get("tool_calls"))
-
-                for raw_calls in candidates:
-                    if not isinstance(raw_calls, list):
-                        continue
-                    for call in raw_calls:
-                        if not isinstance(call, dict):
-                            continue
-                        name = call.get("name")
-                        args = call.get("args") or call.get("arguments")
-                        function = call.get("function")
-                        if isinstance(function, dict):
-                            name = name or function.get("name")
-                            args = args or function.get("arguments")
-                        if name != "task":
-                            continue
-                        parsed_args = args
-                        if isinstance(args, str):
-                            parsed_args = None
-                            for parser in (json.loads, ast.literal_eval):
-                                try:
-                                    parsed_args = parser(args)
-                                    break
-                                except Exception:
-                                    continue
-                        if (
-                            isinstance(parsed_args, dict)
-                            and parsed_args.get("subagent_type") == "simulator"
-                        ):
-                            return True
-                return False
-
-            runtime_tool_note = (
-                "本轮可用工具：search（智能搜索，同时支持学术论文和网页）。请自主判断并调用 search。"
-                if search_enabled
-                else "本轮禁用工具：search。"
-            )
-            if simulator_required and simulator_execution_confirmed:
-                runtime_tool_note += (
-                    "\n本轮是机器人仿真/执行任务：必须立即调用 task(subagent_type=\"simulator\", "
-                    "description=\"...\")。禁止只用文字声称已委托、正在执行或等待结果。"
-                )
-            elif simulator_required:
-                runtime_tool_note += (
-                    "\n本轮是机器人仿真规划请求：先给出简短计划、你选择的关键参数和确认问题；"
-                    "未收到用户明确确认前不要调用 simulator。"
-                    "注意：你必须在最终回复中输出文字给用户（计划摘要+确认问题），不能只调用工具就结束。"
-                )
-            input_messages = [
-                {"role": "system", "content": runtime_tool_note},
-                {"role": "user", "content": user_message},
-            ]
+            # Only inject runtime note if search is enabled (it affects current turn's tool set).
+            # Otherwise rely on the agent's system_prompt (set at create_agent time) + checkpointer history.
+            input_messages = []
+            if search_enabled:
+                input_messages.append({
+                    "role": "system",
+                    "content": "本轮可用工具：search（智能搜索）。请自主判断并调用。",
+                })
+            if confirmation_detected:
+                input_messages.append({
+                    "role": "system",
+                    "content": "用户已确认执行上一条计划。立即调用仿真工具执行，不要再输出计划文字或再次询问确认。",
+                })
+            input_messages.append({"role": "user", "content": user_message})
             # 同时订阅 messages(增量token) 与 values(状态事件)，保证前端实时流式显示。
             logger.info(
-                "[chat-stream] start user=%s session=%s search=%s simulator_required=%s execution_confirmed=%s",
+                "[chat-stream] start user=%s session=%s search=%s",
                 user_id,
                 session_id,
                 search_enabled,
-                simulator_required,
-                simulator_execution_confirmed,
             )
             async for mode, event in selected_agent.astream(
                 {"messages": input_messages},
                 stream_mode=["messages", "values"],
-                config={"configurable": {"thread_id": f"{user_id}:{session_id}"}},
+                config={
+                    "configurable": {"thread_id": f"{user_id}:{session_id}"},
+                    "recursion_limit": 40,
+                },
             ):
                 if mode == "messages":
                     stream_message_events += 1
@@ -1409,87 +1151,12 @@ async def chat_send(
                             )
                     role_name = _normalize_message_role(msg)
                     source = _resolve_agent_source(_meta)
-                    if source == "simulator":
-                        simulator_activity_seen = True
                     if role_name in {"assistant", "ai"}:
                         msg_id = _extract_message_id(msg)
                         if msg_id:
                             message_source_by_id[msg_id] = source
-                        if _message_has_simulator_task_call(msg):
-                            simulator_task_call_seen = True
-                            logger.info(
-                                "[chat-stream] simulator task call detected user=%s session=%s message_id=%s",
-                                user_id,
-                                session_id,
-                                msg_id or "unknown",
-                            )
-                            status_text = "正在调用 simulator 执行仿真..."
-                            signature = f"task-call:{status_text}"
-                            if signature != last_status_signature:
-                                last_status_signature = signature
-                                current_status_text = status_text
-                                current_status_source = "simulator"
-                                yield json.dumps(
-                                    {
-                                        "type": "status",
-                                        "text": status_text,
-                                        "source": "simulator",
-                                        "status_kind": "tool",
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n"
-                                yield json.dumps(
-                                    _build_planning_payload(
-                                        current_planning_steps,
-                                        current_status_text,
-                                        current_status_source,
-                                        True,
-                                    ),
-                                    ensure_ascii=False,
-                                ) + "\n"
-                    if role_name in {"assistant", "ai"} and not _is_main_agent_message(_meta):
-                        node = ""
-                        path_text = ""
-                        if isinstance(_meta, dict):
-                            node = str(_meta.get("langgraph_node") or "")
-                            raw_path = _meta.get("langgraph_path")
-                            if isinstance(raw_path, (list, tuple)):
-                                path_text = "/".join(str(x) for x in raw_path)
-                            elif raw_path is not None:
-                                path_text = str(raw_path)
-
-                        target = ""
-                        lowered_path = path_text.lower()
-                        if "simulator" in lowered_path:
-                            target = "simulator"
-                        elif "data-analyzer" in lowered_path:
-                            target = "data-analyzer"
-
-                        if target:
-                            status_text = f"已转交 {target} 执行，正在处理中..."
-                        elif node and node != "model":
-                            status_text = f"正在执行节点：{node}"
-                        else:
-                            status_text = "正在调用子代理执行任务..."
-
-                        signature = f"subagent:{status_text}"
-                        if signature != last_status_signature:
-                            last_status_signature = signature
-                            current_status_text = status_text
-                            current_status_source = source
-                            yield json.dumps(
-                                {"type": "status", "text": status_text, "source": source},
-                                ensure_ascii=False,
-                            ) + "\n"
-                            yield json.dumps(
-                                _build_planning_payload(
-                                    current_planning_steps,
-                                    current_status_text,
-                                    current_status_source,
-                                    True,
-                                ),
-                                ensure_ascii=False,
-                            ) + "\n"
+                    # (Subagent transfer-status handling removed - no more task-based subagents
+                    # for simulator; MCP tools are called directly by main agent.)
 
                     if role_name in {"assistant", "ai"}:
                         thinking_text = _extract_thinking_from_message(msg)
@@ -1563,12 +1230,7 @@ async def chat_send(
                                 if len(think_tag_delta) > max(remain, 0):
                                     thinking_truncated = True
 
-                            suppress_confirmed_main_text = (
-                                simulator_required
-                                and simulator_execution_confirmed
-                                and source == "main"
-                            )
-                            if answer_delta and not suppress_confirmed_main_text:
+                            if answer_delta:
                                 if not answer_delta.strip():
                                     pending_answer_whitespace_by_source[source] = (
                                         pending_answer_whitespace_by_source.get(source, "")
@@ -1579,8 +1241,18 @@ async def chat_send(
                                     pending_answer_whitespace_by_source.pop(source, "")
                                     + answer_delta
                                 )
+                                # Strip pseudo-thought labels at the very start of main stream.
+                                if source == "main" and not main_stream_text.strip():
+                                    candidate = main_stream_text + emit_delta
+                                    stripped = strip_pseudo_thought_prefix(candidate)
+                                    if stripped != candidate:
+                                        # Everything so far was pseudo-label; reset and drop it
+                                        emit_delta = stripped
+                                        main_stream_text = ""
                                 if source == "main":
                                     main_stream_text += emit_delta
+                                if not emit_delta:
+                                    continue
                                 _debug_stream_token(
                                     source=source,
                                     channel="answer",
@@ -1601,10 +1273,6 @@ async def chat_send(
                     if role_name == "tool" and source in {"simulator", "analysis"}:
                         tool_name = _extract_message_name(msg)
                         if tool_name and tool_name != "task":
-                            simulator_activity_seen = True
-                            if source == "simulator":
-                                simulator_tool_activity_seen = True
-                                simulator_tool_names_seen.add(tool_name)
                             tool_names_seen.add(tool_name)
                             logger.info(
                                 "[chat-stream] subagent tool message user=%s session=%s source=%s tool=%s",
@@ -1758,56 +1426,55 @@ async def chat_send(
                             )
 
                         if name_msg == "write_todos":
-                            planning_steps = _extract_planning_steps_from_write_todos(
-                                content_msg
-                            )
-                            status_text = "正在规划执行步骤..."
-                            signature = f"tool:{name_msg}:{status_text}"
-                            if signature != last_status_signature:
-                                last_status_signature = signature
-                                current_status_text = status_text
-                                current_status_source = "main"
-                                yield json.dumps(
-                                    {"type": "status", "text": status_text, "source": "main"},
-                                    ensure_ascii=False,
-                                ) + "\n"
-                                yield json.dumps(
-                                    _build_planning_payload(
-                                        current_planning_steps,
-                                        current_status_text,
-                                        current_status_source,
-                                        True,
-                                    ),
-                                    ensure_ascii=False,
-                                ) + "\n"
-                            if planning_steps:
-                                signature = json.dumps(
-                                    planning_steps, ensure_ascii=False, sort_keys=True
-                                )
-                                if signature != last_planning_signature:
-                                    last_planning_signature = signature
-                                    current_planning_steps = planning_steps
-                                    planning_payload = _build_planning_payload(
-                                        current_planning_steps,
-                                        current_status_text,
-                                        current_status_source,
-                                        True,
-                                    )
-                                    yield json.dumps(
-                                        planning_payload, ensure_ascii=False
-                                    ) + "\n"
-                            # write_todos 属于 planning 源，不写入右侧工具时间轴，避免重复展示。
                             continue
 
-                        # Timeline output disabled by product requirement.
+                        # Auto-generate planning steps from tool calls
                         tool_source = _resolve_tool_source(name_msg)
-                        if tool_source == "simulator":
-                            simulator_activity_seen = True
-                            if name_msg != "task":
-                                simulator_tool_activity_seen = True
-                                simulator_tool_names_seen.add(name_msg or "unknown")
                         if name_msg:
                             tool_names_seen.add(name_msg)
+
+                        # For simulation tools, auto-track as planning steps (dedup by name)
+                        if tool_source == "simulator" and name_msg:
+                            # Find existing step for this tool name
+                            existing_step = None
+                            for step in current_planning_steps:
+                                if step.get("step") == name_msg:
+                                    existing_step = step
+                                    break
+
+                            if existing_step is None:
+                                # Mark previous in_progress as completed
+                                for step in current_planning_steps:
+                                    if step.get("status") == "in_progress":
+                                        step["status"] = "completed"
+                                current_planning_steps.append({
+                                    "id": str(len(current_planning_steps) + 1),
+                                    "step": name_msg,
+                                    "status": "in_progress",
+                                })
+                            else:
+                                # Reuse existing step, mark others completed
+                                for step in current_planning_steps:
+                                    if step is not existing_step and step.get("status") == "in_progress":
+                                        step["status"] = "completed"
+                                existing_step["status"] = "in_progress"
+
+                            current_status_text = f"正在执行：{name_msg}"
+                            current_status_source = "simulator"
+                            yield json.dumps(
+                                {"type": "status", "text": current_status_text, "source": "simulator"},
+                                ensure_ascii=False,
+                            ) + "\n"
+                            yield json.dumps(
+                                _build_planning_payload(
+                                    current_planning_steps,
+                                    current_status_text,
+                                    current_status_source,
+                                    True,
+                                ),
+                                ensure_ascii=False,
+                            ) + "\n"
+
                         is_web_search_tool = name_msg == "web_search"
                         is_academic_search_tool = name_msg == "academic_search"
                         is_unified_search_tool = name_msg == "search"
@@ -1819,8 +1486,6 @@ async def chat_send(
                             if is_academic_search_tool
                             else "联网搜索中..."
                             if is_web_search_tool
-                            else "仿真子代理执行中..."
-                            if name_msg == "task"
                             else f"正在执行：{name_msg or 'tool'}"
                         )
                         signature = f"tool:{name_msg}:{_truncate_text(_normalize_text(content_msg), max_len=60)}"
@@ -1925,16 +1590,6 @@ async def chat_send(
                                 flags=re.IGNORECASE,
                             ).strip()
                             tool_text = _extract_tool_display_text(tool_text)
-                            if tool_source == "simulator" and tool_text:
-                                last_simulator_output_text = tool_text
-                                logger.info(
-                                    "[chat-stream] simulator tool output user=%s session=%s tool=%s output_chars=%s output_preview=%r",
-                                    user_id,
-                                    session_id,
-                                    name_msg or "unknown",
-                                    len(tool_text),
-                                    _truncate_text(tool_text, max_len=220),
-                                )
 
                             output_signature = (
                                 f"{tool_source}:{name_msg}:"
@@ -1983,8 +1638,7 @@ async def chat_send(
                     main_latest_text = _normalize_text(content)
 
             # Fallback: if no/partial incremental output was emitted, flush final text.
-            skip_main_fallback = simulator_required and simulator_execution_confirmed
-            if main_latest_text and main_latest_text != main_stream_text and not skip_main_fallback:
+            if main_latest_text and main_latest_text != main_stream_text:
                 final_delta = _compute_missing_delta(main_stream_text, main_latest_text)
                 if final_delta:
                     answer_delta, think_tag_delta, in_think_tag, think_tag_carry = (
@@ -2045,194 +1699,42 @@ async def chat_send(
                 ) + "\n"
 
             final_text = main_latest_text or main_stream_text
+            # Strip pseudo-"thought" labels that models sometimes emit as literal text.
+            final_text = strip_pseudo_thought_prefix(final_text)
             final_text_stripped = final_text.strip()
-            sim_frame_received = _sim_frame_received_since_start()
-            waiting_for_simulator_result = bool(
-                simulator_required
-                and simulator_execution_confirmed
-                and (
-                    simulator_tool_activity_seen
-                    or simulator_task_call_seen
-                    or sim_frame_received
-                )
-                and final_text_stripped
-                and text_waits_for_simulator_result(final_text_stripped)
-            )
-            if waiting_for_simulator_result:
-                if last_simulator_output_text:
-                    final_text = (
-                        "结论：仿真执行已完成。\n"
-                        f"关键结果：{_truncate_text(last_simulator_output_text, max_len=700)}\n"
-                        "下一步：可查看右侧最新帧或继续要求分析结果。"
-                    )
-                elif sim_frame_received:
-                    final_text = (
-                        "结论：仿真执行已完成，已收到仿真画面帧。\n"
-                        "关键结果：右侧显示最新仿真帧；simulator 未返回额外文本摘要。\n"
-                        "下一步：可继续要求分析轨迹或导出结果。"
-                    )
-                else:
-                    final_text = (
-                        "simulator task 已调用，但尚未收到画面帧或 MCP 工具文本结果。"
-                        "请检查 simulator 子代理/MCP 服务日志。"
-                    )
-                final_text_stripped = final_text.strip()
-                if final_text_stripped and final_text != main_stream_text:
-                    main_stream_text = final_text
-                    _debug_stream_token(
-                        source="main",
-                        channel="final-rewrite",
-                        text=final_text,
-                        role="assistant",
-                    )
-                    yield json.dumps(
-                        {"type": "delta", "text": final_text, "source": "main"},
-                        ensure_ascii=False,
-                    ) + "\n"
-            if (
-                simulator_required
-                and simulator_execution_confirmed
-                and last_simulator_output_text
-                and not simulator_tool_activity_seen
-            ):
-                diagnostic_text = (
-                    "simulator 子代理已响应，但未收到仿真画面帧或 MCP 物理仿真工具输出。\n"
-                    f"子代理结果：{_truncate_text(last_simulator_output_text, max_len=700)}"
-                )
-                if diagnostic_text.strip() != final_text_stripped:
-                    final_text = diagnostic_text
-                    final_text_stripped = final_text.strip()
-                    main_stream_text = final_text
-                    _debug_stream_token(
-                        source="main",
-                        channel="diagnostic",
-                        text=diagnostic_text,
-                        role="assistant",
-                    )
-                    yield json.dumps(
-                        {"type": "delta", "text": diagnostic_text, "source": "main"},
-                        ensure_ascii=False,
-                    ) + "\n"
-            elif (
-                simulator_required
-                and simulator_execution_confirmed
-                and simulator_tool_activity_seen
-                and not sim_frame_received
-            ):
-                diagnostic_text = "未收到画面帧；已保留 simulator 文本结果和工具状态用于诊断。"
-                if diagnostic_text not in final_text_stripped:
-                    final_text = (final_text_stripped + "\n" + diagnostic_text).strip()
-                    final_text_stripped = final_text.strip()
-                    main_stream_text = final_text
-                    _debug_stream_token(
-                        source="main",
-                        channel="diagnostic",
-                        text="\n" + diagnostic_text,
-                        role="assistant",
-                    )
-                    yield json.dumps(
-                        {"type": "delta", "text": "\n" + diagnostic_text, "source": "main"},
-                        ensure_ascii=False,
-                    ) + "\n"
-            logger.info(
-                "[chat-stream] final user=%s session=%s message_events=%s values_events=%s task_call_seen=%s simulator_activity_seen=%s simulator_tool_activity_seen=%s tools=%s simulator_tools=%s final_chars=%s final_preview=%r",
-                user_id,
-                session_id,
-                stream_message_events,
-                stream_values_events,
-                simulator_task_call_seen,
-                simulator_activity_seen,
-                simulator_tool_activity_seen,
-                sorted(tool_names_seen),
-                sorted(simulator_tool_names_seen),
-                len(final_text_stripped),
-                _truncate_text(final_text_stripped, max_len=300),
-            )
-            misleading_simulator_claim = text_claims_simulator_execution(
-                final_text_stripped
-            )
-            if (
-                simulator_required
-                and simulator_execution_confirmed
-                and not simulator_tool_activity_seen
-            ):
-                if simulator_task_call_seen or last_simulator_output_text:
-                    logger.warning(
-                        "[chat-stream] simulator task responded without MCP frame/tool user=%s session=%s task_call_seen=%s output_chars=%s frame_received=%s",
-                        user_id,
-                        session_id,
-                        simulator_task_call_seen,
-                        len(last_simulator_output_text),
-                        sim_frame_received,
-                    )
-                else:
-                    no_tool_error = (
-                        "已收到执行确认，但没有触发 simulator 工具调用。"
-                        "请重试，或检查 simulator 子代理/MCP 服务是否可用。"
-                    )
-                    logger.warning(
-                        "[chat-stream] confirmed execution without simulator MCP tool user=%s session=%s task_call_seen=%s tools=%s final_preview=%r",
-                        user_id,
-                        session_id,
-                        simulator_task_call_seen,
-                        sorted(tool_names_seen),
-                        _truncate_text(final_text_stripped, max_len=300),
-                    )
-                    await _append_chat_message(user_id, session_id, "assistant", no_tool_error)
-                    yield json.dumps(
-                        {"type": "error", "error": no_tool_error},
-                        ensure_ascii=False,
-                    ) + "\n"
-                    return
-            if (
-                simulator_execution_confirmed
-                and not simulator_tool_activity_seen
-                and not simulator_task_call_seen
-                and not last_simulator_output_text
-                and misleading_simulator_claim
-            ):
-                no_tool_error = (
-                    "模型声称已委托或正在执行 simulator，但没有实际触发工具调用。"
-                    "请先确认计划，确认后我会调用 simulator 执行。"
-                )
-                logger.warning(
-                    "[chat-stream] misleading simulator claim user=%s session=%s task_call_seen=%s tools=%s final_preview=%r",
-                    user_id,
-                    session_id,
-                    simulator_task_call_seen,
-                    sorted(tool_names_seen),
-                    _truncate_text(final_text_stripped, max_len=300),
-                )
-                await _append_chat_message(user_id, session_id, "assistant", no_tool_error)
-                yield json.dumps(
-                    {"type": "error", "error": no_tool_error},
-                    ensure_ascii=False,
-                ) + "\n"
-                return
 
-            if final_text_stripped:
-                await _append_chat_message(user_id, session_id, "assistant", final_text)
-                if simulator_required and not simulator_execution_confirmed:
-                    await _set_pending_action(
-                        user_id,
-                        session_id,
-                        "simulator",
-                        final_text_stripped,
-                    )
-            elif current_planning_steps and simulator_required and not simulator_execution_confirmed:
-                # Model only called write_todos but produced no text reply; synthesize one.
-                steps_text = "\n".join(
-                    f"  {i+1}. {s.get('content', '')}" for i, s in enumerate(current_planning_steps)
-                )
-                fallback_text = f"已为您规划以下执行步骤：\n{steps_text}\n\n确认执行吗？"
+            # Fallback: if tools were called but model produced no text, synthesize summary
+            if not final_text_stripped and tool_names_seen:
+                fallback_text = f"已完成工具调用：{', '.join(sorted(tool_names_seen))}。"
                 final_text = fallback_text
+                final_text_stripped = fallback_text
                 main_stream_text = fallback_text
                 yield json.dumps(
                     {"type": "delta", "text": fallback_text, "source": "main"},
                     ensure_ascii=False,
                 ) + "\n"
-                await _append_chat_message(user_id, session_id, "assistant", fallback_text)
-                await _set_pending_action(user_id, session_id, "simulator", fallback_text)
+            elif not final_text_stripped and stream_message_events > 0:
+                fallback_text = "工具调用过程中出现错误，请重试或调整参数。"
+                final_text = fallback_text
+                final_text_stripped = fallback_text
+                yield json.dumps(
+                    {"type": "delta", "text": fallback_text, "source": "main"},
+                    ensure_ascii=False,
+                ) + "\n"
+
+            logger.info(
+                "[chat-stream] final user=%s session=%s message_events=%s values_events=%s tools=%s final_chars=%s final_preview=%r",
+                user_id,
+                session_id,
+                stream_message_events,
+                stream_values_events,
+                sorted(tool_names_seen),
+                len(final_text_stripped),
+                _truncate_text(final_text_stripped, max_len=300),
+            )
+
+            if final_text_stripped:
+                await _append_chat_message(user_id, session_id, "assistant", final_text)
             final_usage_by_agent = {}
             for agent_name, usage_map in usage_by_agent_message.items():
                 summary = _sum_usage_map(usage_map)
@@ -2246,36 +1748,14 @@ async def chat_send(
                     final_usage_by_agent,
                 )
             if current_planning_steps or current_status_text:
-                final_status_text = current_status_text
-                final_status_source = current_status_source
-                final_steps = current_planning_steps
-                if (
-                    simulator_required
-                    and simulator_execution_confirmed
-                    and (simulator_tool_activity_seen or sim_frame_received)
-                ):
-                    final_status_text = (
-                        "仿真执行完成"
-                        if sim_frame_received
-                        else "仿真执行完成，未收到画面帧"
-                    )
-                    final_status_source = "simulator"
-                    final_steps = [
-                        {**step, "status": "completed"}
-                        for step in current_planning_steps
-                    ]
-                elif (
-                    simulator_required
-                    and simulator_execution_confirmed
-                    and (simulator_task_call_seen or last_simulator_output_text)
-                ):
-                    final_status_text = "simulator 子代理已响应，未收到画面帧/MCP 工具输出"
-                    final_status_source = "simulator"
+                # Mark all steps as completed at end
+                for step in current_planning_steps:
+                    step["status"] = "completed"
                 yield json.dumps(
                     _build_planning_payload(
-                        final_steps,
-                        final_status_text,
-                        final_status_source,
+                        current_planning_steps,
+                        "执行完成" if current_planning_steps else current_status_text,
+                        current_status_source,
                         False,
                     ),
                     ensure_ascii=False,
@@ -2290,9 +1770,40 @@ async def chat_send(
             )
             yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
         except Exception as e:
+            # GraphRecursionError: model looped too long. Treat tools called so far as the result.
+            err_name = type(e).__name__
+            is_recursion = "Recursion" in err_name or "recursion_limit" in str(e).lower()
+
+            if is_recursion and tool_names_seen:
+                warning_text = (
+                    f"⚠️ 模型调用工具次数过多（已达上限）。"
+                    f"已执行的工具：{', '.join(sorted(tool_names_seen))}。"
+                    f"可能已完成任务，请查看右侧画面；或重新描述任务更简洁的步骤。"
+                )
+                await _append_chat_message(user_id, session_id, "assistant", warning_text)
+                yield json.dumps(
+                    {"type": "delta", "text": warning_text, "source": "main"},
+                    ensure_ascii=False,
+                ) + "\n"
+                if current_planning_steps:
+                    for step in current_planning_steps:
+                        step["status"] = "completed"
+                    yield json.dumps(
+                        _build_planning_payload(
+                            current_planning_steps, "已达调用上限", "simulator", False
+                        ),
+                        ensure_ascii=False,
+                    ) + "\n"
+                yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
+                logger.warning(
+                    "[chat-stream] recursion limit hit user=%s session=%s tools=%s",
+                    user_id, session_id, sorted(tool_names_seen),
+                )
+                return
+
             logger.error(
                 f"调用Agent出错：{str(e)}", exc_info=True
-            )  # 修正：使用uvicorn logger
+            )
             await _append_chat_message(
                 user_id, session_id, "assistant", f"[后端错误] 处理请求失败：{str(e)}"
             )

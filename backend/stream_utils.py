@@ -55,6 +55,23 @@ def extract_text_from_message(msg) -> str:
         content = getattr(msg, "content", None) or getattr(msg, "text", None)
         content_blocks = getattr(msg, "content_blocks", None)
 
+    # If content is a list of blocks, filter out thinking/reasoning/thought blocks
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                btype = str(item.get("type") or "").lower()
+                if btype in {"thinking", "reasoning", "thought", "think"}:
+                    continue
+                t = item.get("text") or item.get("content")
+                if isinstance(t, str):
+                    parts.append(t)
+        text = "".join(parts)
+        if text:
+            return text
+
     text = normalize_text(content)
     if text:
         return text
@@ -63,6 +80,9 @@ def extract_text_from_message(msg) -> str:
         parts = []
         for block in content_blocks:
             if isinstance(block, dict):
+                btype = str(block.get("type") or "").lower()
+                if btype in {"thinking", "reasoning", "thought", "think"}:
+                    continue
                 t = block.get("text") or block.get("content")
                 if isinstance(t, str) and t:
                     parts.append(t)
@@ -78,33 +98,47 @@ def split_think_and_answer_delta(
     carry: str = "",
 ):
     """
-    Split incremental text into answer/thinking deltas by parsing <think>...</think>.
+    Split incremental text into answer/thinking deltas by parsing thinking tags.
+    Supports: <think>, <thought>, <reasoning>, and their closing variants.
     Works across chunk boundaries using `carry`.
     """
     if not text and not carry:
         return "", "", in_think, ""
 
-    open_tag = "<think>"
-    close_tag = "</think>"
+    open_tags = ("<think>", "<thought>", "<reasoning>")
+    close_tags = ("</think>", "</thought>", "</reasoning>")
     combined = f"{carry}{text or ''}"
     i = 0
     out_answer = []
     out_thinking = []
     next_carry = ""
 
+    def matches_any(s: str, idx: int, tags: tuple) -> str | None:
+        for t in tags:
+            if s.startswith(t, idx):
+                return t
+        return None
+
+    def possibly_starts_any(rem: str, tags: tuple) -> bool:
+        for t in tags:
+            if t.startswith(rem):
+                return True
+        return False
+
     while i < len(combined):
-        if combined.startswith(open_tag, i):
+        matched_open = matches_any(combined, i, open_tags)
+        if matched_open:
             in_think = True
-            i += len(open_tag)
+            i += len(matched_open)
             continue
-        if combined.startswith(close_tag, i):
+        matched_close = matches_any(combined, i, close_tags)
+        if matched_close:
             in_think = False
-            i += len(close_tag)
+            i += len(matched_close)
             continue
 
         rem = combined[i:]
-        # keep possible partial tag in carry for next chunk
-        if open_tag.startswith(rem) or close_tag.startswith(rem):
+        if possibly_starts_any(rem, open_tags) or possibly_starts_any(rem, close_tags):
             next_carry = rem
             break
 
@@ -373,3 +407,23 @@ def sum_usage_map(usage_by_message: dict[str, dict[str, int]]) -> dict[str, int]
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
     }
+
+
+def strip_pseudo_thought_prefix(text: str) -> str:
+    """Remove leading 'thought' / 'thinking' / 'reasoning' pseudo-labels that some
+    models (e.g., Gemma) emit as plain text instead of structured tags.
+
+    Also strips leading newlines/whitespace left over after removing labels.
+    """
+    if not text:
+        return text
+    import re as _re
+    # Match one or more occurrences of "thought" / "thinking" / "reasoning" / "thought:" / similar
+    # at the very start (case-insensitive), each followed by optional colon/whitespace/newlines.
+    cleaned = _re.sub(
+        r"^\s*(?:(?:thought|thinking|reasoning)[:：]?\s*\n*\s*)+",
+        "",
+        text,
+        flags=_re.IGNORECASE,
+    )
+    return cleaned
