@@ -1272,6 +1272,115 @@ def move_end_effector(args: MoveEndEffectorArgs):
 
 
 # ======================
+# Tool: Grasp / Release Object
+# ======================
+_active_grasp_constraints: dict[int, int] = {}  # object_id → constraint_id
+
+
+class GraspObjectArgs(BaseModel):
+    robot_id: int = Field(description="Body ID of the robot arm.")
+    object_id: int = Field(description="Body ID of the object to grasp.")
+    end_effector_index: int = Field(
+        default=-1,
+        description="Link index of end effector. -1 = last non-fixed link.",
+    )
+
+
+@mcp_server.tool()
+def grasp_object(args: GraspObjectArgs):
+    """
+    Attach an object to the robot's end effector (simulate grasping).
+
+    Creates a fixed constraint between the end effector link and the object.
+    After this, when the robot arm moves (via move_end_effector + step_simulation),
+    the object will move with it.
+
+    Workflow: move_end_effector → step_simulation → grasp_object → move_end_effector (new pos) → step_simulation
+    """
+    try:
+        with with_simulation() as cid:
+            if not _is_body_valid(cid, args.robot_id):
+                return _tool_error("grasp_object", f"Robot ID {args.robot_id} not found.", "validation")
+            if not _is_body_valid(cid, args.object_id):
+                return _tool_error("grasp_object", f"Object ID {args.object_id} not found.", "validation")
+
+            # Release existing grasp on this object if any
+            if args.object_id in _active_grasp_constraints:
+                try:
+                    p.removeConstraint(_active_grasp_constraints[args.object_id], physicsClientId=cid)
+                except Exception:
+                    pass
+                del _active_grasp_constraints[args.object_id]
+
+            num_joints = p.getNumJoints(args.robot_id, physicsClientId=cid)
+            ee_index = args.end_effector_index
+            if ee_index < 0:
+                for i in range(num_joints - 1, -1, -1):
+                    info = p.getJointInfo(args.robot_id, i, physicsClientId=cid)
+                    if info[2] != p.JOINT_FIXED:
+                        ee_index = i
+                        break
+                if ee_index < 0:
+                    ee_index = num_joints - 1
+
+            # Create fixed constraint between end effector and object
+            constraint_id = p.createConstraint(
+                parentBodyUniqueId=args.robot_id,
+                parentLinkIndex=ee_index,
+                childBodyUniqueId=args.object_id,
+                childLinkIndex=-1,
+                jointType=p.JOINT_FIXED,
+                jointAxis=[0, 0, 0],
+                parentFramePosition=[0, 0, 0.05],
+                childFramePosition=[0, 0, 0],
+                physicsClientId=cid,
+            )
+            _active_grasp_constraints[args.object_id] = constraint_id
+            _publish_snapshot("grasp_object", done=False, extra={"object_id": args.object_id})
+            return {
+                "task": "grasp_object",
+                "status": "success",
+                "robot_id": args.robot_id,
+                "object_id": args.object_id,
+                "constraint_id": constraint_id,
+                "message": "Object grasped. Move the arm and the object will follow.",
+            }
+    except Exception as e:
+        raise RuntimeError(f"grasp_object failed: {e}") from e
+
+
+class ReleaseObjectArgs(BaseModel):
+    object_id: int = Field(description="Body ID of the object to release.")
+
+
+@mcp_server.tool()
+def release_object(args: ReleaseObjectArgs):
+    """
+    Release a previously grasped object (remove the constraint).
+    The object will then be subject to gravity and physics again.
+    """
+    try:
+        with with_simulation() as cid:
+            if args.object_id not in _active_grasp_constraints:
+                return {
+                    "task": "release_object",
+                    "status": "warning",
+                    "message": f"Object {args.object_id} is not currently grasped.",
+                }
+            constraint_id = _active_grasp_constraints.pop(args.object_id)
+            p.removeConstraint(constraint_id, physicsClientId=cid)
+            _publish_snapshot("release_object", done=False, extra={"object_id": args.object_id})
+            return {
+                "task": "release_object",
+                "status": "success",
+                "object_id": args.object_id,
+                "message": "Object released. It will now fall under gravity.",
+            }
+    except Exception as e:
+        raise RuntimeError(f"release_object failed: {e}") from e
+
+
+# ======================
 # Tool: Delete Object
 # ======================
 class DeleteObjectArgs(BaseModel):
