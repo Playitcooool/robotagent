@@ -68,7 +68,7 @@ export default {
     const workbench = useWorkbenchStore()
     const toolPanelOpen = ref(false)
     const leftWidth = ref(290)
-    const rightWidth = ref(360)
+    const rightWidth = ref(520)
     let resizeState = null
 
     const gridTemplateColumns = computed(() => {
@@ -102,7 +102,7 @@ export default {
         leftWidth.value = clamp(resizeState.startLeft + delta, 220, 420)
         return
       }
-      rightWidth.value = clamp(resizeState.startRight - delta, 280, 560)
+      rightWidth.value = clamp(resizeState.startRight - delta, 360, 760)
     }
 
     function stopResize() {

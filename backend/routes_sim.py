@@ -32,7 +32,12 @@ def register_sim_routes(
 
         client = Client(url)
         async with client:
-            return await client.call_tool(tool_name, payload or {})
+            try:
+                return await client.call_tool(tool_name, payload or {})
+            except Exception:
+                if payload and "args" not in payload:
+                    return await client.call_tool(tool_name, {"args": payload})
+                raise
 
     def load_latest_frame_payload():
         if not sim_meta_file.exists() or not sim_frame_file.exists():

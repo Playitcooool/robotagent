@@ -15,10 +15,10 @@
         </div>
         <div
           class="frame-wrap"
-          @mousedown="startCameraDrag"
-          @mousemove="moveCameraDrag"
-          @mouseup="endCameraDrag"
-          @mouseleave="endCameraDrag"
+          @pointerdown="startCameraDrag"
+          @pointermove="moveCameraDrag"
+          @pointerup="endCameraDrag"
+          @pointercancel="endCameraDrag"
           @contextmenu.prevent
           @wheel.prevent="handleCameraWheel"
         >
@@ -86,9 +86,11 @@ export default {
   methods: {
     startCameraDrag (event) {
       if (event.button !== 0 && event.button !== 2) return
+      event.currentTarget.setPointerCapture?.(event.pointerId)
       this.cameraDrag = {
         x: event.clientX,
         y: event.clientY,
+        pointerId: event.pointerId,
         mode: event.shiftKey || event.button === 2 ? 'pan' : 'orbit'
       }
     },
@@ -110,7 +112,10 @@ export default {
         this.sendCameraAction({ action: 'orbit', delta_yaw: dx * 0.35, delta_pitch: -dy * 0.25 })
       }
     },
-    endCameraDrag () {
+    endCameraDrag (event) {
+      if (event?.currentTarget && this.cameraDrag?.pointerId != null) {
+        event.currentTarget.releasePointerCapture?.(this.cameraDrag.pointerId)
+      }
       this.cameraDrag = null
     },
     handleCameraWheel (event) {
@@ -203,7 +208,7 @@ export default {
 .results-body {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   display: grid;
   gap: 16px;
   padding-right: 4px;
@@ -231,7 +236,8 @@ export default {
 
 .frame-section .frame-wrap {
   width: 100%;
-  aspect-ratio: 4 / 3;
+  height: min(72vh, calc(100vh - 190px));
+  min-height: 360px;
   background: #000;
   border-radius: 14px;
   overflow: hidden;
@@ -239,6 +245,10 @@ export default {
   cursor: grab;
   user-select: none;
   touch-action: none;
+}
+
+.frame-section .frame-wrap:active {
+  cursor: grabbing;
 }
 
 .frame-section .frame-img {

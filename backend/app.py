@@ -249,7 +249,10 @@ async def startup_event():
             ContextEditingMiddleware(
                 edits=[ClearToolUsesEdit(trigger=8000, keep=3, clear_tool_inputs=False)],
             ),
-            ModelCallLimitMiddleware(run_limit=20, exit_behavior="end"),
+            ModelCallLimitMiddleware(
+                run_limit=_env_int("MODEL_CALL_RUN_LIMIT", 60, minimum=1),
+                exit_behavior="end",
+            ),
         ]
         active_agent = create_agent(
             model=chatBot,
@@ -1129,7 +1132,7 @@ async def chat_send(
                 stream_mode=["messages", "values"],
                 config={
                     "configurable": {"thread_id": f"{user_id}:{session_id}"},
-                    "recursion_limit": 40,
+                    "recursion_limit": _env_int("AGENT_RECURSION_LIMIT", 100, minimum=1),
                 },
             ):
                 if mode == "messages":

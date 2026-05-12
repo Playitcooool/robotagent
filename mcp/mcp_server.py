@@ -209,14 +209,14 @@ def _auto_camera_from_scene(cid: int, width: int, height: int) -> dict[str, Any]
         target = [(aabb_min[i] + aabb_max[i]) / 2.0 for i in range(3)]
         extents = [max(0.05, aabb_max[i] - aabb_min[i]) for i in range(3)]
         radius = float(np.linalg.norm(extents) / 2.0)
-        target[2] = max(target[2], aabb_min[2] + extents[2] * 0.45)
+        target[2] = max(target[2], aabb_min[2] + extents[2] * 0.5)
 
     fov = _clamp(float(_camera_state.get("fov", 60.0)), 25.0, 90.0)
     aspect = max(0.1, width / max(1, height))
     half_fov = np.radians(fov / 2.0)
-    fit_distance = radius / max(0.1, np.sin(half_fov))
-    if aspect < 1.0:
-        fit_distance /= max(0.35, aspect)
+    vertical_fit = radius / max(0.1, np.tan(half_fov))
+    horizontal_fit = vertical_fit / max(0.35, aspect)
+    fit_distance = max(vertical_fit, horizontal_fit)
 
     return {
         "mode": "auto",
@@ -224,7 +224,7 @@ def _auto_camera_from_scene(cid: int, width: int, height: int) -> dict[str, Any]
         "target": [float(v) for v in target],
         "yaw": float(_camera_state.get("yaw", 45.0)),
         "pitch": float(_camera_state.get("pitch", -30.0)),
-        "distance": _clamp(fit_distance * 1.35, 0.35, 25.0),
+        "distance": _clamp(fit_distance * 2.0, 0.6, 35.0),
         "fov": fov,
     }
 
