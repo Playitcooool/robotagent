@@ -866,8 +866,23 @@ def step_simulation(args: StepSimulationArgs):
     steps = max(1, min(int(args.steps), MAX_STEPS_PER_CALL))
     try:
         with with_simulation() as cid:
-            _safe_step(cid, steps)
-            _publish_snapshot("step_simulation", done=False, extra={"steps": steps})
+            # Publish frames during stepping so the frontend sees continuous motion
+            # (not a jump from initial to final state).
+            run_id = str(uuid.uuid4())
+            # Target ~30fps output. Physics at 240Hz default → 8 steps ~= 33ms sim time.
+            steps_per_frame = max(1, min(8, steps // 20)) if steps >= 20 else 1
+            done_count = 0
+            while done_count < steps:
+                batch = min(steps_per_frame, steps - done_count)
+                _safe_step(cid, batch)
+                done_count += batch
+                _publish_realtime_frame(
+                    run_id=run_id,
+                    task="step_simulation",
+                    step_idx=done_count,
+                    total_steps=steps,
+                    done=(done_count >= steps),
+                )
 
         return {
             "task": "step_simulation",

@@ -86,6 +86,8 @@ function resetConversation(newSessionId = null) {
   planningState.value = createEmptyPlanningState()
   showLandingHero.value = false
   conversation.value = []
+  // Clear PyBullet environment on new conversation (best-effort, don't block UI)
+  auth.apiFetch('/api/sim/reset', { method: 'POST' }).catch(() => {})
 }
 
 function startTypewriter(msgId, idx, fullText, field = 'text') {

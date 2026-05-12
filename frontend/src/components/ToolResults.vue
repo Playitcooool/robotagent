@@ -8,27 +8,13 @@
     </header>
 
     <div class="results-body">
-      <section v-if="liveFrame?.image_url" class="rail-section">
-        <div class="section-heading">{{ lang === 'zh' ? '仿真画面' : 'Simulation Feed' }}</div>
-        <div class="frame-card">
-          <div v-if="imgLoading" class="frame-placeholder">{{ lang === 'zh' ? '画面加载中...' : 'Loading frame...' }}</div>
-          <div v-else-if="imgError" class="frame-placeholder error">
-            <span>{{ lang === 'zh' ? '画面加载失败' : 'Frame failed to load' }}</span>
-            <button type="button" @click="retryImage">{{ lang === 'zh' ? '重试' : 'Retry' }}</button>
-          </div>
-          <img
-            v-show="!imgLoading && !imgError"
-            ref="imgRef"
-            :src="liveFrame.image_url"
-            :alt="liveFrame.task || 'simulation frame'"
-            @load="onImgLoad"
-            @error="onImgError"
-          />
-          <div class="frame-meta">
-            <span>{{ liveFrame.task || 'simulation' }}</span>
-            <span v-if="typeof liveFrame.step === 'number'">step {{ liveFrame.step }}/{{ liveFrame.total_steps || '?' }}</span>
-            <span>{{ liveFrame.done ? (lang === 'zh' ? '完成' : 'Done') : (lang === 'zh' ? '运行中' : 'Live') }}</span>
-          </div>
+      <section v-if="liveFrame?.image_url" class="rail-section frame-section">
+        <div class="section-heading">
+          <span>{{ lang === 'zh' ? '仿真画面' : 'Simulation Feed' }}</span>
+          <span v-if="isStale" class="stale-badge">{{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}</span>
+        </div>
+        <div class="frame-wrap">
+          <img class="frame-img" :src="mjpegUrl" :alt="liveFrame.task || 'simulation frame'" />
         </div>
       </section>
 
@@ -52,56 +38,36 @@ export default {
   },
   data () {
     return {
-      imgLoading: true,
-      imgError: false,
-      currentImageUrl: null
+      nowSec: Math.floor(Date.now() / 1000),
+      _staleTimer: null
     }
   },
   setup () {
     const { lang } = useI18n()
     return { lang }
   },
+  mounted () {
+    this._staleTimer = setInterval(() => {
+      this.nowSec = Math.floor(Date.now() / 1000)
+    }, 2000)
+  },
+  beforeUnmount () {
+    if (this._staleTimer) clearInterval(this._staleTimer)
+  },
   computed: {
     hasContent () {
       return Boolean(this.liveFrame?.image_url)
-    }
-  },
-  watch: {
-    liveFrame: {
-      immediate: true,
-      handler (nextValue) {
-        if (nextValue?.image_url && nextValue.image_url !== this.currentImageUrl) {
-          this.currentImageUrl = nextValue.image_url
-          this.imgLoading = true
-          this.imgError = false
-          return
-        }
-
-        if (!nextValue?.image_url) {
-          this.currentImageUrl = null
-          this.imgLoading = true
-          this.imgError = false
-        }
-      }
-    }
-  },
-  methods: {
-    onImgLoad () {
-      this.imgLoading = false
-      this.imgError = false
     },
-    onImgError () {
-      this.imgLoading = false
-      this.imgError = true
+    isStale () {
+      const ts = Number(this.liveFrame?.timestamp)
+      if (!ts || !Number.isFinite(ts)) return false
+      if (this.liveFrame?.done) return false
+      return this.nowSec - ts > 10
     },
-    retryImage () {
-      this.imgLoading = true
-      this.imgError = false
-      const img = this.$refs.imgRef
-      if (img && this.currentImageUrl) {
-        const separator = this.currentImageUrl.includes('?') ? '&' : '?'
-        img.src = `${this.currentImageUrl}${separator}retry=${Date.now()}`
-      }
+    mjpegUrl () {
+      // Use run_id as cache-buster so stream reconnects when sim is reset
+      const rid = this.liveFrame?.run_id || 'default'
+      return `/api/sim/mjpeg?rid=${encodeURIComponent(rid)}`
     }
   }
 }
@@ -174,11 +140,36 @@ export default {
 }
 
 .section-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-size: 12px;
   font-weight: 700;
   color: var(--muted);
   letter-spacing: 0.1em;
   text-transform: uppercase;
+}
+
+.frame-section {
+  gap: 8px;
+}
+
+.frame-section .frame-wrap {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: #000;
+  border-radius: 14px;
+  overflow: hidden;
+  position: relative;
+}
+
+.frame-section .frame-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 
 .card-grid,
@@ -314,6 +305,25 @@ export default {
   gap: 12px;
 }
 
+.frame-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.frame-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
 .frame-card img {
   width: 100%;
   border-radius: 14px;
@@ -348,6 +358,15 @@ export default {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.stale-badge {
+  color: #ffb86b;
+  background: rgba(255, 159, 90, 0.15);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .empty-state {

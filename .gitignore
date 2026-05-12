@@ -24,4 +24,4 @@ dist
 *.docx
 /scripts
 *.ppt*
-*.rdb
+*.rdbmcp/.sim_stream/
