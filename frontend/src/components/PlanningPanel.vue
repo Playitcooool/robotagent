@@ -31,6 +31,7 @@ export default {
   setup (props) {
     const expanded = ref(false)
     let collapseTimer = null
+    let hasAutoExpanded = false
 
     const steps = computed(() => {
       const incoming = props.planning?.steps
@@ -46,18 +47,21 @@ export default {
       () => {
         if (!steps.value.length) {
           expanded.value = false
+          hasAutoExpanded = false
           return
         }
-        const hasActive = steps.value.some(item => item?.status === 'in_progress')
-        if (hasActive) {
-          if (collapseTimer) clearTimeout(collapseTimer)
+        // Only auto-expand on the FIRST plan arrival; subsequent plans stay as-is
+        if (!hasAutoExpanded) {
+          hasAutoExpanded = true
           expanded.value = true
-          return
         }
-        if (collapseTimer) clearTimeout(collapseTimer)
-        collapseTimer = setTimeout(() => {
-          expanded.value = false
-        }, 1000)
+        const allDone = steps.value.every(item => item?.status === 'completed')
+        if (allDone) {
+          if (collapseTimer) clearTimeout(collapseTimer)
+          collapseTimer = setTimeout(() => {
+            expanded.value = false
+          }, 1000)
+        }
       }
     )
 

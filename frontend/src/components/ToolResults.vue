@@ -13,8 +13,13 @@
           <span>{{ lang === 'zh' ? '仿真画面' : 'Simulation Feed' }}</span>
           <span v-if="isStale" class="stale-badge">{{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}</span>
         </div>
-        <div class="frame-wrap">
-          <img class="frame-img" :src="mjpegUrl" :alt="liveFrame.task || 'simulation frame'" />
+        <div class="frame-wrap" @wheel.prevent="onWheel">
+          <img
+            class="frame-img"
+            :src="mjpegUrl"
+            :alt="liveFrame.task || 'simulation frame'"
+            :style="{ transform: `scale(${frameZoom})` }"
+          />
         </div>
       </section>
 
@@ -39,6 +44,7 @@ export default {
   data () {
     return {
       nowSec: Math.floor(Date.now() / 1000),
+      frameZoom: 1.0,
       _staleTimer: null
     }
   },
@@ -68,6 +74,12 @@ export default {
       // Use run_id as cache-buster so stream reconnects when sim is reset
       const rid = this.liveFrame?.run_id || 'default'
       return `/api/sim/mjpeg?rid=${encodeURIComponent(rid)}`
+    }
+  },
+  methods: {
+    onWheel (e) {
+      const delta = e.deltaY > 0 ? -0.1 : 0.1
+      this.frameZoom = Math.max(0.5, Math.min(4.0, this.frameZoom + delta))
     }
   }
 }

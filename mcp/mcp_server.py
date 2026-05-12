@@ -170,16 +170,16 @@ def _capture_rgb_frame(width: int = 320, height: int = 240) -> np.ndarray:
         return np.zeros((height, width, 3), dtype=np.uint8)
     aspect = width / max(1, height)
     view_matrix = p.computeViewMatrixFromYawPitchRoll(
-        cameraTargetPosition=[0.2, 0.0, 0.02],
-        distance=1.2,
+        cameraTargetPosition=[0.0, 0.0, 0.3],
+        distance=2.5,
         yaw=45.0,
-        pitch=-35.0,
+        pitch=-30.0,
         roll=0.0,
         upAxisIndex=2,
         physicsClientId=cid,
     )
     projection_matrix = p.computeProjectionMatrixFOV(
-        fov=60.0, aspect=aspect, nearVal=0.1, farVal=10.0, physicsClientId=cid
+        fov=60.0, aspect=aspect, nearVal=0.1, farVal=20.0, physicsClientId=cid
     )
     _, _, rgba, _, _ = p.getCameraImage(
         width,
