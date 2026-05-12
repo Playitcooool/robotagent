@@ -28,6 +28,7 @@ with open(os.path.join(ROOT_DIR, "config", "config.yml"), "r", encoding="utf-8")
 CORE_TOOL_NAMES = {
     "initialize_simulation",
     "create_object",
+    "load_urdf",
     "set_object_position",
     "step_simulation",
     "get_object_state",

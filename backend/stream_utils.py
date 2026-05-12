@@ -407,3 +407,23 @@ def sum_usage_map(usage_by_message: dict[str, dict[str, int]]) -> dict[str, int]
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
     }
+
+
+def strip_pseudo_thought_prefix(text: str) -> str:
+    """Remove leading 'thought' / 'thinking' / 'reasoning' pseudo-labels that some
+    models (e.g., Gemma) emit as plain text instead of structured tags.
+
+    Also strips leading newlines/whitespace left over after removing labels.
+    """
+    if not text:
+        return text
+    import re as _re
+    # Match one or more occurrences of "thought" / "thinking" / "reasoning" / "thought:" / similar
+    # at the very start (case-insensitive), each followed by optional colon/whitespace/newlines.
+    cleaned = _re.sub(
+        r"^\s*(?:(?:thought|thinking|reasoning)[:：]?\s*\n*\s*)+",
+        "",
+        text,
+        flags=_re.IGNORECASE,
+    )
+    return cleaned

@@ -8,23 +8,13 @@
     </header>
 
     <div class="results-body">
-      <section v-if="liveFrame?.image_url" class="rail-section">
-        <div class="section-heading">{{ lang === 'zh' ? '仿真画面' : 'Simulation Feed' }}</div>
-        <div class="frame-card">
-          <div class="frame-wrap">
-            <img
-              class="frame-img"
-              :src="mjpegUrl"
-              :alt="liveFrame.task || 'simulation frame'"
-            />
-          </div>
-          <div class="frame-meta">
-            <span>{{ liveFrame.task || 'simulation' }}</span>
-            <span v-if="isStale" class="stale-badge">
-              {{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}
-            </span>
-            <span>{{ liveFrame.done ? (lang === 'zh' ? '完成' : 'Done') : (lang === 'zh' ? '运行中' : 'Live') }}</span>
-          </div>
+      <section v-if="liveFrame?.image_url" class="rail-section frame-section">
+        <div class="section-heading">
+          <span>{{ lang === 'zh' ? '仿真画面' : 'Simulation Feed' }}</span>
+          <span v-if="isStale" class="stale-badge">{{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}</span>
+        </div>
+        <div class="frame-wrap">
+          <img class="frame-img" :src="mjpegUrl" :alt="liveFrame.task || 'simulation frame'" />
         </div>
       </section>
 
@@ -150,11 +140,36 @@ export default {
 }
 
 .section-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-size: 12px;
   font-weight: 700;
   color: var(--muted);
   letter-spacing: 0.1em;
   text-transform: uppercase;
+}
+
+.frame-section {
+  gap: 8px;
+}
+
+.frame-section .frame-wrap {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: #000;
+  border-radius: 14px;
+  overflow: hidden;
+  position: relative;
+}
+
+.frame-section .frame-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 
 .card-grid,

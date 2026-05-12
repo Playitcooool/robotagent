@@ -27,12 +27,16 @@ SYSTEM_PROMPT = """
 
 核心工具（组合式原语）：
 - `initialize_simulation(gui=false)`: 初始化环境（每个任务只调用一次）
-- `create_object(object_type, position, size, mass, color)`: 创建物体，返回 object_id
+- `create_object(object_type, position, size, mass, color)`: 创建简单几何体（cube/sphere/cylinder），返回 object_id
   - object_type: "cube" / "sphere" / "cylinder"
   - size: 3元素数组 [x,y,z] 米（sphere用 size[0] 当半径，cylinder用 size[0] 当半径、size[2] 当高度）
   - position: [x,y,z] 米
   - mass: 数值，> 0
   - color: [r,g,b,a] 0~1
+- `load_urdf(urdf_path, position, orientation, use_fixed_base)`: 加载机器人/URDF 模型
+  - 机械臂任务必须用此工具加载机器人模型（create_object 只能创建简单几何体，不会显示机械臂）
+  - 常用 urdf_path: "kuka_iiwa/model.urdf", "franka_panda/panda.urdf", "r2d2.urdf", "humanoid/humanoid.urdf"
+  - 返回 object_id
 - `set_object_position(object_id, position, orientation)`: 移动已存在的物体到指定位置
 - `step_simulation(steps)`: 推进物理仿真
 - `get_object_state(object_id)`: 查询物体当前位置和姿态

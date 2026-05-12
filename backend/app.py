@@ -50,6 +50,7 @@ from backend.stream_utils import (
     extract_message_token_usage,
     extract_message_id,
     sum_usage_map,
+    strip_pseudo_thought_prefix,
 )
 from backend.routes_auth import register_auth_routes
 from backend.routes_sim import register_sim_routes
@@ -1240,8 +1241,18 @@ async def chat_send(
                                     pending_answer_whitespace_by_source.pop(source, "")
                                     + answer_delta
                                 )
+                                # Strip pseudo-thought labels at the very start of main stream.
+                                if source == "main" and not main_stream_text.strip():
+                                    candidate = main_stream_text + emit_delta
+                                    stripped = strip_pseudo_thought_prefix(candidate)
+                                    if stripped != candidate:
+                                        # Everything so far was pseudo-label; reset and drop it
+                                        emit_delta = stripped
+                                        main_stream_text = ""
                                 if source == "main":
                                     main_stream_text += emit_delta
+                                if not emit_delta:
+                                    continue
                                 _debug_stream_token(
                                     source=source,
                                     channel="answer",
@@ -1688,6 +1699,8 @@ async def chat_send(
                 ) + "\n"
 
             final_text = main_latest_text or main_stream_text
+            # Strip pseudo-"thought" labels that models sometimes emit as literal text.
+            final_text = strip_pseudo_thought_prefix(final_text)
             final_text_stripped = final_text.strip()
 
             # Fallback: if tools were called but model produced no text, synthesize summary
