@@ -6,14 +6,9 @@
 
     <div class="results-body">
       <section v-if="liveFrame?.image_url" class="rail-section frame-section">
-        <span v-if="isStale" class="stale-badge">{{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}</span>
         <div class="frame-wrap" @wheel.prevent="onWheel">
-          <img
-            class="frame-img"
-            :src="mjpegUrl"
-            :alt="liveFrame.task || 'simulation frame'"
-            :style="{ transform: `scale(${frameZoom})` }"
-          />
+          <img class="frame-img" :src="mjpegUrl" :alt="liveFrame.task || 'simulation frame'"
+            :style="{ transform: `scale(${frameZoom})` }" />
         </div>
       </section>
 
@@ -135,8 +130,10 @@ export default {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  display: grid;
-  gap: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   padding-right: 4px;
 }
 
@@ -158,6 +155,11 @@ export default {
 
 .frame-section {
   gap: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
 }
 
 .frame-section .frame-wrap {
