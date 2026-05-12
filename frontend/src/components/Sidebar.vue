@@ -80,8 +80,7 @@ export default {
         newChat: '新建任务',
         rename: '重命名',
         delete: '删除会话',
-        renameSuccess: '会话已重命名',
-        confirmDelete: (title) => `确认删除会话「${title}」？`
+        renameSuccess: '会话已重命名'
       },
       en: {
         history: 'Mission Sessions',
@@ -90,8 +89,7 @@ export default {
         newChat: 'New Session',
         rename: 'Rename',
         delete: 'Delete session',
-        renameSuccess: 'Session renamed',
-        confirmDelete: (title) => `Delete session "${title}"?`
+        renameSuccess: 'Session renamed'
       }
     }
 
@@ -139,8 +137,6 @@ export default {
     async function removeSession(session) {
       const sessionId = String(session?.session_id || '')
       if (!sessionId || !props.authToken) return
-      const ok = window.confirm(t('confirmDelete')(sessionTitle(session)))
-      if (!ok) return
       deletingSessionId.value = sessionId
 
       try {

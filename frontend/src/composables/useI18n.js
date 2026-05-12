@@ -21,7 +21,6 @@ const translations = {
     exportSuccess: '会话已导出',
     shareSuccess: '链接已复制到剪贴板',
     renameSuccess: '会话已重命名',
-    confirmDelete: (title) => `确认删除会话「${title}」？`,
   },
   en: {
     about: 'About',
@@ -43,7 +42,6 @@ const translations = {
     exportSuccess: 'Session exported',
     shareSuccess: 'Link copied to clipboard',
     renameSuccess: 'Session renamed',
-    confirmDelete: (title) => `Delete session "${title}"?`,
   }
 }
 
