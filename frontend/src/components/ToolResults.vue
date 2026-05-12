@@ -11,23 +11,13 @@
       <section v-if="liveFrame?.image_url" class="rail-section">
         <div class="section-heading">{{ lang === 'zh' ? '仿真画面' : 'Simulation Feed' }}</div>
         <div class="frame-card">
-          <div v-if="imgLoading && !displayedUrl" class="frame-placeholder">{{ lang === 'zh' ? '画面加载中...' : 'Loading frame...' }}</div>
-          <div v-else-if="imgError && !displayedUrl" class="frame-placeholder error">
-            <span>{{ lang === 'zh' ? '画面加载失败' : 'Frame failed to load' }}</span>
-            <button type="button" @click="retryImage">{{ lang === 'zh' ? '重试' : 'Retry' }}</button>
+          <div class="frame-wrap">
+            <img
+              class="frame-img"
+              :src="liveFrame.image_url"
+              :alt="liveFrame.task || 'simulation frame'"
+            />
           </div>
-          <img
-            v-show="displayedUrl"
-            :src="displayedUrl || ''"
-            :alt="liveFrame.task || 'simulation frame'"
-          />
-          <img
-            v-show="false"
-            ref="preloadImgRef"
-            :src="liveFrame.image_url"
-            @load="onPreloadLoad"
-            @error="onImgError"
-          />
           <div class="frame-meta">
             <span>{{ liveFrame.task || 'simulation' }}</span>
             <span v-if="isStale" class="stale-badge">
@@ -58,10 +48,6 @@ export default {
   },
   data () {
     return {
-      imgLoading: true,
-      imgError: false,
-      currentImageUrl: null,
-      displayedUrl: null,
       nowSec: Math.floor(Date.now() / 1000),
       _staleTimer: null
     }
@@ -87,43 +73,6 @@ export default {
       if (!ts || !Number.isFinite(ts)) return false
       if (this.liveFrame?.done) return false
       return this.nowSec - ts > 10
-    }
-  },
-  watch: {
-    liveFrame: {
-      immediate: true,
-      handler (nextValue) {
-        if (nextValue?.image_url && nextValue.image_url !== this.currentImageUrl) {
-          this.currentImageUrl = nextValue.image_url
-          this.imgError = false
-          return
-        }
-        if (!nextValue?.image_url) {
-          this.currentImageUrl = null
-          this.displayedUrl = null
-          this.imgLoading = true
-          this.imgError = false
-        }
-      }
-    }
-  },
-  methods: {
-    onPreloadLoad () {
-      // New frame loaded successfully in hidden preloader → swap to visible img
-      this.displayedUrl = this.currentImageUrl
-      this.imgLoading = false
-      this.imgError = false
-    },
-    onImgError () {
-      this.imgLoading = false
-      this.imgError = true
-    },
-    retryImage () {
-      this.imgError = false
-      if (this.currentImageUrl) {
-        const separator = this.currentImageUrl.includes('?') ? '&' : '?'
-        this.currentImageUrl = `${this.currentImageUrl}${separator}retry=${Date.now()}`
-      }
     }
   }
 }
@@ -334,6 +283,25 @@ export default {
 .frame-card {
   display: grid;
   gap: 12px;
+}
+
+.frame-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.frame-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 
 .frame-card img {
