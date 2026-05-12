@@ -30,6 +30,7 @@ CORE_TOOL_NAMES = {
     "create_object",
     "load_urdf",
     "set_joint_positions",
+    "move_end_effector",
     "set_object_position",
     "step_simulation",
     "get_object_state",

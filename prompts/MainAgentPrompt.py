@@ -38,10 +38,11 @@ SYSTEM_PROMPT = """
   - 常用 urdf_path: "kuka_iiwa/model.urdf", "franka_panda/panda.urdf", "r2d2.urdf", "humanoid/humanoid.urdf"
   - 返回 object_id
 - `set_object_position(object_id, position, orientation)`: 移动已存在的物体到指定位置（瞬移，非物理运动）
-- `set_joint_positions(object_id, joint_positions, max_force)`: 控制机械臂关节角度
-  - 设置后必须调用 step_simulation 让机械臂实际运动到目标位姿
-  - joint_positions: 弧度数组，长度=可控关节数（KUKA/Panda=7）
-  - 这是让机械臂"动起来"的唯一方式，不要用 set_object_position 移动机器人
+- `set_joint_positions(object_id, joint_positions, max_force)`: 控制机械臂关节角度（需要知道具体角度值）
+- `move_end_effector(object_id, target_position)`: **推荐** - 用逆运动学(IK)让末端执行器移动到目标位置
+  - 只需指定目标 [x,y,z]，自动计算关节角度
+  - 调用后必须 step_simulation(steps=200+) 让机械臂运动
+  - 这是实现"机械臂去抓物体"的正确方式
 - `step_simulation(steps)`: 推进物理仿真
 - `get_object_state(object_id)`: 查询物体当前位置和姿态
 - `get_simulation_info()`: 获取场景中所有物体的概览
@@ -62,12 +63,12 @@ SYSTEM_PROMPT = """
 ```
 1. initialize_simulation(gui=false)
 2. load_urdf(urdf_path="kuka_iiwa/model.urdf", position=[0,0,0], use_fixed_base=true)
-   → 返回 object_id=1, num_joints=7
+   → robot_id=1, num_joints=7
 3. create_object(object_type="cube", position=[0.4, 0, 0.05], size=[0.05,0.05,0.05], mass=0.1)
-   → 返回 object_id=2
-4. set_joint_positions(object_id=1, joint_positions=[0, 0.5, 0, -1.0, 0, 1.5, 0])
-5. step_simulation(steps=200)  # 机械臂运动到目标位姿
-6. get_object_state(object_id=1)  # 确认机械臂末端位置
+   → cube_id=2
+4. move_end_effector(object_id=1, target_position=[0.4, 0, 0.15])  # 移动到物块上方
+5. step_simulation(steps=300)  # 机械臂运动到目标（实时可见）
+6. get_object_state(object_id=1)  # 确认末端位置
 ```
 
 ## 其他能力
