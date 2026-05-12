@@ -31,6 +31,8 @@ CORE_TOOL_NAMES = {
     "load_urdf",
     "set_joint_positions",
     "move_end_effector",
+    "grasp_object",
+    "release_object",
     "set_object_position",
     "step_simulation",
     "get_object_state",
