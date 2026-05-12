@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, StreamingResponse
 
 
@@ -16,6 +17,28 @@ def register_sim_routes(
     sim_frame_file: Path,
     sim_frame_cache: dict[str, Any],
 ):
+    async def call_mcp_tool(tool_name: str, payload: dict[str, Any] | None = None):
+        from fastmcp import Client
+        import yaml as _yaml
+        from pathlib import Path as _Path
+
+        config_path = _Path(__file__).resolve().parent.parent / "config" / "config.yml"
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = _yaml.load(f.read(), _yaml.FullLoader)
+        mcp_cfg = cfg.get("mcp") or {}
+        base = str(mcp_cfg.get("ip") or "http://127.0.0.1").rstrip("/")
+        port = str(mcp_cfg.get("port") or "18001")
+        url = f"{base}:{port}/mcp"
+
+        client = Client(url)
+        async with client:
+            try:
+                return await client.call_tool(tool_name, payload or {})
+            except Exception:
+                if payload and "args" not in payload:
+                    return await client.call_tool(tool_name, {"args": payload})
+                raise
+
     def load_latest_frame_payload():
         if not sim_meta_file.exists() or not sim_frame_file.exists():
             return {"status": "idle", "has_frame": False}
@@ -53,6 +76,7 @@ def register_sim_routes(
             "done": bool(meta.get("done")),
             "timestamp": meta.get("timestamp"),
             "image_url": f"/api/sim/latest.png?ts={meta.get('timestamp')}",
+            "camera": meta.get("camera"),
         }
         sim_frame_cache["meta_mtime"] = meta_mtime
         sim_frame_cache["frame_mtime"] = frame_mtime
@@ -70,6 +94,27 @@ def register_sim_routes(
     @app.get("/api/sim/latest-frame")
     async def get_latest_sim_frame():
         return load_latest_frame_payload()
+
+    @app.get("/api/sim/camera")
+    async def get_sim_camera():
+        payload = load_latest_frame_payload()
+        return {
+            "ok": True,
+            "camera": payload.get("camera"),
+            "has_frame": bool(payload.get("has_frame")),
+        }
+
+    @app.post("/api/sim/camera")
+    async def set_sim_camera(request: Request):
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("camera payload must be an object")
+            result = await call_mcp_tool("set_camera_view", payload)
+            sim_frame_cache.clear()
+            return {"ok": True, "result": jsonable_encoder(result)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     @app.get("/api/sim/latest.png")
     async def get_latest_sim_png():
@@ -151,21 +196,7 @@ def register_sim_routes(
         Used by frontend when user starts a new conversation.
         """
         try:
-            from fastmcp import Client
-            import yaml as _yaml
-            from pathlib import Path as _Path
-
-            config_path = _Path(__file__).resolve().parent.parent / "config" / "config.yml"
-            with open(config_path, "r", encoding="utf-8") as f:
-                cfg = _yaml.load(f.read(), _yaml.FullLoader)
-            mcp_cfg = cfg.get("mcp") or {}
-            base = str(mcp_cfg.get("ip") or "http://127.0.0.1").rstrip("/")
-            port = str(mcp_cfg.get("port") or "18001")
-            url = f"{base}:{port}/mcp"
-
-            client = Client(url)
-            async with client:
-                await client.call_tool("cleanup_simulation_tool", {})
+            await call_mcp_tool("cleanup_simulation_tool", {})
             return {"ok": True, "message": "Simulation environment cleared"}
         except Exception as e:
             return {"ok": False, "error": str(e)}

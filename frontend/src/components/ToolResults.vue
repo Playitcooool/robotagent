@@ -6,9 +6,39 @@
 
     <div class="results-body">
       <section v-if="liveFrame?.image_url" class="rail-section frame-section">
-        <div class="frame-wrap" @wheel.prevent="onWheel">
-          <img class="frame-img" :src="mjpegUrl" :alt="liveFrame.task || 'simulation frame'"
-            :style="{ transform: `scale(${frameZoom})` }" />
+        <div class="section-heading">
+          <span>{{ lang === 'zh' ? '仿真画面' : 'Simulation Feed' }}</span>
+          <span v-if="isStale" class="stale-badge">{{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}</span>
+        </div>
+        <div
+          class="frame-wrap"
+          @pointerdown="startCameraDrag"
+          @pointermove="moveCameraDrag"
+          @pointerup="endCameraDrag"
+          @pointercancel="endCameraDrag"
+          @contextmenu.prevent
+          @wheel.prevent="handleCameraWheel"
+        >
+          <div class="camera-controls" @mousedown.stop @wheel.stop>
+            <button
+              type="button"
+              class="camera-button"
+              :title="lang === 'zh' ? '自动对准' : 'Auto frame'"
+              @click="sendCameraAction({ action: 'set_auto' })"
+            >A</button>
+            <button
+              type="button"
+              class="camera-button"
+              :title="lang === 'zh' ? '重置视角' : 'Reset view'"
+              @click="sendCameraAction({ action: 'reset_auto' })"
+            >R</button>
+          </div>
+          <img
+            class="frame-img"
+            draggable="false"
+            :src="mjpegUrl"
+            :alt="liveFrame.task || 'simulation frame'"
+          />
         </div>
       </section>
 
@@ -33,8 +63,9 @@ export default {
   data () {
     return {
       nowSec: Math.floor(Date.now() / 1000),
-      frameZoom: 1.0,
-      _staleTimer: null
+      _staleTimer: null,
+      cameraDrag: null,
+      lastCameraSend: 0
     }
   },
   setup () {
@@ -48,6 +79,57 @@ export default {
   },
   beforeUnmount () {
     if (this._staleTimer) clearInterval(this._staleTimer)
+  },
+  methods: {
+    startCameraDrag (event) {
+      if (event.button !== 0 && event.button !== 2) return
+      event.currentTarget.setPointerCapture?.(event.pointerId)
+      this.cameraDrag = {
+        x: event.clientX,
+        y: event.clientY,
+        pointerId: event.pointerId,
+        mode: event.shiftKey || event.button === 2 ? 'pan' : 'orbit'
+      }
+    },
+    moveCameraDrag (event) {
+      if (!this.cameraDrag) return
+      const dx = event.clientX - this.cameraDrag.x
+      const dy = event.clientY - this.cameraDrag.y
+      if (Math.abs(dx) + Math.abs(dy) < 2) return
+      this.cameraDrag.x = event.clientX
+      this.cameraDrag.y = event.clientY
+
+      const now = Date.now()
+      if (now - this.lastCameraSend < 40) return
+      this.lastCameraSend = now
+
+      if (this.cameraDrag.mode === 'pan') {
+        this.sendCameraAction({ action: 'pan', delta_x: -dx, delta_y: dy })
+      } else {
+        this.sendCameraAction({ action: 'orbit', delta_yaw: dx * 0.35, delta_pitch: -dy * 0.25 })
+      }
+    },
+    endCameraDrag (event) {
+      if (event?.currentTarget && this.cameraDrag?.pointerId != null) {
+        event.currentTarget.releasePointerCapture?.(this.cameraDrag.pointerId)
+      }
+      this.cameraDrag = null
+    },
+    handleCameraWheel (event) {
+      const factor = event.deltaY < 0 ? 0.88 : 1.14
+      this.sendCameraAction({ action: 'zoom', zoom_factor: factor })
+    },
+    async sendCameraAction (payload) {
+      try {
+        await fetch('/api/sim/camera', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        })
+      } catch (error) {
+        console.warn('camera action failed', error)
+      }
+    }
   },
   computed: {
     hasContent () {
@@ -63,12 +145,6 @@ export default {
       // Use run_id as cache-buster so stream reconnects when sim is reset
       const rid = this.liveFrame?.run_id || 'default'
       return `/api/sim/mjpeg?rid=${encodeURIComponent(rid)}`
-    }
-  },
-  methods: {
-    onWheel (e) {
-      const delta = e.deltaY > 0 ? -0.1 : 0.1
-      this.frameZoom = Math.max(0.5, Math.min(4.0, this.frameZoom + delta))
     }
   }
 }
@@ -129,11 +205,9 @@ export default {
 .results-body {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  overflow: hidden;
+  display: grid;
+  gap: 16px;
   padding-right: 4px;
 }
 
@@ -165,12 +239,19 @@ export default {
 
 .frame-section .frame-wrap {
   width: 100%;
-  max-width: 100%;
-  aspect-ratio: 4 / 3;
+  height: min(72vh, calc(100vh - 190px));
+  min-height: 360px;
   background: #000;
   border-radius: 14px;
   overflow: hidden;
   position: relative;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.frame-section .frame-wrap:active {
+  cursor: grabbing;
 }
 
 .frame-section .frame-img {
@@ -180,6 +261,36 @@ export default {
   height: 100%;
   object-fit: contain;
   display: block;
+  pointer-events: none;
+}
+
+.camera-controls {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  gap: 6px;
+}
+
+.camera-button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(9, 14, 23, 0.78);
+  color: #e7eefc;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.camera-button:hover {
+  background: rgba(34, 87, 160, 0.82);
+  border-color: rgba(143, 183, 255, 0.44);
 }
 
 .card-grid,
