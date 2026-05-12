@@ -22,6 +22,16 @@ from pydantic import BaseModel, Field
 MAX_STEPS_PER_CALL = 10000  # 单次工具调用最多步进数，防止超时
 _sim_lock = threading.Lock()  # 保护 simulation_instance 全局状态
 _plane_body_id = None  # 跟踪 plane 的 body_id，不假设为 0
+_camera_state: dict[str, Any] = {
+    "mode": "auto",
+    "manual_locked": False,
+    "target": [0.2, 0.0, 0.15],
+    "yaw": 45.0,
+    "pitch": -30.0,
+    "distance": 1.2,
+    "fov": 60.0,
+}
+_DEFAULT_CAMERA_STATE = dict(_camera_state)
 
 
 def _validate_vector(
@@ -67,14 +77,17 @@ def _safe_step(cid: int, steps: int) -> int:
 def _is_body_valid(cid: int, body_id: int) -> bool:
     """检查 body_id 是否对应一个有效物体。"""
     try:
-        num = p.getNumBodies(physicsClientId=cid)
-        return 0 <= body_id < num
+        return body_id in _body_ids(cid)
     except Exception:
         return False
 
 
 def _tool_error(task: str, msg: str, err_type: str = "error") -> dict:
     return {"task": task, "status": "error", "message": msg, "error_type": err_type}
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, float(value)))
 
 
 # ======================
@@ -155,23 +168,119 @@ def _encode_png_rgb(rgb: np.ndarray) -> bytes:
     )
 
 
+def _body_ids(cid: int) -> list[int]:
+    return [
+        p.getBodyUniqueId(i, physicsClientId=cid)
+        for i in range(p.getNumBodies(physicsClientId=cid))
+    ]
+
+
+def _scene_aabb(cid: int) -> tuple[list[float], list[float]] | None:
+    mins: list[np.ndarray] = []
+    maxs: list[np.ndarray] = []
+    for body_id in _body_ids(cid):
+        if body_id == _plane_body_id:
+            continue
+        try:
+            num_joints = p.getNumJoints(body_id, physicsClientId=cid)
+            link_indices = [-1] + list(range(num_joints))
+            for link_idx in link_indices:
+                aabb_min, aabb_max = p.getAABB(body_id, link_idx, physicsClientId=cid)
+                aabb_min_arr = np.array(aabb_min, dtype=float)
+                aabb_max_arr = np.array(aabb_max, dtype=float)
+                if np.all(np.isfinite(aabb_min_arr)) and np.all(np.isfinite(aabb_max_arr)):
+                    mins.append(aabb_min_arr)
+                    maxs.append(aabb_max_arr)
+        except Exception:
+            continue
+
+    if not mins or not maxs:
+        return None
+    return np.min(np.vstack(mins), axis=0).tolist(), np.max(np.vstack(maxs), axis=0).tolist()
+
+
+def _auto_camera_from_scene(cid: int, width: int, height: int) -> dict[str, Any]:
+    aabb = _scene_aabb(cid)
+    if aabb is None:
+        target = [0.2, 0.0, 0.15]
+        radius = 0.8
+    else:
+        aabb_min, aabb_max = aabb
+        target = [(aabb_min[i] + aabb_max[i]) / 2.0 for i in range(3)]
+        extents = [max(0.05, aabb_max[i] - aabb_min[i]) for i in range(3)]
+        radius = float(np.linalg.norm(extents) / 2.0)
+        target[2] = max(target[2], aabb_min[2] + extents[2] * 0.45)
+
+    fov = _clamp(float(_camera_state.get("fov", 60.0)), 25.0, 90.0)
+    aspect = max(0.1, width / max(1, height))
+    half_fov = np.radians(fov / 2.0)
+    fit_distance = radius / max(0.1, np.sin(half_fov))
+    if aspect < 1.0:
+        fit_distance /= max(0.35, aspect)
+
+    return {
+        "mode": "auto",
+        "manual_locked": False,
+        "target": [float(v) for v in target],
+        "yaw": float(_camera_state.get("yaw", 45.0)),
+        "pitch": float(_camera_state.get("pitch", -30.0)),
+        "distance": _clamp(fit_distance * 1.35, 0.35, 25.0),
+        "fov": fov,
+    }
+
+
+def _normalize_camera_state(state: dict[str, Any]) -> dict[str, Any]:
+    target = state.get("target", _DEFAULT_CAMERA_STATE["target"])
+    try:
+        target = _validate_vector(list(target), "target", size=3, allow_negative=True, max_val=100.0)
+    except Exception:
+        target = list(_DEFAULT_CAMERA_STATE["target"])
+    return {
+        "mode": "manual" if state.get("manual_locked") else "auto",
+        "manual_locked": bool(state.get("manual_locked", False)),
+        "target": [float(v) for v in target],
+        "yaw": float(state.get("yaw", _DEFAULT_CAMERA_STATE["yaw"])) % 360.0,
+        "pitch": _clamp(float(state.get("pitch", _DEFAULT_CAMERA_STATE["pitch"])), -89.0, 10.0),
+        "distance": _clamp(float(state.get("distance", _DEFAULT_CAMERA_STATE["distance"])), 0.15, 50.0),
+        "fov": _clamp(float(state.get("fov", _DEFAULT_CAMERA_STATE["fov"])), 25.0, 90.0),
+    }
+
+
+def _current_camera_state(cid: int | None = None, width: int = 320, height: int = 240) -> dict[str, Any]:
+    global _camera_state
+    if (
+        cid is not None
+        and p.isConnected(cid)
+        and not bool(_camera_state.get("manual_locked"))
+        and _camera_state.get("mode") == "auto"
+    ):
+        _camera_state.update(_auto_camera_from_scene(cid, width, height))
+    _camera_state.update(_normalize_camera_state(_camera_state))
+    return dict(_camera_state)
+
+
 def _capture_rgb_frame(width: int = 320, height: int = 240) -> np.ndarray:
     cid = simulation_instance
     if cid is None or not p.isConnected(cid):
         # Return black frame if simulation is not connected
         return np.zeros((height, width, 3), dtype=np.uint8)
     aspect = width / max(1, height)
+    camera = _current_camera_state(cid, width, height)
     view_matrix = p.computeViewMatrixFromYawPitchRoll(
-        cameraTargetPosition=[0.2, 0.0, 0.02],
-        distance=1.2,
-        yaw=45.0,
-        pitch=-35.0,
+        cameraTargetPosition=camera["target"],
+        distance=camera["distance"],
+        yaw=camera["yaw"],
+        pitch=camera["pitch"],
         roll=0.0,
         upAxisIndex=2,
         physicsClientId=cid,
     )
     projection_matrix = p.computeProjectionMatrixFOV(
-        fov=60.0, aspect=aspect, nearVal=0.1, farVal=10.0, physicsClientId=cid
+        fov=camera["fov"],
+        aspect=aspect,
+        nearVal=0.02,
+        farVal=max(10.0, camera["distance"] * 6.0),
+        physicsClientId=cid,
     )
     _, _, rgba, _, _ = p.getCameraImage(
         width,
@@ -206,6 +315,7 @@ def _publish_realtime_frame(
         "total_steps": int(total_steps),
         "done": bool(done),
         "timestamp": ts,
+        "camera": _current_camera_state(simulation_instance),
     }
     if extra:
         payload.update(extra)
@@ -233,7 +343,7 @@ def _publish_snapshot(task: str, *, done: bool = False, extra: dict[str, Any] | 
 
 def setup_simulation(gui: bool = False):
     """初始化PyBullet环境，每次调用都创建干净的环境。失败时抛出异常。"""
-    global simulation_instance, _plane_body_id
+    global simulation_instance, _plane_body_id, _camera_state
     with _sim_lock:
         # 先清理旧环境（如果存在）
         if simulation_instance is not None:
@@ -250,6 +360,7 @@ def setup_simulation(gui: bool = False):
                     raise RuntimeError(f"Failed to disconnect old PyBullet instance: {e}") from e
             simulation_instance = None
             _plane_body_id = None
+            _camera_state = dict(_DEFAULT_CAMERA_STATE)
 
         if gui:
             simulation_instance = p.connect(p.GUI)
@@ -269,6 +380,7 @@ def setup_simulation(gui: bool = False):
         _plane_body_id = p.loadURDF("plane.urdf", physicsClientId=simulation_instance)
         if _plane_body_id < 0:
             raise RuntimeError("Failed to load plane.urdf")
+        _camera_state = dict(_DEFAULT_CAMERA_STATE)
         _ensure_stream_dir()
 
 
@@ -287,7 +399,7 @@ def with_simulation():
 
 def cleanup_simulation():
     """关闭PyBullet环境，释放所有资源。重试disconnect直到成功。"""
-    global simulation_instance, _plane_body_id
+    global simulation_instance, _plane_body_id, _camera_state
     with _sim_lock:
         if simulation_instance is not None:
             # 重试disconnect，因为PyBullet偶发报错
@@ -305,6 +417,7 @@ def cleanup_simulation():
                     raise RuntimeError(f"Failed to disconnect PyBullet after 3 attempts: {e}") from e
             simulation_instance = None
             _plane_body_id = None
+            _camera_state = dict(_DEFAULT_CAMERA_STATE)
             # 清理帧文件
             try:
                 if LATEST_META_FILE.exists():
@@ -401,6 +514,98 @@ def check_static_assets():
         "asset_status": status,
         "missing_assets": missing,
     }
+
+
+class SetCameraViewArgs(BaseModel):
+    action: str = Field(
+        default="reset_auto",
+        description="Camera action: orbit, pan, zoom, reset_auto, or set_auto.",
+    )
+    delta_yaw: float = Field(default=0.0, description="Orbit yaw delta in degrees.")
+    delta_pitch: float = Field(default=0.0, description="Orbit pitch delta in degrees.")
+    delta_x: float = Field(default=0.0, description="Pan delta along world/camera x plane.")
+    delta_y: float = Field(default=0.0, description="Pan delta along world/camera y plane.")
+    delta_z: float = Field(default=0.0, description="Pan delta along vertical axis.")
+    zoom_factor: float = Field(
+        default=1.0,
+        description="Multiplicative distance factor. <1 zooms in, >1 zooms out.",
+    )
+    target: list[float] | None = Field(default=None, description="Optional explicit target [x,y,z].")
+    yaw: float | None = Field(default=None, description="Optional absolute yaw.")
+    pitch: float | None = Field(default=None, description="Optional absolute pitch.")
+    distance: float | None = Field(default=None, description="Optional absolute distance.")
+    fov: float | None = Field(default=None, description="Optional absolute field of view.")
+
+
+@mcp_server.tool()
+def set_camera_view(args: SetCameraViewArgs):
+    """
+    Adjust the realtime PyBullet camera.
+
+    Use this when the user says the scene is not fully visible, wants a new
+    viewpoint, asks to zoom/pan/orbit, or asks to restore automatic framing.
+    Manual orbit/pan/zoom locks the camera until reset_auto or set_auto.
+    """
+    global _camera_state
+    action = (args.action or "").strip().lower()
+    if action not in {"orbit", "pan", "zoom", "reset_auto", "set_auto"}:
+        return _tool_error("set_camera_view", f"Unsupported camera action: {args.action}", "validation")
+
+    try:
+        with with_simulation() as cid:
+            state = _current_camera_state(cid)
+
+            if action in {"reset_auto", "set_auto"}:
+                _camera_state = dict(_DEFAULT_CAMERA_STATE)
+                _camera_state["mode"] = "auto"
+                _camera_state["manual_locked"] = False
+                state = _current_camera_state(cid)
+            else:
+                state["manual_locked"] = True
+                state["mode"] = "manual"
+                if action == "orbit":
+                    state["yaw"] = float(state["yaw"]) + float(args.delta_yaw)
+                    state["pitch"] = float(state["pitch"]) + float(args.delta_pitch)
+                elif action == "pan":
+                    scale = max(0.05, float(state["distance"])) * 0.004
+                    yaw_rad = np.radians(float(state["yaw"]))
+                    right = np.array([np.cos(yaw_rad), np.sin(yaw_rad), 0.0])
+                    forward = np.array([-np.sin(yaw_rad), np.cos(yaw_rad), 0.0])
+                    target = np.array(state["target"], dtype=float)
+                    target += right * float(args.delta_x) * scale
+                    target += forward * float(args.delta_y) * scale
+                    target += np.array([0.0, 0.0, float(args.delta_z) * scale])
+                    state["target"] = target.tolist()
+                elif action == "zoom":
+                    factor = _clamp(float(args.zoom_factor), 0.05, 20.0)
+                    state["distance"] = float(state["distance"]) * factor
+
+                if args.target is not None:
+                    _validate_vector(args.target, "target", size=3, allow_negative=True, max_val=100.0)
+                    state["target"] = list(args.target)
+                if args.yaw is not None:
+                    state["yaw"] = float(args.yaw)
+                if args.pitch is not None:
+                    state["pitch"] = float(args.pitch)
+                if args.distance is not None:
+                    state["distance"] = float(args.distance)
+                if args.fov is not None:
+                    state["fov"] = float(args.fov)
+
+                _camera_state.update(_normalize_camera_state(state))
+                state = dict(_camera_state)
+
+            _publish_snapshot("set_camera_view", done=False, extra={"camera": state})
+            return {
+                "task": "set_camera_view",
+                "status": "success",
+                "camera": state,
+                "message": f"Camera action applied: {action}",
+            }
+    except ValueError as e:
+        return _tool_error("set_camera_view", str(e), "validation")
+    except Exception as e:
+        raise RuntimeError(f"set_camera_view failed: {e}") from e
 
 
 # ======================
@@ -921,7 +1126,7 @@ def check_simulation_state():
         state_data = {}
 
         # 获取所有物体的状态
-        for obj_id in range(num_objects):
+        for obj_id in _body_ids(cid):
             pos, _ = p.getBasePositionAndOrientation(
                 obj_id, physicsClientId=cid
             )
@@ -968,8 +1173,7 @@ def reset_simulation(args: ResetSimulationArgs):
             kept_ids = []
             if args.keep_objects:
                 # 只重置位置和速度，保留物体
-                num_bodies = p.getNumBodies(physicsClientId=cid)
-                for body_id in range(num_bodies):
+                for body_id in _body_ids(cid):
                     if body_id == _plane_body_id:
                         continue  # skip plane (use tracked ID)
                     try:
@@ -980,8 +1184,7 @@ def reset_simulation(args: ResetSimulationArgs):
                         kept_ids.append(f"error_{body_id}: {e}")
             else:
                 # 完全重置 - 删除所有非地面物体
-                num_bodies = p.getNumBodies(physicsClientId=cid)
-                for body_id in range(num_bodies - 1, 0, -1):
+                for body_id in reversed(_body_ids(cid)):
                     if body_id == _plane_body_id:
                         continue
                     try:
