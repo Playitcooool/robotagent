@@ -10,35 +10,60 @@
           <span>{{ lang === 'zh' ? '仿真画面' : 'Simulation Feed' }}</span>
           <span v-if="isStale" class="stale-badge">{{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}</span>
         </div>
-        <div
-          class="frame-wrap"
-          @pointerdown="startCameraDrag"
-          @pointermove="moveCameraDrag"
-          @pointerup="endCameraDrag"
-          @pointercancel="endCameraDrag"
-          @contextmenu.prevent
-          @wheel.prevent="handleCameraWheel"
-        >
-          <div class="camera-controls" @mousedown.stop @wheel.stop>
-            <button
-              type="button"
-              class="camera-button"
-              :title="lang === 'zh' ? '自动对准' : 'Auto frame'"
-              @click="sendCameraAction({ action: 'set_auto' })"
-            >A</button>
-            <button
-              type="button"
-              class="camera-button"
-              :title="lang === 'zh' ? '重置视角' : 'Reset view'"
-              @click="sendCameraAction({ action: 'reset_auto' })"
-            >R</button>
+        <div class="frame-stage">
+          <div
+            class="frame-wrap"
+            @pointerdown="startCameraDrag"
+            @pointermove="moveCameraDrag"
+            @pointerup="endCameraDrag"
+            @pointercancel="endCameraDrag"
+            @contextmenu.prevent
+            @wheel.prevent="handleCameraWheel"
+          >
+            <div class="camera-toolbar" @mousedown.stop @wheel.stop>
+              <button type="button" class="camera-button text" @click="sendCameraAction({ action: 'fit_scene' })">
+                {{ lang === 'zh' ? '适配场景' : 'Fit' }}
+              </button>
+              <button type="button" class="camera-button text" @click="sendCameraAction({ action: 'reset_auto' })">
+                {{ lang === 'zh' ? '重置' : 'Reset' }}
+              </button>
+              <button type="button" class="camera-button text" @click="sendCameraAction({ action: 'preset', preset: 'top' })">
+                {{ lang === 'zh' ? '俯视' : 'Top' }}
+              </button>
+              <button type="button" class="camera-button text" @click="sendCameraAction({ action: 'preset', preset: 'front' })">
+                {{ lang === 'zh' ? '正视' : 'Front' }}
+              </button>
+              <button type="button" class="camera-button text" @click="sendCameraAction({ action: 'preset', preset: 'side' })">
+                {{ lang === 'zh' ? '侧视' : 'Side' }}
+              </button>
+            </div>
+            <img
+              class="frame-img"
+              draggable="false"
+              :src="mjpegUrl"
+              :alt="liveFrame.task || 'simulation frame'"
+            />
           </div>
-          <img
-            class="frame-img"
-            draggable="false"
-            :src="mjpegUrl"
-            :alt="liveFrame.task || 'simulation frame'"
-          />
+        </div>
+        <div class="camera-panel">
+          <button type="button" class="camera-panel-toggle" @click="cameraPanelOpen = !cameraPanelOpen">
+            <span>{{ lang === 'zh' ? '摄像头' : 'Camera' }}</span>
+            <span class="camera-mode">{{ cameraModeLabel }}</span>
+          </button>
+          <p v-if="cameraError" class="camera-error">{{ cameraError }}</p>
+          <div v-if="cameraPanelOpen" class="camera-grid">
+            <label v-for="field in cameraFields" :key="field.key" class="camera-field">
+              <span>{{ field.label }}</span>
+              <input
+                type="number"
+                :min="field.min"
+                :max="field.max"
+                :step="field.step"
+                v-model.number="cameraForm[field.key]"
+                @input="queueCameraFormSend(field.key)"
+              />
+            </label>
+          </div>
         </div>
       </section>
 
@@ -65,7 +90,24 @@ export default {
       nowSec: Math.floor(Date.now() / 1000),
       _staleTimer: null,
       cameraDrag: null,
-      lastCameraSend: 0
+      lastCameraSend: 0,
+      cameraPanelOpen: false,
+      cameraError: '',
+      cameraForm: {
+        eyeX: 0,
+        eyeY: 0,
+        eyeZ: 0,
+        targetX: 0,
+        targetY: 0,
+        targetZ: 0,
+        distance: 1.2,
+        yaw: 45,
+        pitch: -30,
+        fov: 60
+      },
+      cameraFormTimer: null,
+      pendingCameraField: '',
+      syncingCameraForm: false
     }
   },
   setup () {
@@ -79,8 +121,68 @@ export default {
   },
   beforeUnmount () {
     if (this._staleTimer) clearInterval(this._staleTimer)
+    if (this.cameraFormTimer) clearTimeout(this.cameraFormTimer)
+  },
+  watch: {
+    'liveFrame.camera': {
+      handler (camera) {
+        this.syncCameraForm(camera)
+      },
+      immediate: true,
+      deep: true
+    }
   },
   methods: {
+    syncCameraForm (camera) {
+      if (!camera) return
+      this.syncingCameraForm = true
+      const eye = Array.isArray(camera.eye) ? camera.eye : []
+      const target = Array.isArray(camera.target) ? camera.target : []
+      this.cameraForm = {
+        eyeX: this.roundCameraValue(eye[0], this.cameraForm.eyeX),
+        eyeY: this.roundCameraValue(eye[1], this.cameraForm.eyeY),
+        eyeZ: this.roundCameraValue(eye[2], this.cameraForm.eyeZ),
+        targetX: this.roundCameraValue(target[0], this.cameraForm.targetX),
+        targetY: this.roundCameraValue(target[1], this.cameraForm.targetY),
+        targetZ: this.roundCameraValue(target[2], this.cameraForm.targetZ),
+        distance: this.roundCameraValue(camera.distance, this.cameraForm.distance),
+        yaw: this.roundCameraValue(camera.yaw, this.cameraForm.yaw),
+        pitch: this.roundCameraValue(camera.pitch, this.cameraForm.pitch),
+        fov: this.roundCameraValue(camera.fov, this.cameraForm.fov)
+      }
+      this.$nextTick(() => { this.syncingCameraForm = false })
+    },
+    roundCameraValue (value, fallback = 0) {
+      const num = Number(value)
+      if (!Number.isFinite(num)) return fallback
+      return Number(num.toFixed(3))
+    },
+    queueCameraFormSend (fieldKey) {
+      if (this.syncingCameraForm) return
+      this.pendingCameraField = fieldKey || ''
+      if (this.cameraFormTimer) clearTimeout(this.cameraFormTimer)
+      this.cameraFormTimer = setTimeout(() => {
+        this.cameraFormTimer = null
+        this.sendCameraForm()
+      }, 180)
+    },
+    sendCameraForm () {
+      const f = this.cameraForm
+      const payload = {
+        action: 'set_absolute',
+        target: [f.targetX, f.targetY, f.targetZ],
+        fov: f.fov
+      }
+      if (this.pendingCameraField?.startsWith('eye')) {
+        payload.eye = [f.eyeX, f.eyeY, f.eyeZ]
+      } else {
+        payload.distance = f.distance
+        payload.yaw = f.yaw
+        payload.pitch = f.pitch
+      }
+      this.pendingCameraField = ''
+      this.sendCameraAction(payload)
+    },
     startCameraDrag (event) {
       if (event.button !== 0 && event.button !== 2) return
       event.currentTarget.setPointerCapture?.(event.pointerId)
@@ -121,17 +223,42 @@ export default {
     },
     async sendCameraAction (payload) {
       try {
-        await fetch('/api/sim/camera', {
+        this.cameraError = ''
+        const response = await fetch('/api/sim/camera', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         })
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok || data.ok === false) {
+          throw new Error(data.error || `HTTP ${response.status}`)
+        }
       } catch (error) {
+        this.cameraError = error?.message || String(error)
         console.warn('camera action failed', error)
       }
     }
   },
   computed: {
+    cameraFields () {
+      return [
+        { key: 'eyeX', label: 'eye x', step: 0.01 },
+        { key: 'eyeY', label: 'eye y', step: 0.01 },
+        { key: 'eyeZ', label: 'eye z', step: 0.01 },
+        { key: 'targetX', label: 'target x', step: 0.01 },
+        { key: 'targetY', label: 'target y', step: 0.01 },
+        { key: 'targetZ', label: 'target z', step: 0.01 },
+        { key: 'distance', label: 'distance', min: 0.15, max: 50, step: 0.05 },
+        { key: 'yaw', label: 'yaw', min: 0, max: 360, step: 1 },
+        { key: 'pitch', label: 'pitch', min: -89, max: 89, step: 1 },
+        { key: 'fov', label: 'fov', min: 25, max: 90, step: 1 }
+      ]
+    },
+    cameraModeLabel () {
+      const mode = this.liveFrame?.camera?.mode
+      if (mode === 'manual') return this.lang === 'zh' ? '手动视角' : 'Manual'
+      return this.lang === 'zh' ? '自动完整取景' : 'Auto fit'
+    },
     hasContent () {
       return Boolean(this.liveFrame?.image_url)
     },
@@ -237,12 +364,22 @@ export default {
   width: 100%;
 }
 
+.frame-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .frame-section .frame-wrap {
   width: 100%;
-  height: min(72vh, calc(100vh - 190px));
-  min-height: 360px;
+  max-width: 960px;
+  aspect-ratio: 4 / 3;
+  max-height: min(70vh, calc(100vh - 250px));
+  min-height: 300px;
   background: #000;
-  border-radius: 14px;
+  border-radius: 8px;
   overflow: hidden;
   position: relative;
   cursor: grab;
@@ -264,19 +401,22 @@ export default {
   pointer-events: none;
 }
 
-.camera-controls {
+.camera-toolbar {
   position: absolute;
   top: 8px;
   right: 8px;
   z-index: 2;
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
+  max-width: calc(100% - 16px);
 }
 
 .camera-button {
   display: inline-grid;
   place-items: center;
-  width: 30px;
+  min-width: 30px;
   height: 30px;
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -288,9 +428,76 @@ export default {
   cursor: pointer;
 }
 
+.camera-button.text {
+  width: auto;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
 .camera-button:hover {
   background: rgba(34, 87, 160, 0.82);
   border-color: rgba(143, 183, 255, 0.44);
+}
+
+.camera-panel {
+  display: grid;
+  gap: 8px;
+  max-width: 960px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.camera-panel-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.camera-mode {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.camera-error {
+  margin: 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: rgba(255, 91, 91, 0.12);
+  color: #ffb3b3;
+  font-size: 12px;
+}
+
+.camera-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(96px, 1fr));
+  gap: 8px;
+}
+
+.camera-field {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.camera-field input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(6, 10, 16, 0.86);
+  color: var(--text);
+  padding: 0 8px;
 }
 
 .card-grid,

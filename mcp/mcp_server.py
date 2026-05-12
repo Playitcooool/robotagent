@@ -25,11 +25,13 @@ _plane_body_id = None  # 跟踪 plane 的 body_id，不假设为 0
 _camera_state: dict[str, Any] = {
     "mode": "auto",
     "manual_locked": False,
+    "eye": [0.9348, 0.7348, 0.75],
     "target": [0.2, 0.0, 0.15],
     "yaw": 45.0,
     "pitch": -30.0,
     "distance": 1.2,
     "fov": 60.0,
+    "scene_bounds": None,
 }
 _DEFAULT_CAMERA_STATE = dict(_camera_state)
 
@@ -207,8 +209,52 @@ def _scene_aabb(cid: int) -> tuple[list[float], list[float]] | None:
     return np.min(np.vstack(mins), axis=0).tolist(), np.max(np.vstack(maxs), axis=0).tolist()
 
 
+def _scene_bounds_payload(aabb: tuple[list[float], list[float]] | None) -> dict[str, Any] | None:
+    if aabb is None:
+        return None
+    aabb_min, aabb_max = aabb
+    center = [(aabb_min[i] + aabb_max[i]) / 2.0 for i in range(3)]
+    extents = [max(0.0, aabb_max[i] - aabb_min[i]) for i in range(3)]
+    radius = float(np.linalg.norm(extents) / 2.0)
+    return {
+        "min": [float(v) for v in aabb_min],
+        "max": [float(v) for v in aabb_max],
+        "center": [float(v) for v in center],
+        "extents": [float(v) for v in extents],
+        "radius": radius,
+    }
+
+
+def _eye_from_orbit(target: list[float], yaw: float, pitch: float, distance: float) -> list[float]:
+    yaw_rad = np.radians(float(yaw))
+    pitch_rad = np.radians(float(pitch))
+    dist = max(0.001, float(distance))
+    cp = float(np.cos(pitch_rad))
+    offset = np.array(
+        [
+            cp * float(np.cos(yaw_rad)),
+            cp * float(np.sin(yaw_rad)),
+            -float(np.sin(pitch_rad)),
+        ],
+        dtype=float,
+    ) * dist
+    return (np.array(target, dtype=float) + offset).tolist()
+
+
+def _orbit_from_eye_target(eye: list[float], target: list[float]) -> tuple[float, float, float]:
+    offset = np.array(eye, dtype=float) - np.array(target, dtype=float)
+    distance = float(np.linalg.norm(offset))
+    if distance < 0.001:
+        distance = 0.001
+        offset = np.array([distance, 0.0, 0.0], dtype=float)
+    yaw = float(np.degrees(np.arctan2(offset[1], offset[0]))) % 360.0
+    pitch = float(-np.degrees(np.arcsin(_clamp(offset[2] / distance, -1.0, 1.0))))
+    return yaw, pitch, distance
+
+
 def _auto_camera_from_scene(cid: int, width: int, height: int) -> dict[str, Any]:
     aabb = _scene_aabb(cid)
+    scene_bounds = _scene_bounds_payload(aabb)
     if aabb is None:
         target = [0.2, 0.0, 0.15]
         radius = 0.8
@@ -226,14 +272,19 @@ def _auto_camera_from_scene(cid: int, width: int, height: int) -> dict[str, Any]
     horizontal_fit = vertical_fit / max(0.35, aspect)
     fit_distance = max(vertical_fit, horizontal_fit)
 
+    distance = _clamp(fit_distance * 2.4, 0.8, 35.0)
+    yaw = float(_DEFAULT_CAMERA_STATE.get("yaw", 45.0))
+    pitch = float(_DEFAULT_CAMERA_STATE.get("pitch", -30.0))
     return {
         "mode": "auto",
         "manual_locked": False,
+        "eye": _eye_from_orbit(target, yaw, pitch, distance),
         "target": [float(v) for v in target],
-        "yaw": float(_camera_state.get("yaw", 45.0)),
-        "pitch": float(_camera_state.get("pitch", -30.0)),
-        "distance": _clamp(fit_distance * 2.0, 0.6, 35.0),
+        "yaw": yaw,
+        "pitch": pitch,
+        "distance": distance,
         "fov": fov,
+        "scene_bounds": scene_bounds,
     }
 
 
@@ -243,31 +294,43 @@ def _normalize_camera_state(state: dict[str, Any]) -> dict[str, Any]:
         target = _validate_vector(list(target), "target", size=3, allow_negative=True, max_val=100.0)
     except Exception:
         target = list(_DEFAULT_CAMERA_STATE["target"])
+    yaw = float(state.get("yaw", _DEFAULT_CAMERA_STATE["yaw"])) % 360.0
+    pitch = _clamp(float(state.get("pitch", _DEFAULT_CAMERA_STATE["pitch"])), -89.0, 89.0)
+    distance = _clamp(float(state.get("distance", _DEFAULT_CAMERA_STATE["distance"])), 0.15, 50.0)
+    eye = state.get("eye")
+    if eye is not None:
+        try:
+            eye = _validate_vector(list(eye), "eye", size=3, allow_negative=True, max_val=100.0)
+            yaw, pitch, distance = _orbit_from_eye_target(eye, target)
+        except Exception:
+            eye = None
+    if eye is None:
+        eye = _eye_from_orbit(target, yaw, pitch, distance)
     return {
         "mode": "manual" if state.get("manual_locked") else "auto",
         "manual_locked": bool(state.get("manual_locked", False)),
+        "eye": [float(v) for v in eye],
         "target": [float(v) for v in target],
-        "yaw": float(state.get("yaw", _DEFAULT_CAMERA_STATE["yaw"])) % 360.0,
-        "pitch": _clamp(float(state.get("pitch", _DEFAULT_CAMERA_STATE["pitch"])), -89.0, 10.0),
-        "distance": _clamp(float(state.get("distance", _DEFAULT_CAMERA_STATE["distance"])), 0.15, 50.0),
+        "yaw": yaw,
+        "pitch": pitch,
+        "distance": distance,
         "fov": _clamp(float(state.get("fov", _DEFAULT_CAMERA_STATE["fov"])), 25.0, 90.0),
+        "scene_bounds": state.get("scene_bounds"),
     }
 
 
 def _current_camera_state(cid: int | None = None, width: int = 320, height: int = 240) -> dict[str, Any]:
     global _camera_state
-    if (
-        cid is not None
-        and p.isConnected(cid)
-        and not bool(_camera_state.get("manual_locked"))
-        and _camera_state.get("mode") == "auto"
-    ):
-        _camera_state.update(_auto_camera_from_scene(cid, width, height))
+    if cid is not None and p.isConnected(cid):
+        if not bool(_camera_state.get("manual_locked")) and _camera_state.get("mode") == "auto":
+            _camera_state.update(_auto_camera_from_scene(cid, width, height))
+        else:
+            _camera_state["scene_bounds"] = _scene_bounds_payload(_scene_aabb(cid))
     _camera_state.update(_normalize_camera_state(_camera_state))
     return dict(_camera_state)
 
 
-def _capture_rgb_frame(width: int = 320, height: int = 240) -> np.ndarray:
+def _capture_rgb_frame(width: int = 800, height: int = 600) -> np.ndarray:
     cid = simulation_instance
     if cid is None or not p.isConnected(cid):
         # Return black frame if simulation is not connected
@@ -612,7 +675,7 @@ def check_static_assets():
 class SetCameraViewArgs(BaseModel):
     action: str = Field(
         default="reset_auto",
-        description="Camera action: orbit, pan, zoom, reset_auto, or set_auto.",
+        description="Camera action: set_absolute, orbit, pan, zoom, fit_scene, preset, reset_auto, or set_auto.",
     )
     delta_yaw: float = Field(default=0.0, description="Orbit yaw delta in degrees.")
     delta_pitch: float = Field(default=0.0, description="Orbit pitch delta in degrees.")
@@ -624,10 +687,12 @@ class SetCameraViewArgs(BaseModel):
         description="Multiplicative distance factor. <1 zooms in, >1 zooms out.",
     )
     target: list[float] | None = Field(default=None, description="Optional explicit target [x,y,z].")
+    eye: list[float] | None = Field(default=None, description="Optional explicit camera eye [x,y,z].")
     yaw: float | None = Field(default=None, description="Optional absolute yaw.")
     pitch: float | None = Field(default=None, description="Optional absolute pitch.")
     distance: float | None = Field(default=None, description="Optional absolute distance.")
     fov: float | None = Field(default=None, description="Optional absolute field of view.")
+    preset: str | None = Field(default=None, description="Preset view: iso, front, side, or top.")
 
 
 @mcp_server.tool()
@@ -637,18 +702,18 @@ def set_camera_view(args: SetCameraViewArgs):
 
     Use this when the user says the scene is not fully visible, wants a new
     viewpoint, asks to zoom/pan/orbit, or asks to restore automatic framing.
-    Manual orbit/pan/zoom locks the camera until reset_auto or set_auto.
+    Manual actions lock the camera until reset_auto, set_auto, or fit_scene.
     """
     global _camera_state
     action = (args.action or "").strip().lower()
-    if action not in {"orbit", "pan", "zoom", "reset_auto", "set_auto"}:
+    if action not in {"orbit", "pan", "zoom", "reset_auto", "set_auto", "fit_scene", "set_absolute", "preset"}:
         return _tool_error("set_camera_view", f"Unsupported camera action: {args.action}", "validation")
 
     try:
         with with_simulation() as cid:
             state = _current_camera_state(cid)
 
-            if action in {"reset_auto", "set_auto"}:
+            if action in {"reset_auto", "set_auto", "fit_scene"}:
                 _camera_state = dict(_DEFAULT_CAMERA_STATE)
                 _camera_state["mode"] = "auto"
                 _camera_state["manual_locked"] = False
@@ -659,6 +724,7 @@ def set_camera_view(args: SetCameraViewArgs):
                 if action == "orbit":
                     state["yaw"] = float(state["yaw"]) + float(args.delta_yaw)
                     state["pitch"] = float(state["pitch"]) + float(args.delta_pitch)
+                    state["eye"] = None
                 elif action == "pan":
                     scale = max(0.05, float(state["distance"])) * 0.004
                     yaw_rad = np.radians(float(state["yaw"]))
@@ -669,19 +735,39 @@ def set_camera_view(args: SetCameraViewArgs):
                     target += forward * float(args.delta_y) * scale
                     target += np.array([0.0, 0.0, float(args.delta_z) * scale])
                     state["target"] = target.tolist()
+                    state["eye"] = None
                 elif action == "zoom":
                     factor = _clamp(float(args.zoom_factor), 0.05, 20.0)
                     state["distance"] = float(state["distance"]) * factor
+                    state["eye"] = None
+                elif action == "preset":
+                    preset = (args.preset or "").strip().lower()
+                    presets = {
+                        "iso": (45.0, -30.0),
+                        "front": (0.0, 0.0),
+                        "side": (90.0, 0.0),
+                        "top": (0.0, -89.0),
+                    }
+                    if preset not in presets:
+                        return _tool_error("set_camera_view", f"Unsupported camera preset: {args.preset}", "validation")
+                    state["yaw"], state["pitch"] = presets[preset]
+                    state["eye"] = None
 
                 if args.target is not None:
                     _validate_vector(args.target, "target", size=3, allow_negative=True, max_val=100.0)
                     state["target"] = list(args.target)
+                if args.eye is not None:
+                    _validate_vector(args.eye, "eye", size=3, allow_negative=True, max_val=100.0)
+                    state["eye"] = list(args.eye)
                 if args.yaw is not None:
                     state["yaw"] = float(args.yaw)
+                    state["eye"] = None
                 if args.pitch is not None:
                     state["pitch"] = float(args.pitch)
+                    state["eye"] = None
                 if args.distance is not None:
                     state["distance"] = float(args.distance)
+                    state["eye"] = None
                 if args.fov is not None:
                     state["fov"] = float(args.fov)
 
