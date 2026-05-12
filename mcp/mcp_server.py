@@ -1795,8 +1795,11 @@ class GraspObjectArgs(BaseModel):
         description="Maximum allowed distance in meters between end effector and object AABB/center.",
     )
     snap_to_tool: bool = Field(
-        default=True,
-        description="If true, align a nearby object to the tool before creating the fixed grasp.",
+        default=False,
+        description=(
+            "If true, align a nearby object to the tool before creating the fixed grasp. "
+            "Default false keeps the object in place so the robot visibly reaches it."
+        ),
     )
 
 

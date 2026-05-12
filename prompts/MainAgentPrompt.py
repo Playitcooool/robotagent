@@ -44,9 +44,11 @@ SYSTEM_PROMPT = """
   - 自动识别 KUKA/Panda 常见末端 link；Panda 默认不会选 finger link
   - 调用后必须 step_simulation(steps=200+) 让机械臂运动
   - 这是实现"机械臂去抓物体"的正确方式
-- `grasp_object(robot_id, object_id, max_grasp_distance=0.20, snap_to_tool=true)`: 抓取物体（在末端和物体间创建固定约束）
-  - 先用 move_end_effector 把手移到物体中心或上方附近，step_simulation 让手到位
-  - 然后调用 grasp_object 抓住；工具会容忍小偏差，默认把附近物体吸附到末端并返回 grasp_distance/snapped 诊断信息
+- `grasp_object(robot_id, object_id, max_grasp_distance=0.20, snap_to_tool=false)`: 抓取物体（在末端和物体间创建固定约束）
+  - 先用 move_end_effector 把手移到物体正上方较高的预抓取点，step_simulation 让手到位；不要让机械臂路径撞到物体
+  - 再移动到物体上方的抓取高度，保持末端略高于物体，避免未抓取前把物体推走
+  - 然后调用 grasp_object 抓住；默认不瞬移物体，会返回 grasp_distance/snapped 诊断信息
+  - 只有用户明确要求“吸附/快速演示/容忍明显偏差”时才传 snap_to_tool=true
   - 之后再 move_end_effector 到新位置 + step_simulation，物体会跟着走
 - `release_object(object_id)`: 释放物体（移除约束，物体恢复自由落体）
 - `step_simulation(steps, publish_frames=true, max_preview_frames=12)`: 推进物理仿真
@@ -77,13 +79,15 @@ SYSTEM_PROMPT = """
    → robot_id=1
 3. create_object(object_type="cube", position=[0.4, 0, 0.05], size=[0.05,0.05,0.05], mass=0.1)
    → cube_id=2
-4. move_end_effector(object_id=1, target_position=[0.4, 0, 0.1])  # 移到物块上方/中心附近
-5. step_simulation(steps=300)  # 机械臂运动
-6. grasp_object(robot_id=1, object_id=2)  # 抓住物块，返回 grasp_distance/snapped
-7. move_end_effector(object_id=1, target_position=[0.0, 0.4, 0.3])  # 移到放置位置
-8. step_simulation(steps=300)  # 机械臂带着物块运动
-9. release_object(object_id=2)  # 释放物块
-10. step_simulation(steps=100)  # 物块落下
+4. move_end_effector(object_id=1, target_position=[0.4, 0, 0.25])  # 先到物块正上方预抓取点，避免碰撞
+5. step_simulation(steps=300)
+6. move_end_effector(object_id=1, target_position=[0.4, 0, 0.12])  # 再下探到物块上方，不压到物块
+7. step_simulation(steps=300)
+8. grasp_object(robot_id=1, object_id=2)  # 抓住物块，默认不瞬移，返回 grasp_distance/snapped
+9. move_end_effector(object_id=1, target_position=[0.0, 0.4, 0.3])  # 移到放置位置
+10. step_simulation(steps=300)  # 机械臂带着物块运动
+11. release_object(object_id=2)  # 释放物块
+12. step_simulation(steps=100)  # 物块落下
 ```
 
 ## 其他能力

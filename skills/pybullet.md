@@ -303,12 +303,13 @@ Attach a nearby object to the selected robot end-effector with a fixed constrain
 - `object_id` (int): Object body ID to grasp.
 - `end_effector_index` (int, default=-1): Explicit link override; `-1` uses the shared auto-detection used by `move_end_effector`.
 - `max_grasp_distance` (float, default=0.20): Maximum allowed distance from tool to object AABB/center.
-- `snap_to_tool` (bool, default=True): If the tool is near the object, align the object to the tool before creating the constraint for robust pick-and-place demos.
+- `snap_to_tool` (bool, default=False): Keep the object in place by default so the robot visibly reaches it. Set true only for explicit snap/quick-demo behavior.
 
 **Returns:**
 - `constraint_id`, `end_effector_link`, `end_effector_position`, `object_position`, `grasp_distance`, `snapped`
 
-**Recommended workflow:** `move_end_effector -> step_simulation -> grasp_object -> move_end_effector -> step_simulation -> release_object`.
+**Recommended workflow:** move above the object first, descend to a non-colliding grasp height, then grasp:
+`move_end_effector(pregrasp) -> step_simulation -> move_end_effector(grasp_height) -> step_simulation -> grasp_object -> move_end_effector(place) -> step_simulation -> release_object`.
 
 ---
 
@@ -379,18 +380,23 @@ Set global gravity vector.
 1. initialize_simulation(gui=False)
 2. load_urdf(urdf_path="kuka_iiwa/model.urdf", position=[0,0,0], use_fixed_base=True)
 3. create_object(object_type="cube", position=[0.4,0,0.05], size=[0.05,0.05,0.05], mass=0.1)
-4. move_end_effector(object_id=<robot_id>, target_position=[0.4,0,0.1])
+4. move_end_effector(object_id=<robot_id>, target_position=[0.4,0,0.25])
 5. step_simulation(steps=300)
-6. grasp_object(robot_id=<robot_id>, object_id=<cube_id>)
-7. move_end_effector(object_id=<robot_id>, target_position=[0.0,0.4,0.3])
-8. step_simulation(steps=300)
-9. release_object(object_id=<cube_id>)
-10. cleanup_simulation_tool()
+6. move_end_effector(object_id=<robot_id>, target_position=[0.4,0,0.12])
+7. step_simulation(steps=300)
+8. grasp_object(robot_id=<robot_id>, object_id=<cube_id>)
+9. move_end_effector(object_id=<robot_id>, target_position=[0.0,0.4,0.3])
+10. step_simulation(steps=300)
+11. release_object(object_id=<cube_id>)
+12. cleanup_simulation_tool()
 ```
 
 The cube target should be near the object center or just above it. `grasp_object`
-tolerates small offsets by default and returns `grasp_distance` plus `snapped`
-for diagnosis.
+returns `grasp_distance` plus `snapped` for diagnosis. By default it does not
+teleport the object; use `snap_to_tool=true` only when snap-to-gripper behavior
+is explicitly desired. If the object moves before `grasp_object`, the arm path
+or target height is colliding with the object; use a higher pregrasp point and
+keep the grasp target slightly above the object.
 
 ### Workflow C: Multi-Object Scene Setup
 
