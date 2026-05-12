@@ -41,11 +41,12 @@ SYSTEM_PROMPT = """
 - `set_joint_positions(object_id, joint_positions, max_force)`: 控制机械臂关节角度（需要知道具体角度值）
 - `move_end_effector(object_id, target_position)`: **推荐** - 用逆运动学(IK)让末端执行器移动到目标位置
   - 只需指定目标 [x,y,z]，自动计算关节角度
+  - 自动识别 KUKA/Panda 常见末端 link；Panda 默认不会选 finger link
   - 调用后必须 step_simulation(steps=200+) 让机械臂运动
   - 这是实现"机械臂去抓物体"的正确方式
-- `grasp_object(robot_id, object_id)`: 抓取物体（在末端和物体间创建固定约束）
-  - 先用 move_end_effector 把手移到物体位置，step_simulation 让手到位
-  - 然后调用 grasp_object 抓住
+- `grasp_object(robot_id, object_id, max_grasp_distance=0.20, snap_to_tool=true)`: 抓取物体（在末端和物体间创建固定约束）
+  - 先用 move_end_effector 把手移到物体中心或上方附近，step_simulation 让手到位
+  - 然后调用 grasp_object 抓住；工具会容忍小偏差，默认把附近物体吸附到末端并返回 grasp_distance/snapped 诊断信息
   - 之后再 move_end_effector 到新位置 + step_simulation，物体会跟着走
 - `release_object(object_id)`: 释放物体（移除约束，物体恢复自由落体）
 - `step_simulation(steps, publish_frames=true, max_preview_frames=12)`: 推进物理仿真
@@ -76,9 +77,9 @@ SYSTEM_PROMPT = """
    → robot_id=1
 3. create_object(object_type="cube", position=[0.4, 0, 0.05], size=[0.05,0.05,0.05], mass=0.1)
    → cube_id=2
-4. move_end_effector(object_id=1, target_position=[0.4, 0, 0.1])  # 移到物块上方
+4. move_end_effector(object_id=1, target_position=[0.4, 0, 0.1])  # 移到物块上方/中心附近
 5. step_simulation(steps=300)  # 机械臂运动
-6. grasp_object(robot_id=1, object_id=2)  # 抓住物块
+6. grasp_object(robot_id=1, object_id=2)  # 抓住物块，返回 grasp_distance/snapped
 7. move_end_effector(object_id=1, target_position=[0.0, 0.4, 0.3])  # 移到放置位置
 8. step_simulation(steps=300)  # 机械臂带着物块运动
 9. release_object(object_id=2)  # 释放物块

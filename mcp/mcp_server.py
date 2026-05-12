@@ -92,6 +92,89 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, float(value)))
 
 
+_END_EFFECTOR_NAME_PRIORITY = [
+    "panda_hand",
+    "panda_link8",
+    "lbr_iiwa_link_7",
+    "iiwa_link_7",
+    "ee_link",
+    "tool0",
+    "tool",
+    "flange",
+    "wrist_3_link",
+]
+
+
+def _decode_joint_name(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore")
+    return str(value)
+
+
+def _select_end_effector_link(cid: int, body_id: int, requested_index: int = -1) -> int:
+    """Choose a practical tool link for common robot arms."""
+    num_joints = p.getNumJoints(body_id, physicsClientId=cid)
+    if num_joints <= 0:
+        raise ValueError(f"Body {body_id} has no links for end-effector control.")
+    if requested_index >= 0:
+        if requested_index >= num_joints:
+            raise ValueError(
+                f"end_effector_index {requested_index} out of range for body {body_id} "
+                f"with {num_joints} joints."
+            )
+        return requested_index
+
+    link_names: dict[int, str] = {}
+    movable_links: list[int] = []
+    for i in range(num_joints):
+        info = p.getJointInfo(body_id, i, physicsClientId=cid)
+        link_name = _decode_joint_name(info[12]).lower()
+        link_names[i] = link_name
+        if info[2] != p.JOINT_FIXED:
+            movable_links.append(i)
+
+    for preferred in _END_EFFECTOR_NAME_PRIORITY:
+        preferred_lower = preferred.lower()
+        for link_idx, link_name in link_names.items():
+            if link_name == preferred_lower:
+                return link_idx
+
+    # Panda finger links are usually the last movable joints; prefer the hand or
+    # fixed tool frame when present, and otherwise avoid treating a finger as EE.
+    non_finger_links = [
+        i for i in range(num_joints)
+        if "finger" not in link_names.get(i, "") and "gripper" not in link_names.get(i, "")
+    ]
+    if non_finger_links:
+        non_finger_movable = [i for i in movable_links if i in non_finger_links]
+        if non_finger_movable:
+            return non_finger_movable[-1]
+        return non_finger_links[-1]
+
+    if movable_links:
+        return movable_links[-1]
+    return num_joints - 1
+
+
+def _end_effector_pose(cid: int, body_id: int, link_index: int) -> tuple[list[float], list[float]]:
+    link_state = p.getLinkState(
+        body_id,
+        link_index,
+        computeForwardKinematics=True,
+        physicsClientId=cid,
+    )
+    return list(link_state[4]), list(link_state[5])
+
+
+def _aabb_distance_to_point(cid: int, body_id: int, point: list[float]) -> float:
+    aabb_min, aabb_max = p.getAABB(body_id, -1, physicsClientId=cid)
+    point_arr = np.array(point, dtype=float)
+    min_arr = np.array(aabb_min, dtype=float)
+    max_arr = np.array(aabb_max, dtype=float)
+    delta = np.maximum(np.maximum(min_arr - point_arr, point_arr - max_arr), 0.0)
+    return float(np.linalg.norm(delta))
+
+
 # ======================
 # 初始化 MCP 服务器
 # ======================
@@ -1647,15 +1730,10 @@ def move_end_effector(args: MoveEndEffectorArgs):
                 return _tool_error("move_end_effector", f"Object ID {args.object_id} not found.", "validation")
 
             num_joints = p.getNumJoints(args.object_id, physicsClientId=cid)
-            # Auto-detect end effector: use last non-fixed link
-            ee_index = args.end_effector_index
-            if ee_index < 0:
-                ee_index = num_joints - 1
-                for i in range(num_joints - 1, -1, -1):
-                    info = p.getJointInfo(args.object_id, i, physicsClientId=cid)
-                    if info[2] != p.JOINT_FIXED:
-                        ee_index = i
-                        break
+            try:
+                ee_index = _select_end_effector_link(cid, args.object_id, args.end_effector_index)
+            except ValueError as e:
+                return _tool_error("move_end_effector", str(e), "validation")
 
             # Compute IK
             joint_positions = p.calculateInverseKinematics(
@@ -1684,11 +1762,13 @@ def move_end_effector(args: MoveEndEffectorArgs):
                 )
 
             _publish_snapshot_async("move_end_effector", done=False, extra={"object_id": args.object_id})
+            ee_pos, _ = _end_effector_pose(cid, args.object_id, ee_index)
             return {
                 "task": "move_end_effector",
                 "status": "success",
                 "object_id": args.object_id,
                 "end_effector_link": ee_index,
+                "end_effector_position": [round(float(v), 4) for v in ee_pos],
                 "target_position": args.target_position,
                 "joint_positions": [round(float(v), 4) for v in joint_positions[:n]],
                 "message": f"IK solved. Call step_simulation(steps=200) to animate arm to target.",
@@ -1709,6 +1789,14 @@ class GraspObjectArgs(BaseModel):
     end_effector_index: int = Field(
         default=-1,
         description="Link index of end effector. -1 = last non-fixed link.",
+    )
+    max_grasp_distance: float = Field(
+        default=0.20,
+        description="Maximum allowed distance in meters between end effector and object AABB/center.",
+    )
+    snap_to_tool: bool = Field(
+        default=True,
+        description="If true, align a nearby object to the tool before creating the fixed grasp.",
     )
 
 
@@ -1738,16 +1826,56 @@ def grasp_object(args: GraspObjectArgs):
                     pass
                 del _active_grasp_constraints[args.object_id]
 
-            num_joints = p.getNumJoints(args.robot_id, physicsClientId=cid)
-            ee_index = args.end_effector_index
-            if ee_index < 0:
-                for i in range(num_joints - 1, -1, -1):
-                    info = p.getJointInfo(args.robot_id, i, physicsClientId=cid)
-                    if info[2] != p.JOINT_FIXED:
-                        ee_index = i
-                        break
-                if ee_index < 0:
-                    ee_index = num_joints - 1
+            if float(args.max_grasp_distance) < 0:
+                return _tool_error("grasp_object", "max_grasp_distance must be non-negative.", "validation")
+
+            try:
+                ee_index = _select_end_effector_link(cid, args.robot_id, args.end_effector_index)
+            except ValueError as e:
+                return _tool_error("grasp_object", str(e), "validation")
+
+            ee_pos, ee_orn = _end_effector_pose(cid, args.robot_id, ee_index)
+            obj_pos, obj_orn = p.getBasePositionAndOrientation(args.object_id, physicsClientId=cid)
+            obj_pos = list(obj_pos)
+            obj_orn = list(obj_orn)
+            center_distance = float(np.linalg.norm(np.array(ee_pos) - np.array(obj_pos)))
+            aabb_distance = _aabb_distance_to_point(cid, args.object_id, ee_pos)
+            grasp_distance = min(center_distance, aabb_distance)
+            if grasp_distance > float(args.max_grasp_distance):
+                return {
+                    "task": "grasp_object",
+                    "status": "warning",
+                    "robot_id": args.robot_id,
+                    "object_id": args.object_id,
+                    "end_effector_link": ee_index,
+                    "end_effector_position": [float(v) for v in ee_pos],
+                    "object_position": [float(v) for v in obj_pos],
+                    "grasp_distance": grasp_distance,
+                    "max_grasp_distance": float(args.max_grasp_distance),
+                    "message": "Object is too far from the end effector; no grasp constraint created.",
+                }
+
+            snapped = False
+            if bool(args.snap_to_tool) and center_distance > 0.005:
+                p.resetBasePositionAndOrientation(
+                    args.object_id,
+                    ee_pos,
+                    obj_orn,
+                    physicsClientId=cid,
+                )
+                obj_pos, obj_orn = p.getBasePositionAndOrientation(args.object_id, physicsClientId=cid)
+                obj_pos = list(obj_pos)
+                obj_orn = list(obj_orn)
+                snapped = True
+                _invalidate_scene_bounds()
+
+            inv_ee_pos, inv_ee_orn = p.invertTransform(ee_pos, ee_orn)
+            parent_frame_pos, parent_frame_orn = p.multiplyTransforms(
+                inv_ee_pos,
+                inv_ee_orn,
+                obj_pos,
+                obj_orn,
+            )
 
             # Create fixed constraint between end effector and object
             constraint_id = p.createConstraint(
@@ -1757,8 +1885,10 @@ def grasp_object(args: GraspObjectArgs):
                 childLinkIndex=-1,
                 jointType=p.JOINT_FIXED,
                 jointAxis=[0, 0, 0],
-                parentFramePosition=[0, 0, 0.05],
+                parentFramePosition=parent_frame_pos,
+                parentFrameOrientation=parent_frame_orn,
                 childFramePosition=[0, 0, 0],
+                childFrameOrientation=[0, 0, 0, 1],
                 physicsClientId=cid,
             )
             _active_grasp_constraints[args.object_id] = constraint_id
@@ -1769,6 +1899,11 @@ def grasp_object(args: GraspObjectArgs):
                 "robot_id": args.robot_id,
                 "object_id": args.object_id,
                 "constraint_id": constraint_id,
+                "end_effector_link": ee_index,
+                "end_effector_position": [float(v) for v in ee_pos],
+                "object_position": [float(v) for v in obj_pos],
+                "grasp_distance": grasp_distance,
+                "snapped": snapped,
                 "message": "Object grasped. Move the arm and the object will follow.",
             }
     except Exception as e:

@@ -262,7 +262,66 @@ Create a single rigid body (cube/sphere/cylinder) with custom mass and color.
 
 ---
 
-### 18. `delete_object`
+### 18. `load_urdf`
+
+Load a robot or articulated URDF model.
+
+**Parameters:**
+- `urdf_path` (str): Built-in examples include `kuka_iiwa/model.urdf` and `franka_panda/panda.urdf`.
+- `position` (list[3], default=[0,0,0]): Base position.
+- `orientation` (list[4], default=[0,0,0,1]): Base quaternion.
+- `use_fixed_base` (bool, default=True): Keep robot base fixed.
+
+**Returns:**
+- `object_id`, `urdf_path`, `position`, `num_joints`
+
+---
+
+### 19. `move_end_effector`
+
+Move a robot tool link to a world-space target with inverse kinematics. Auto-detects common tool links such as KUKA `lbr_iiwa_link_7` and Panda `panda_hand` / `panda_link8`; Panda finger links are avoided by default.
+
+**Parameters:**
+- `object_id` (int): Robot body ID from `load_urdf`.
+- `target_position` (list[3]): Desired tool position `[x,y,z]`.
+- `end_effector_index` (int, default=-1): Explicit link override; `-1` uses auto-detection.
+- `max_force` (float, default=500): Motor force.
+
+**Returns:**
+- `end_effector_link`, `end_effector_position`, `joint_positions`
+
+**Workflow:** Call `step_simulation(steps=200+)` after this tool so the arm physically moves to the IK target.
+
+---
+
+### 20. `grasp_object`
+
+Attach a nearby object to the selected robot end-effector with a fixed constraint. The tool computes the real object pose relative to the tool link at grasp time, so the object follows without the old hard-coded offset.
+
+**Parameters:**
+- `robot_id` (int): Robot body ID.
+- `object_id` (int): Object body ID to grasp.
+- `end_effector_index` (int, default=-1): Explicit link override; `-1` uses the shared auto-detection used by `move_end_effector`.
+- `max_grasp_distance` (float, default=0.20): Maximum allowed distance from tool to object AABB/center.
+- `snap_to_tool` (bool, default=True): If the tool is near the object, align the object to the tool before creating the constraint for robust pick-and-place demos.
+
+**Returns:**
+- `constraint_id`, `end_effector_link`, `end_effector_position`, `object_position`, `grasp_distance`, `snapped`
+
+**Recommended workflow:** `move_end_effector -> step_simulation -> grasp_object -> move_end_effector -> step_simulation -> release_object`.
+
+---
+
+### 21. `release_object`
+
+Remove the active fixed grasp constraint for an object.
+
+**Parameters:**
+- `object_id` (int): Object body ID to release.
+
+---
+
+### 22. `delete_object`
 
 Remove a body from the simulation.
 
@@ -277,7 +336,7 @@ Remove a body from the simulation.
 
 ---
 
-### 19. `get_simulation_info`
+### 23. `get_simulation_info`
 
 Query simulation engine parameters.
 
@@ -286,7 +345,7 @@ Query simulation engine parameters.
 
 ---
 
-### 20. `set_gravity`
+### 24. `set_gravity`
 
 Set global gravity vector.
 
@@ -318,10 +377,20 @@ Set global gravity vector.
 
 ```
 1. initialize_simulation(gui=False)
-2. grab_and_place_step(start_position=[0.2,0,0.02], target_position=[0.4,0.4,0.02], steps=120)
-3. get_object_state(object_id=<returned_id>)
-4. cleanup_simulation_tool()
+2. load_urdf(urdf_path="kuka_iiwa/model.urdf", position=[0,0,0], use_fixed_base=True)
+3. create_object(object_type="cube", position=[0.4,0,0.05], size=[0.05,0.05,0.05], mass=0.1)
+4. move_end_effector(object_id=<robot_id>, target_position=[0.4,0,0.1])
+5. step_simulation(steps=300)
+6. grasp_object(robot_id=<robot_id>, object_id=<cube_id>)
+7. move_end_effector(object_id=<robot_id>, target_position=[0.0,0.4,0.3])
+8. step_simulation(steps=300)
+9. release_object(object_id=<cube_id>)
+10. cleanup_simulation_tool()
 ```
+
+The cube target should be near the object center or just above it. `grasp_object`
+tolerates small offsets by default and returns `grasp_distance` plus `snapped`
+for diagnosis.
 
 ### Workflow C: Multi-Object Scene Setup
 
