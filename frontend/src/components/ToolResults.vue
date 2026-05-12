@@ -1,11 +1,12 @@
 <template>
   <div class="results-shell">
+    <header class="results-header">
+      <h2>{{ lang === 'zh' ? '仿真画面' : 'Simulation Feed' }}</h2>
+    </header>
+
     <div class="results-body">
       <section v-if="liveFrame?.image_url" class="rail-section frame-section">
-        <div class="section-heading">
-          <span>{{ lang === 'zh' ? '仿真画面' : 'Simulation Feed' }}</span>
-          <span v-if="isStale" class="stale-badge">{{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}</span>
-        </div>
+        <span v-if="isStale" class="stale-badge">{{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}</span>
         <div class="frame-wrap" @wheel.prevent="onWheel">
           <img
             class="frame-img"

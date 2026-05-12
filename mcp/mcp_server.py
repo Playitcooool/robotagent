@@ -175,6 +175,8 @@ def _capture_rgb_frame(width: int = 320, height: int = 240) -> np.ndarray:
     all_mins = []
     all_maxs = []
     for body_id in range(num_bodies):
+        if body_id == _plane_body_id:
+            continue  # Skip infinite ground plane
         try:
             aabb_min, aabb_max = p.getAABB(body_id, physicsClientId=cid)
             all_mins.append(aabb_min)
