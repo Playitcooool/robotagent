@@ -157,13 +157,15 @@ export default {
   gap: 8px;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
   flex: 1;
+  width: 100%;
 }
 
 .frame-section .frame-wrap {
   width: 100%;
+  max-width: 100%;
   aspect-ratio: 4 / 3;
   background: #000;
   border-radius: 14px;
