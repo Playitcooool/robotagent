@@ -1002,6 +1002,83 @@ def create_object(args: CreateObjectArgs):
 
 
 # ======================
+# Tool: Load URDF Model (robots, articulated objects)
+# ======================
+class LoadUrdfArgs(BaseModel):
+    urdf_path: str = Field(
+        description=(
+            "URDF file path. Common built-in models (pybullet_data):\n"
+            "- 'kuka_iiwa/model.urdf' (7-DOF robot arm, KUKA IIWA)\n"
+            "- 'franka_panda/panda.urdf' (Franka Panda arm)\n"
+            "- 'r2d2.urdf' (R2D2 robot)\n"
+            "- 'humanoid/humanoid.urdf'\n"
+            "- 'husky/husky.urdf' (mobile base)"
+        ),
+    )
+    position: list[float] = Field(
+        default=[0.0, 0.0, 0.0],
+        description="Base position [x, y, z] in meters.",
+    )
+    orientation: list[float] = Field(
+        default=[0.0, 0.0, 0.0, 1.0],
+        description="Base orientation as quaternion [x, y, z, w].",
+    )
+    use_fixed_base: bool = Field(
+        default=True,
+        description="Whether to fix the base to the world (true for robot arms).",
+    )
+
+
+@mcp_server.tool()
+def load_urdf(args: LoadUrdfArgs):
+    """
+    Load a URDF model (robot arm, articulated body, etc.) into the simulation.
+
+    Use this to visualize robot manipulators like KUKA IIWA or Franka Panda.
+    Returns the body_id so subsequent tools (get_object_state, set_object_position,
+    delete_object) can refer to it.
+
+    Returns:
+    - object_id: The body id for this URDF
+    - num_joints: Number of joints in the model
+    """
+    try:
+        _validate_vector(args.position, "position", size=3, allow_negative=True, max_val=100.0)
+        _validate_vector(args.orientation, "orientation", size=4, allow_negative=True, max_val=1.1)
+    except ValueError as e:
+        return _tool_error("load_urdf", str(e), "validation")
+
+    try:
+        with with_simulation() as cid:
+            body_id = p.loadURDF(
+                args.urdf_path,
+                basePosition=args.position,
+                baseOrientation=args.orientation,
+                useFixedBase=bool(args.use_fixed_base),
+                physicsClientId=cid,
+            )
+            if body_id < 0:
+                return _tool_error(
+                    "load_urdf",
+                    f"Failed to load URDF: {args.urdf_path}",
+                    "load_failed",
+                )
+            num_joints = p.getNumJoints(body_id, physicsClientId=cid)
+            _publish_snapshot("load_urdf", done=False, extra={"object_id": body_id})
+            return {
+                "task": "load_urdf",
+                "status": "success",
+                "object_id": body_id,
+                "urdf_path": args.urdf_path,
+                "position": args.position,
+                "num_joints": int(num_joints),
+                "message": f"Loaded {args.urdf_path} as object_id {body_id} with {num_joints} joints.",
+            }
+    except Exception as e:
+        raise RuntimeError(f"load_urdf failed: {e}") from e
+
+
+# ======================
 # Tool: Delete Object
 # ======================
 class DeleteObjectArgs(BaseModel):
