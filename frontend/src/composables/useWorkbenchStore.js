@@ -166,7 +166,7 @@ function maybeCloseCompletedPlanning(nextPlanning) {
   planningCloseTimer = setTimeout(() => {
     planningState.value = createEmptyPlanningState()
     planningCloseTimer = null
-  }, 1800)
+  }, 5000)
 }
 
 function ensureAgentMessage(assistantId, source) {
