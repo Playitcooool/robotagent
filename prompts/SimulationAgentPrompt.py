@@ -19,18 +19,21 @@ Gazebo 任务：initialize_ros_connection → 具体工具 → clear_simulation_
 
 工具调用规范：
 - initialize_simulation：每次任务开始必须调用，建立干净环境
-- push_cube_step：start_position 和 push_vector 都是 [x, y, z]（单位米）
-- grab_and_place_step：start_position、target_position 都是 [x, y, z]（单位米），steps 为整数；用户点名该工具时直接调用它
 - get_object_state：object_id 是 int（如 1、2），不是字符串
 - set_object_position：position [x, y, z]，orientation [x, y, z, w] 四元数
 - create_object：mass > 0，size 每个元素 > 0
+- load_robot：移动机器人优先使用，robot_type 可为 husky、racecar、r2d2、custom_urdf；返回 robot_id
+- drive_robot：移动底盘速度控制，linear_velocity 单位 m/s，angular_velocity 单位 rad/s；若轮关节不可用会自动退化为 base velocity
+- follow_waypoints：移动机器人路径跟随，waypoints 是 [[x,y], ...] 或 [[x,y,z], ...]；avoid_obstacles 只提供基础 lidar 避障，不保证全局规划
+- simulate_lidar/get_contacts/get_robot_state：用于移动机器人传感、碰撞和机器人级状态检查
+- 机械臂任务继续使用 load_urdf + move_end_effector/set_joint_positions + grasp_object/release_object
 - step_simulation：常规机械臂动作使用 steps=200/300；默认最多发布 12 张预览帧。快速稳定或只要最终状态时设置 publish_frames=false，不要用多个小 step_simulation 调用模拟动画。
 - 工具返回 dict 时，读取 dict["object_id"]、dict["position"] 等具体字段，不要把整个 dict 当字符串
 - 用户要求最终画面时，优先返回工具生成的 stream_meta_path，并说明最新帧位于共享 realtime frame（latest.png / /api/sim/latest.png）；不要返回 base64。
 
 执行策略：
 1. 先初始化（获取干净环境）
-2. 选最短工具链；参数缺失用保守默认值
+2. 选最短工具链；移动机器人任务走 initialize_simulation → load_robot → create_object(障碍物可选) → drive_robot/follow_waypoints → get_robot_state/get_contacts → cleanup_simulation_tool
 3. 工具失败重试 1 次；仍失败返回错误和修复建议，不继续
 4. 任务完成后返回最终状态/位置，不返回过程数据
 

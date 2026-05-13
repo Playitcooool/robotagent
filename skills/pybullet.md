@@ -1,6 +1,6 @@
 ---
 name: pybullet
-description: "PyBullet physics simulator MCP tools — headless/DIRECT mode, realtime frame streaming, KUKA arm and cube manipulation. Use this skill when working with PyBullet simulation for motion control, pick-and-place, or physics experiments."
+description: "PyBullet physics simulator MCP tools — headless/DIRECT mode, realtime frame streaming, mobile robots, robot arms, object manipulation, sensors, contacts, and physics experiments."
 ---
 
 # PyBullet Simulator — Tool Guide
@@ -43,95 +43,92 @@ Check if required PyBullet bundled assets (`plane.urdf`, `cube_small.urdf`, `kuk
 
 ---
 
-### 3. `push_cube_step`
+### 3. Mobile Robot Tools
 
-Run a deterministic cube-pushing sequence with realtime frame streaming. Creates a cube and moves it incrementally along a push vector.
+Use these for non-arm mobile robot tasks such as driving, waypoint following,
+lidar scans, collision checks, and robot-level state.
 
-**Parameters:**
-- `start_position` (list[3], default=[0,0,0.02]): Cube start `[x, y, z]` in meters.
-- `push_vector` (list[3], default=[0.2,0,0]): Translation vector `[dx, dy, dz]` applied over the full episode.
-- `steps` (int, default=120): Number of incremental steps. Higher = smoother motion.
+#### `load_robot`
 
-**Returns:**
-- `final_position`, `object_id`, `stream_id`, `stream_meta_path`
-
-**When NOT to use:**
-- For articulated robot manipulation — this is a cube baseline.
-- With non-positive steps.
-
----
-
-### 4. `grab_and_place_step`
-
-Simplified pick-and-place episode: lift object to a transport pose, then move/place at target.
+Load a common mobile robot.
 
 **Parameters:**
-- `start_position` (list[3], default=[0.2,0,0.02]): Object start `[x,y,z]`.
-- `target_position` (list[3], default=[0.4,0.4,0.02]): Target `[x,y,z]`.
-- `steps` (int, default=120): Placement phase step count.
+- `robot_type` (str, default=`r2d2`): `husky`, `racecar`, `r2d2`, or `custom_urdf`.
+- `position` (list[3], default=[0,0,0]): Base position.
+- `orientation` (list[4], default=[0,0,0,1]): Base quaternion.
+- `use_fixed_base` (bool, default=False): Keep base fixed.
+- `urdf_path` (str): Required only for `custom_urdf`.
 
-**Returns:**
-- `final_position`, `object_id`, `stream_id`, `stream_meta_path`
+**Returns:** `robot_id`, `num_joints`, `controllable_joints`, inferred `drive_joints`, and `drive_config`.
 
-**When NOT to use:**
-- When precise grasp/contact planning is needed — this is a simplified teleport-style routine.
-- With non-positive steps.
+#### `get_robot_state`
 
----
-
-### 5. `path_planning`
-
-Linear path interpolation for KUKA IIWA arm base motion.
+Read base pose/velocity plus optional joints and link poses.
 
 **Parameters:**
-- `start_position` (list[3], default=[0.2,0,0.02]): Robot base start.
-- `target_position` (list[3], default=[0.4,0.4,0.02]): Robot base target.
-- `steps` (int, default=240): Linear interpolation steps.
+- `robot_id` (int)
+- `include_joints` (bool, default=True)
+- `include_links` (bool, default=False)
 
-**Returns:**
-- `final_position`, `object_id`, `stream_id`, `stream_meta_path`
+#### `configure_robot_drive`
 
-**When NOT to use:**
-- When obstacle avoidance or IK-level realism is needed — this is linear interpolation only.
-- With non-positive steps.
-
----
-
-### 6. `adjust_physics`
-
-Create a test cube and set its friction/restitution for surface interaction experiments.
+Extended tool. Configure wheel mapping for later `drive_robot` calls.
 
 **Parameters:**
-- `friction` (float, default=0.5): Lateral friction coefficient, range [0.0, 10.0].
-- `restitution` (float, default=0.9): Bounciness, range [0.0, 1.0].
+- `robot_id` (int)
+- `drive_type` (str): `differential`, `ackermann`, or `velocity_base`
+- `wheel_joints` (list[int]): left-side joints first, then right-side joints
+- `wheel_radius` (float), `wheel_base` (float)
 
-**Returns:**
-- `object_id`, `message`
+#### `drive_robot`
 
-**When NOT to use:**
-- As a motion-control action — it only changes dynamics parameters.
-- Expecting global scene-wide physics update (currently per-cube only).
-
----
-
-### 7. `multi_object_grab_and_place`
-
-Batch-move multiple cubes to a single target location.
+Drive a robot using linear/angular velocity.
 
 **Parameters:**
-- `object_positions` (list[list[3]]): List of start positions `[[x,y,z], ...]`.
-- `target_position` (list[3]): Shared target `[x,y,z]`.
+- `robot_id` (int)
+- `linear_velocity` (float): forward m/s
+- `angular_velocity` (float): yaw rad/s
+- `duration_steps` (int, default=240)
+- `max_force` (float, default=100)
+- `publish_frames` (bool, default=True)
 
-**Returns:**
-- `object_ids`, `target_position`, `status` (warning if any failures)
+The tool uses configured or inferred wheel joints when possible and falls back
+to direct base velocity control if wheel control is unavailable.
 
-**When NOT to use:**
-- For sequential collision-aware pick-place.
-- When per-object trajectories are needed.
+#### `follow_waypoints`
 
----
+Simple closed-loop waypoint follower.
 
-### 8. `simulate_vision_sensor`
+**Parameters:**
+- `robot_id` (int)
+- `waypoints` (list): `[[x,y], ...]` or `[[x,y,z], ...]`
+- `speed` (float, default=0.5)
+- `tolerance` (float, default=0.1)
+- `max_steps` (int, default=2400)
+- `avoid_obstacles` (bool, default=False): basic lidar-based local avoidance
+
+#### `simulate_lidar`
+
+Planar raycast lidar.
+
+**Parameters:**
+- `robot_id` (int)
+- `num_rays` (int, default=36)
+- `max_distance` (float, default=5.0)
+- `height_offset` (float, default=0.2)
+
+**Returns:** per-ray `angle`, `distance`, `hit_body`, `hit_link`, hit position and normal.
+
+#### `get_contacts`
+
+Return current contact points, optionally filtered by `body_id`.
+
+#### `set_body_dynamics`
+
+Extended tool. Set `friction`, `restitution`, `mass`, `linear_damping`, or
+`angular_damping` on a body base and all links.
+
+### 4. `simulate_vision_sensor`
 
 Capture one camera image from the current scene.
 
@@ -150,7 +147,7 @@ Capture one camera image from the current scene.
 
 ---
 
-### 9. `cleanup_simulation_tool`
+### 5. `cleanup_simulation_tool`
 
 Tear down the active simulation connection and clear local state.
 
@@ -160,7 +157,7 @@ Tear down the active simulation connection and clear local state.
 
 ---
 
-### 10. `check_simulation_state`
+### 6. `check_simulation_state`
 
 Read-only inspection: return per-body base positions for all objects.
 
@@ -175,7 +172,7 @@ Also publishes a snapshot frame so UI can refresh.
 
 ---
 
-### 11. `reset_simulation`
+### 7. `reset_simulation`
 
 Reset the simulation world.
 
@@ -187,19 +184,19 @@ Reset the simulation world.
 
 ---
 
-### 12. `pause_simulation`
+### 8. `pause_simulation`
 
 **WARNING: PyBullet DIRECT mode does not support true pause.** Returns a warning status. Use `step_simulation` with `steps=1` to manually control timing.
 
 ---
 
-### 13. `unpause_simulation`
+### 9. `unpause_simulation`
 
 **WARNING: PyBullet DIRECT mode does not support true unpause.** Returns a warning status. No action taken.
 
 ---
 
-### 14. `get_object_state`
+### 10. `get_object_state`
 
 Get detailed state for a specific body.
 
@@ -214,7 +211,7 @@ Get detailed state for a specific body.
 
 ---
 
-### 15. `set_object_position`
+### 11. `set_object_position`
 
 Atomically teleport an object to a target pose (no physics, instantaneous).
 
@@ -231,7 +228,7 @@ Atomically teleport an object to a target pose (no physics, instantaneous).
 
 ---
 
-### 16. `step_simulation`
+### 12. `step_simulation`
 
 Execute a fixed number of physics steps manually.
 
@@ -246,7 +243,7 @@ Execute a fixed number of physics steps manually.
 
 ---
 
-### 17. `create_object`
+### 13. `create_object`
 
 Create a single rigid body (cube/sphere/cylinder) with custom mass and color.
 
@@ -262,7 +259,7 @@ Create a single rigid body (cube/sphere/cylinder) with custom mass and color.
 
 ---
 
-### 18. `load_urdf`
+### 14. `load_urdf`
 
 Load a robot or articulated URDF model.
 
@@ -277,7 +274,7 @@ Load a robot or articulated URDF model.
 
 ---
 
-### 19. `move_end_effector`
+### 15. `move_end_effector`
 
 Move a robot tool link to a world-space target with inverse kinematics. Auto-detects common tool links such as KUKA `lbr_iiwa_link_7` and Panda `panda_hand` / `panda_link8`; Panda finger links are avoided by default.
 
@@ -294,7 +291,7 @@ Move a robot tool link to a world-space target with inverse kinematics. Auto-det
 
 ---
 
-### 20. `grasp_object`
+### 16. `grasp_object`
 
 Attach a nearby object to the selected robot end-effector with a fixed constraint. The tool computes the real object pose relative to the tool link at grasp time, so the object follows without the old hard-coded offset.
 
@@ -313,7 +310,7 @@ Attach a nearby object to the selected robot end-effector with a fixed constrain
 
 ---
 
-### 21. `release_object`
+### 17. `release_object`
 
 Remove the active fixed grasp constraint for an object.
 
@@ -322,7 +319,7 @@ Remove the active fixed grasp constraint for an object.
 
 ---
 
-### 22. `delete_object`
+### 18. `delete_object`
 
 Remove a body from the simulation.
 
@@ -337,7 +334,7 @@ Remove a body from the simulation.
 
 ---
 
-### 23. `get_simulation_info`
+### 19. `get_simulation_info`
 
 Query simulation engine parameters.
 
@@ -346,7 +343,7 @@ Query simulation engine parameters.
 
 ---
 
-### 24. `set_gravity`
+### 20. `set_gravity`
 
 Set global gravity vector.
 
@@ -362,7 +359,40 @@ Set global gravity vector.
 
 ## Common Workflows
 
-### Workflow A: Cube Motion Experiment
+### Workflow A: Mobile Robot Navigation
+
+```
+1. initialize_simulation(gui=False)
+2. load_robot(robot_type="r2d2", position=[0,0,0])
+3. create_object(object_type="cube", position=[1.0,0.2,0.2], size=[0.2,0.2,0.4], mass=1.0)  # optional obstacle
+4. simulate_lidar(robot_id=<robot_id>, num_rays=36, max_distance=5.0)
+5. drive_robot(robot_id=<robot_id>, linear_velocity=0.4, angular_velocity=0.0, duration_steps=240)
+6. follow_waypoints(robot_id=<robot_id>, waypoints=[[0.5,0.0],[0.5,0.5]], speed=0.4, tolerance=0.1)
+7. get_robot_state(robot_id=<robot_id>)
+8. get_contacts(body_id=<robot_id>)
+9. cleanup_simulation_tool()
+```
+
+Use `configure_robot_drive` through `call_extended_tool` when auto-inferred
+wheel joints are wrong for a custom robot. Use `set_body_dynamics` through
+`call_extended_tool` to tune friction, restitution, mass, or damping for a
+robot or obstacle.
+
+### Workflow B: Mobile Robot Collision/Contact Check
+
+```
+1. initialize_simulation(gui=False)
+2. load_robot(robot_type="r2d2")
+3. create_object(object_type="cube", position=[0.7,0,0.2], size=[0.2,0.2,0.4], mass=1.0)
+4. drive_robot(robot_id=<robot_id>, linear_velocity=0.5, angular_velocity=0, duration_steps=480)
+5. get_contacts(body_id=<robot_id>)
+6. cleanup_simulation_tool()
+```
+
+Contacts report body IDs, link IDs, contact positions, normals, distances, and
+normal forces. Use this instead of guessing whether a mobile base collided.
+
+### Workflow C: Cube Motion Experiment
 
 ```
 1. initialize_simulation(gui=False)
@@ -374,7 +404,7 @@ Set global gravity vector.
 7. cleanup_simulation_tool()
 ```
 
-### Workflow B: Pick-and-Place
+### Workflow D: Pick-and-Place
 
 ```
 1. initialize_simulation(gui=False)
@@ -402,20 +432,6 @@ For fixed-constraint pick-and-place, prefer `kuka_iiwa/model.urdf`. The bundled
 Panda model exposes a hand/finger structure, but these tools do not yet open and
 close the gripper, so Panda IK may stop too far from the cube for a visually
 credible grasp.
-
-### Workflow C: Multi-Object Scene Setup
-
-```
-1. initialize_simulation(gui=False)
-2. multi_object_grab_and_place(
-     object_positions=[[0.2,0,0.02],[0.4,0.4,0.02]],
-     target_position=[0.6,0.6,0.02]
-   )
-3. check_simulation_state()
-4. cleanup_simulation_tool()
-```
-
----
 
 ## Error Handling
 

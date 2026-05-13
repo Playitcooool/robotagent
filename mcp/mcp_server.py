@@ -34,6 +34,13 @@ _camera_state: dict[str, Any] = {
     "scene_bounds": None,
 }
 _DEFAULT_CAMERA_STATE = dict(_camera_state)
+_robot_drive_registry: dict[int, dict[str, Any]] = {}
+
+_MOBILE_ROBOT_URDFS = {
+    "husky": "husky/husky.urdf",
+    "racecar": "racecar/racecar.urdf",
+    "r2d2": "r2d2.urdf",
+}
 
 
 def _validate_vector(
@@ -173,6 +180,113 @@ def _aabb_distance_to_point(cid: int, body_id: int, point: list[float]) -> float
     max_arr = np.array(aabb_max, dtype=float)
     delta = np.maximum(np.maximum(min_arr - point_arr, point_arr - max_arr), 0.0)
     return float(np.linalg.norm(delta))
+
+
+def _joint_payload(cid: int, body_id: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    joints = []
+    controllable = []
+    for i in range(p.getNumJoints(body_id, physicsClientId=cid)):
+        info = p.getJointInfo(body_id, i, physicsClientId=cid)
+        state = p.getJointState(body_id, i, physicsClientId=cid)
+        joint = {
+            "index": int(i),
+            "name": _decode_joint_name(info[1]),
+            "type": int(info[2]),
+            "lower_limit": float(info[8]),
+            "upper_limit": float(info[9]),
+            "max_force": float(info[10]),
+            "max_velocity": float(info[11]),
+            "position": float(state[0]),
+            "velocity": float(state[1]),
+            "torque": float(state[3]),
+        }
+        joints.append(joint)
+        if info[2] != p.JOINT_FIXED:
+            controllable.append(joint)
+    return joints, controllable
+
+
+def _infer_drive_joints(cid: int, body_id: int) -> list[int]:
+    wheel_keywords = ("wheel", "tire")
+    excluded = ("steer", "steering", "suspension", "caster", "gripper")
+    candidates = []
+    left = []
+    right = []
+    fallback = []
+    for i in range(p.getNumJoints(body_id, physicsClientId=cid)):
+        info = p.getJointInfo(body_id, i, physicsClientId=cid)
+        if info[2] == p.JOINT_FIXED:
+            continue
+        name = _decode_joint_name(info[1]).lower()
+        if any(k in name for k in excluded):
+            continue
+        fallback.append(i)
+        if any(k in name for k in wheel_keywords):
+            candidates.append(i)
+            if "left" in name:
+                left.append(i)
+            elif "right" in name:
+                right.append(i)
+    if left and right:
+        return left + right
+    return candidates or fallback
+
+
+def _yaw_from_quat(orientation: list[float] | tuple[float, ...]) -> float:
+    return float(p.getEulerFromQuaternion(orientation)[2])
+
+
+def _configured_drive(cid: int, robot_id: int) -> dict[str, Any]:
+    cfg = dict(_robot_drive_registry.get(robot_id, {}))
+    if not cfg:
+        wheel_joints = _infer_drive_joints(cid, robot_id)
+        cfg = {
+            "drive_type": "differential" if len(wheel_joints) >= 2 else "velocity_base",
+            "wheel_joints": wheel_joints,
+            "wheel_radius": 0.15,
+            "wheel_base": 0.5,
+        }
+    return cfg
+
+
+def _apply_robot_drive(
+    cid: int,
+    robot_id: int,
+    linear_velocity: float,
+    angular_velocity: float,
+    max_force: float,
+) -> str:
+    cfg = _configured_drive(cid, robot_id)
+    drive_type = str(cfg.get("drive_type", "velocity_base")).lower()
+    wheel_joints = [int(j) for j in cfg.get("wheel_joints", [])]
+    wheel_radius = max(1e-4, float(cfg.get("wheel_radius", 0.15)))
+    wheel_base = max(1e-4, float(cfg.get("wheel_base", 0.5)))
+
+    if drive_type in {"differential", "ackermann"} and len(wheel_joints) >= 2:
+        left_speed = (linear_velocity - angular_velocity * wheel_base / 2.0) / wheel_radius
+        right_speed = (linear_velocity + angular_velocity * wheel_base / 2.0) / wheel_radius
+        midpoint = len(wheel_joints) / 2.0
+        for idx, joint_id in enumerate(wheel_joints):
+            target = left_speed if idx < midpoint else right_speed
+            p.setJointMotorControl2(
+                bodyUniqueId=robot_id,
+                jointIndex=joint_id,
+                controlMode=p.VELOCITY_CONTROL,
+                targetVelocity=target,
+                force=max_force,
+                physicsClientId=cid,
+            )
+        return drive_type
+
+    pos, orn = p.getBasePositionAndOrientation(robot_id, physicsClientId=cid)
+    yaw = _yaw_from_quat(orn)
+    p.resetBaseVelocity(
+        robot_id,
+        [linear_velocity * float(np.cos(yaw)), linear_velocity * float(np.sin(yaw)), 0.0],
+        [0.0, 0.0, angular_velocity],
+        physicsClientId=cid,
+    )
+    return "velocity_base"
 
 
 # ======================
@@ -655,6 +769,7 @@ def setup_simulation(gui: bool = False):
     """初始化PyBullet环境，优先复用现有 DIRECT 连接并重置为干净世界。"""
     global simulation_instance, _plane_body_id, _camera_state
     _active_grasp_constraints.clear()
+    _robot_drive_registry.clear()
     # Stop any existing live stream thread FIRST (before sim instance is torn down)
     _stop_live_stream()
     _flush_snapshot_async()
@@ -741,6 +856,7 @@ def cleanup_simulation():
     """关闭PyBullet环境，释放所有资源。重试disconnect直到成功。"""
     global simulation_instance, _plane_body_id, _camera_state
     _active_grasp_constraints.clear()
+    _robot_drive_registry.clear()
     # Stop live stream first (outside lock)
     _stop_live_stream()
     _flush_snapshot_async()
@@ -1611,6 +1727,426 @@ def load_urdf(args: LoadUrdfArgs):
             }
     except Exception as e:
         raise RuntimeError(f"load_urdf failed: {e}") from e
+
+
+# ======================
+# Mobile Robot Tools
+# ======================
+class LoadRobotArgs(BaseModel):
+    robot_type: str = Field(default="r2d2", description="Robot type: husky, racecar, r2d2, or custom_urdf.")
+    position: list[float] = Field(default=[0.0, 0.0, 0.0], description="Base position [x, y, z].")
+    orientation: list[float] = Field(default=[0.0, 0.0, 0.0, 1.0], description="Base quaternion [x, y, z, w].")
+    use_fixed_base: bool = Field(default=False, description="Whether to fix the base to the world.")
+    urdf_path: str = Field(default="", description="URDF path for robot_type=custom_urdf.")
+
+
+@mcp_server.tool()
+def load_robot(args: LoadRobotArgs):
+    """Load a common mobile robot URDF and return joints suitable for base control."""
+    robot_type = (args.robot_type or "r2d2").strip().lower()
+    try:
+        _validate_vector(args.position, "position", size=3, allow_negative=True, max_val=100.0)
+        _validate_vector(args.orientation, "orientation", size=4, allow_negative=True, max_val=1.1)
+    except ValueError as e:
+        return _tool_error("load_robot", str(e), "validation")
+
+    if robot_type == "custom_urdf":
+        urdf_path = args.urdf_path.strip()
+        if not urdf_path:
+            return _tool_error("load_robot", "urdf_path is required for custom_urdf.", "validation")
+    elif robot_type in _MOBILE_ROBOT_URDFS:
+        urdf_path = _MOBILE_ROBOT_URDFS[robot_type]
+    else:
+        return _tool_error("load_robot", f"Unsupported robot_type: {args.robot_type}", "validation")
+
+    try:
+        with with_simulation() as cid:
+            try:
+                robot_id = p.loadURDF(
+                    urdf_path,
+                    basePosition=args.position,
+                    baseOrientation=args.orientation,
+                    useFixedBase=bool(args.use_fixed_base),
+                    physicsClientId=cid,
+                )
+            except Exception as e:
+                return _tool_error("load_robot", f"Failed to load URDF '{urdf_path}': {e}", "load_failed")
+            if robot_id < 0:
+                return _tool_error("load_robot", f"Failed to load URDF: {urdf_path}", "load_failed")
+            joints, controllable = _joint_payload(cid, robot_id)
+            drive_joints = _infer_drive_joints(cid, robot_id)
+            _robot_drive_registry[robot_id] = {
+                "drive_type": "differential" if len(drive_joints) >= 2 else "velocity_base",
+                "wheel_joints": drive_joints,
+                "wheel_radius": 0.15,
+                "wheel_base": 0.5,
+            }
+            _invalidate_scene_bounds()
+            _publish_snapshot_async("load_robot", done=False, extra={"robot_id": robot_id})
+            return {
+                "task": "load_robot",
+                "status": "success",
+                "robot_id": robot_id,
+                "object_id": robot_id,
+                "robot_type": robot_type,
+                "urdf_path": urdf_path,
+                "num_joints": len(joints),
+                "controllable_joints": controllable,
+                "drive_joints": drive_joints,
+                "drive_config": dict(_robot_drive_registry[robot_id]),
+                "message": f"Loaded {robot_type} as robot_id {robot_id}.",
+            }
+    except Exception as e:
+        raise RuntimeError(f"load_robot failed: {e}") from e
+
+
+class GetRobotStateArgs(BaseModel):
+    robot_id: int = Field(description="Robot body ID from load_robot.")
+    include_joints: bool = Field(default=True, description="Include joint positions/velocities/torques.")
+    include_links: bool = Field(default=False, description="Include world pose for every link.")
+
+
+@mcp_server.tool()
+def get_robot_state(args: GetRobotStateArgs):
+    """Return mobile robot base pose/velocity plus optional joint and link state."""
+    try:
+        with with_simulation() as cid:
+            if not _is_body_valid(cid, args.robot_id):
+                return _tool_error("get_robot_state", f"Robot ID {args.robot_id} not found.", "validation")
+            pos, orn = p.getBasePositionAndOrientation(args.robot_id, physicsClientId=cid)
+            lin_vel, ang_vel = p.getBaseVelocity(args.robot_id, physicsClientId=cid)
+            joints, controllable = _joint_payload(cid, args.robot_id)
+            links = []
+            if bool(args.include_links):
+                for i in range(p.getNumJoints(args.robot_id, physicsClientId=cid)):
+                    st = p.getLinkState(args.robot_id, i, computeForwardKinematics=True, physicsClientId=cid)
+                    links.append({"index": i, "position": list(st[4]), "orientation": list(st[5])})
+            return {
+                "task": "get_robot_state",
+                "status": "success",
+                "robot_id": args.robot_id,
+                "base_position": list(pos),
+                "base_orientation": list(orn),
+                "base_yaw": _yaw_from_quat(orn),
+                "base_linear_velocity": list(lin_vel),
+                "base_angular_velocity": list(ang_vel),
+                "joints": joints if bool(args.include_joints) else [],
+                "controllable_joints": controllable,
+                "links": links,
+                "drive_config": _configured_drive(cid, args.robot_id),
+            }
+    except Exception as e:
+        raise RuntimeError(f"get_robot_state failed: {e}") from e
+
+
+class ConfigureRobotDriveArgs(BaseModel):
+    robot_id: int = Field(description="Robot body ID from load_robot.")
+    drive_type: str = Field(default="differential", description="differential, ackermann, or velocity_base.")
+    wheel_joints: list[int] = Field(default=[], description="Wheel joint indices, left side first then right side.")
+    wheel_radius: float = Field(default=0.15, description="Wheel radius in meters.")
+    wheel_base: float = Field(default=0.5, description="Distance between left/right wheel tracks in meters.")
+
+
+@mcp_server.tool()
+def configure_robot_drive(args: ConfigureRobotDriveArgs):
+    """Configure how drive_robot converts base velocity commands into robot motion."""
+    drive_type = (args.drive_type or "").strip().lower()
+    if drive_type not in {"differential", "ackermann", "velocity_base"}:
+        return _tool_error("configure_robot_drive", f"Unsupported drive_type: {args.drive_type}", "validation")
+    if float(args.wheel_radius) <= 0 or float(args.wheel_base) <= 0:
+        return _tool_error("configure_robot_drive", "wheel_radius and wheel_base must be positive.", "validation")
+    try:
+        with with_simulation() as cid:
+            if not _is_body_valid(cid, args.robot_id):
+                return _tool_error("configure_robot_drive", f"Robot ID {args.robot_id} not found.", "validation")
+            num_joints = p.getNumJoints(args.robot_id, physicsClientId=cid)
+            wheel_joints = [int(j) for j in args.wheel_joints]
+            bad = [j for j in wheel_joints if j < 0 or j >= num_joints]
+            if bad:
+                return _tool_error("configure_robot_drive", f"Wheel joints out of range: {bad}", "validation")
+            if not wheel_joints and drive_type != "velocity_base":
+                wheel_joints = _infer_drive_joints(cid, args.robot_id)
+            _robot_drive_registry[args.robot_id] = {
+                "drive_type": drive_type,
+                "wheel_joints": wheel_joints,
+                "wheel_radius": float(args.wheel_radius),
+                "wheel_base": float(args.wheel_base),
+            }
+            return {"task": "configure_robot_drive", "status": "success", "robot_id": args.robot_id, "drive_config": dict(_robot_drive_registry[args.robot_id])}
+    except Exception as e:
+        raise RuntimeError(f"configure_robot_drive failed: {e}") from e
+
+
+class DriveRobotArgs(BaseModel):
+    robot_id: int = Field(description="Robot body ID from load_robot.")
+    linear_velocity: float = Field(default=0.0, description="Forward velocity in m/s.")
+    angular_velocity: float = Field(default=0.0, description="Yaw velocity in rad/s.")
+    duration_steps: int = Field(default=240, description="Simulation steps to drive.")
+    max_force: float = Field(default=100.0, description="Max wheel motor force.")
+    publish_frames: bool = Field(default=True, description="Publish realtime preview frames.")
+
+
+@mcp_server.tool()
+def drive_robot(args: DriveRobotArgs):
+    """Drive a mobile robot with linear/angular velocity for a fixed number of steps."""
+    if not np.isfinite(float(args.linear_velocity)) or not np.isfinite(float(args.angular_velocity)):
+        return _tool_error("drive_robot", "linear_velocity and angular_velocity must be finite.", "validation")
+    steps = max(1, min(int(args.duration_steps), MAX_STEPS_PER_CALL))
+    try:
+        _step_simulation_active.set()
+        with with_simulation() as cid:
+            if not _is_body_valid(cid, args.robot_id):
+                return _tool_error("drive_robot", f"Robot ID {args.robot_id} not found.", "validation")
+            run_id = str(uuid.uuid4())
+            control_mode = _apply_robot_drive(cid, args.robot_id, float(args.linear_velocity), float(args.angular_velocity), float(args.max_force))
+            publish_steps = [steps]
+            if bool(args.publish_frames):
+                max_frames = max(1, min(MAX_PREVIEW_FRAMES, steps))
+                publish_steps = sorted({max(1, min(steps, round(i * steps / max_frames))) for i in range(1, max_frames + 1)})
+            done = 0
+            for publish_step in publish_steps:
+                batch = publish_step - done
+                if batch > 0:
+                    if control_mode == "velocity_base":
+                        for _ in range(batch):
+                            _apply_robot_drive(cid, args.robot_id, float(args.linear_velocity), float(args.angular_velocity), float(args.max_force))
+                            p.stepSimulation(physicsClientId=cid)
+                    else:
+                        _safe_step(cid, batch)
+                    done = publish_step
+                if bool(args.publish_frames):
+                    _publish_realtime_frame(run_id=run_id, task="drive_robot", step_idx=done, total_steps=steps, done=(done >= steps), extra={"robot_id": args.robot_id})
+            _apply_robot_drive(cid, args.robot_id, 0.0, 0.0, float(args.max_force))
+            pos, orn = p.getBasePositionAndOrientation(args.robot_id, physicsClientId=cid)
+            _invalidate_scene_bounds()
+            return {
+                "task": "drive_robot",
+                "status": "success",
+                "robot_id": args.robot_id,
+                "steps": steps,
+                "control_mode": control_mode,
+                "base_position": list(pos),
+                "base_orientation": list(orn),
+                "message": f"Drove robot for {steps} steps.",
+            }
+    except Exception as e:
+        raise RuntimeError(f"drive_robot failed: {e}") from e
+    finally:
+        _step_simulation_active.clear()
+
+
+class SimulateLidarArgs(BaseModel):
+    robot_id: int = Field(description="Robot body ID from load_robot.")
+    num_rays: int = Field(default=36, description="Number of horizontal rays.")
+    max_distance: float = Field(default=5.0, description="Maximum ray distance in meters.")
+    height_offset: float = Field(default=0.2, description="Ray origin height above robot base.")
+
+
+@mcp_server.tool()
+def simulate_lidar(args: SimulateLidarArgs):
+    """Simulate a planar lidar scan with PyBullet rayTest."""
+    num_rays = max(1, min(int(args.num_rays), 720))
+    max_distance = max(0.01, min(float(args.max_distance), 100.0))
+    try:
+        with with_simulation() as cid:
+            if not _is_body_valid(cid, args.robot_id):
+                return _tool_error("simulate_lidar", f"Robot ID {args.robot_id} not found.", "validation")
+            pos, orn = p.getBasePositionAndOrientation(args.robot_id, physicsClientId=cid)
+            yaw = _yaw_from_quat(orn)
+            origin = [float(pos[0]), float(pos[1]), float(pos[2]) + float(args.height_offset)]
+            ray_from = []
+            ray_to = []
+            angles = []
+            for i in range(num_rays):
+                angle = yaw + (2.0 * np.pi * i / num_rays)
+                angles.append(float(angle))
+                direction = [float(np.cos(angle)), float(np.sin(angle)), 0.0]
+                ray_start = [
+                    origin[0] + 0.15 * direction[0],
+                    origin[1] + 0.15 * direction[1],
+                    origin[2],
+                ]
+                ray_from.append(ray_start)
+                ray_to.append([
+                    ray_start[0] + max_distance * direction[0],
+                    ray_start[1] + max_distance * direction[1],
+                    ray_start[2],
+                ])
+            hits = p.rayTestBatch(ray_from, ray_to, physicsClientId=cid)
+            rays = []
+            for angle, hit in zip(angles, hits):
+                fraction = float(hit[2])
+                hit_body = int(hit[0])
+                hit_link = int(hit[1])
+                if hit_body == int(args.robot_id):
+                    hit_body = -1
+                    hit_link = -1
+                    fraction = 1.0
+                rays.append({
+                    "angle": angle,
+                    "distance": max_distance * fraction,
+                    "hit_body": hit_body,
+                    "hit_link": hit_link,
+                    "hit_position": list(hit[3]),
+                    "hit_normal": list(hit[4]),
+                })
+            return {"task": "simulate_lidar", "status": "success", "robot_id": args.robot_id, "origin": origin, "max_distance": max_distance, "rays": rays}
+    except Exception as e:
+        raise RuntimeError(f"simulate_lidar failed: {e}") from e
+
+
+class FollowWaypointsArgs(BaseModel):
+    robot_id: int = Field(description="Robot body ID from load_robot.")
+    waypoints: list[list[float]] = Field(description="List of [x, y] or [x, y, z] waypoints.")
+    speed: float = Field(default=0.5, description="Nominal forward speed in m/s.")
+    tolerance: float = Field(default=0.1, description="Waypoint completion tolerance in meters.")
+    max_steps: int = Field(default=2400, description="Maximum closed-loop simulation steps.")
+    avoid_obstacles: bool = Field(default=False, description="Use simple lidar-based angular avoidance.")
+
+
+@mcp_server.tool()
+def follow_waypoints(args: FollowWaypointsArgs):
+    """Follow planar waypoints with simple closed-loop velocity control."""
+    if not args.waypoints:
+        return _tool_error("follow_waypoints", "waypoints must not be empty.", "validation")
+    waypoints = []
+    for idx, wp in enumerate(args.waypoints):
+        if not isinstance(wp, (list, tuple)) or len(wp) < 2:
+            return _tool_error("follow_waypoints", f"waypoint {idx} must contain at least x and y.", "validation")
+        if not all(isinstance(v, (int, float)) and np.isfinite(float(v)) for v in wp[:2]):
+            return _tool_error("follow_waypoints", f"waypoint {idx} has non-finite coordinates.", "validation")
+        waypoints.append([float(wp[0]), float(wp[1])])
+    tolerance = max(0.01, float(args.tolerance))
+    max_steps = max(1, min(int(args.max_steps), MAX_STEPS_PER_CALL))
+    speed = max(0.0, min(float(args.speed), 5.0))
+    errors = []
+    try:
+        _step_simulation_active.set()
+        with with_simulation() as cid:
+            if not _is_body_valid(cid, args.robot_id):
+                return _tool_error("follow_waypoints", f"Robot ID {args.robot_id} not found.", "validation")
+            run_id = str(uuid.uuid4())
+            active_idx = 0
+            completed = False
+            for step_idx in range(1, max_steps + 1):
+                pos, orn = p.getBasePositionAndOrientation(args.robot_id, physicsClientId=cid)
+                target = waypoints[active_idx]
+                dx = target[0] - float(pos[0])
+                dy = target[1] - float(pos[1])
+                dist = float(np.hypot(dx, dy))
+                if dist <= tolerance:
+                    errors.append({"waypoint": target, "error": dist})
+                    active_idx += 1
+                    if active_idx >= len(waypoints):
+                        completed = True
+                        break
+                    continue
+                yaw = _yaw_from_quat(orn)
+                heading = float(np.arctan2(dy, dx))
+                heading_error = float(np.arctan2(np.sin(heading - yaw), np.cos(heading - yaw)))
+                linear = min(speed, dist * 2.0) * max(0.0, float(np.cos(heading_error)))
+                angular = _clamp(heading_error * 3.0, -2.5, 2.5)
+                if bool(args.avoid_obstacles):
+                    scan_args = SimulateLidarArgs(robot_id=args.robot_id, num_rays=16, max_distance=1.5, height_offset=0.2)
+                    scan = simulate_lidar(scan_args)
+                    front = [r for r in scan.get("rays", []) if abs(float(np.arctan2(np.sin(r["angle"] - yaw), np.cos(r["angle"] - yaw)))) < 0.55]
+                    if front and min(float(r["distance"]) for r in front) < 0.6:
+                        linear *= 0.25
+                        angular += 1.2
+                mode = _apply_robot_drive(cid, args.robot_id, linear, angular, 100.0)
+                if mode == "velocity_base":
+                    _apply_robot_drive(cid, args.robot_id, linear, angular, 100.0)
+                p.stepSimulation(physicsClientId=cid)
+                if step_idx % max(1, max_steps // MAX_PREVIEW_FRAMES) == 0:
+                    _publish_realtime_frame(run_id=run_id, task="follow_waypoints", step_idx=step_idx, total_steps=max_steps, done=False, extra={"robot_id": args.robot_id, "active_waypoint": active_idx})
+            final_pos, final_orn = p.getBasePositionAndOrientation(args.robot_id, physicsClientId=cid)
+            for wp in waypoints[len(errors):]:
+                errors.append({"waypoint": wp, "error": float(np.hypot(wp[0] - final_pos[0], wp[1] - final_pos[1]))})
+            _publish_realtime_frame(run_id=run_id, task="follow_waypoints", step_idx=max_steps, total_steps=max_steps, done=True, extra={"robot_id": args.robot_id})
+            _invalidate_scene_bounds()
+            return {
+                "task": "follow_waypoints",
+                "status": "success" if completed else "warning",
+                "robot_id": args.robot_id,
+                "completed": completed,
+                "final_position": list(final_pos),
+                "final_orientation": list(final_orn),
+                "waypoint_errors": errors,
+                "message": "Waypoints completed." if completed else "Stopped before reaching all waypoints.",
+            }
+    except Exception as e:
+        raise RuntimeError(f"follow_waypoints failed: {e}") from e
+    finally:
+        _step_simulation_active.clear()
+
+
+class GetContactsArgs(BaseModel):
+    body_id: int | None = Field(default=None, description="Optional body ID filter. Null returns all contacts.")
+
+
+@mcp_server.tool()
+def get_contacts(args: GetContactsArgs = GetContactsArgs()):
+    """Return current PyBullet contact points, optionally filtered by body."""
+    try:
+        with with_simulation() as cid:
+            if args.body_id is not None and not _is_body_valid(cid, int(args.body_id)):
+                return _tool_error("get_contacts", f"Body ID {args.body_id} not found.", "validation")
+            contacts = p.getContactPoints(bodyA=int(args.body_id), physicsClientId=cid) if args.body_id is not None else p.getContactPoints(physicsClientId=cid)
+            payload = []
+            for c in contacts:
+                payload.append({
+                    "body_a": int(c[1]),
+                    "body_b": int(c[2]),
+                    "link_a": int(c[3]),
+                    "link_b": int(c[4]),
+                    "position_on_a": list(c[5]),
+                    "position_on_b": list(c[6]),
+                    "normal_on_b": list(c[7]),
+                    "contact_distance": float(c[8]),
+                    "normal_force": float(c[9]),
+                })
+            return {"task": "get_contacts", "status": "success", "body_id": args.body_id, "contacts": payload, "count": len(payload)}
+    except Exception as e:
+        raise RuntimeError(f"get_contacts failed: {e}") from e
+
+
+class SetBodyDynamicsArgs(BaseModel):
+    body_id: int = Field(description="Body ID to update.")
+    friction: float | None = Field(default=None, description="Optional lateral friction.")
+    restitution: float | None = Field(default=None, description="Optional restitution.")
+    mass: float | None = Field(default=None, description="Optional base/link mass.")
+    linear_damping: float | None = Field(default=None, description="Optional linear damping.")
+    angular_damping: float | None = Field(default=None, description="Optional angular damping.")
+
+
+@mcp_server.tool()
+def set_body_dynamics(args: SetBodyDynamicsArgs):
+    """Set friction/restitution/mass/damping for a body base and all links."""
+    changes = {}
+    if args.friction is not None:
+        changes["lateralFriction"] = _clamp(float(args.friction), 0.0, 10.0)
+    if args.restitution is not None:
+        changes["restitution"] = _clamp(float(args.restitution), 0.0, 1.0)
+    if args.mass is not None:
+        if float(args.mass) < 0:
+            return _tool_error("set_body_dynamics", "mass must be non-negative.", "validation")
+        changes["mass"] = float(args.mass)
+    if args.linear_damping is not None:
+        changes["linearDamping"] = max(0.0, float(args.linear_damping))
+    if args.angular_damping is not None:
+        changes["angularDamping"] = max(0.0, float(args.angular_damping))
+    if not changes:
+        return _tool_error("set_body_dynamics", "At least one dynamics property must be provided.", "validation")
+    try:
+        with with_simulation() as cid:
+            if not _is_body_valid(cid, args.body_id):
+                return _tool_error("set_body_dynamics", f"Body ID {args.body_id} not found.", "validation")
+            link_indices = [-1] + list(range(p.getNumJoints(args.body_id, physicsClientId=cid)))
+            for link_idx in link_indices:
+                p.changeDynamics(args.body_id, link_idx, physicsClientId=cid, **changes)
+            return {"task": "set_body_dynamics", "status": "success", "body_id": args.body_id, "links_updated": link_indices, "changes": changes}
+    except Exception as e:
+        raise RuntimeError(f"set_body_dynamics failed: {e}") from e
 
 
 # ======================
