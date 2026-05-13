@@ -55,6 +55,7 @@ from backend.stream_utils import (
 from backend.routes_auth import register_auth_routes
 from backend.routes_sim import register_sim_routes
 from backend.utils.retry import with_retry_async
+from backend.model_config import resolve_openai_compatible_model, resolve_model_for_request, create_chat_model
 from backend.workflow_utils import (
     restore_env_var,
 )
@@ -134,8 +135,8 @@ def _truncate_for_prefill(text: str, max_chars: int) -> str:
     return text[:max_chars].rstrip() + "\n\n[...context truncated for faster prefill...]"
 
 
-AGENT_MODEL_CALL_LIMIT = _env_int("AGENT_MODEL_CALL_LIMIT", 60, minimum=1)
-AGENT_RECURSION_LIMIT = _env_int("AGENT_RECURSION_LIMIT", 120, minimum=2)
+AGENT_MODEL_CALL_LIMIT = _env_int("AGENT_MODEL_CALL_LIMIT", 999999, minimum=1)
+AGENT_RECURSION_LIMIT = _env_int("AGENT_RECURSION_LIMIT", 999999, minimum=2)
 
 
 # ========== 4. 加载工具函数（保留并添加日志） ==========
@@ -170,10 +171,11 @@ def get_tools(enabled_general_tools: set[str] | None = None):
 
 
 # ========== 5. 初始化LLM模型 ==========
+main_model_config = resolve_openai_compatible_model(config, "main")
 chatBot = ChatOpenAI(
-    base_url=config["model_url"],
-    model=config["llm"],
-    api_key=config.get("api_key", "no_need"),
+    base_url=main_model_config["base_url"],
+    model=main_model_config["model"],
+    api_key=main_model_config["api_key"],
     streaming=True,
 )
 
@@ -447,8 +449,8 @@ async def health_check():
 
     # 模型配置信息
     health_info["config"] = {
-        "llm_model": config.get("llm", "unknown"),
-        "llm_url": config.get("model_url", "unknown"),
+        "llm_model": main_model_config.get("model", "unknown"),
+        "llm_url": main_model_config.get("base_url", "unknown"),
     }
 
     return health_info
@@ -1828,6 +1830,262 @@ async def chat_send(
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-transform", "X-Accel-Buffering": "no"},
     )
+
+
+# ========== 10. OpenAI-compatible 接口 ==========
+
+@app.post("/v1/chat/completions")
+async def openai_chat_completions(payload: dict):
+    """OpenAI-compatible chat completions endpoint.
+
+    Supports both local (MLX/LM Studio) and remote (DeepSeek/OpenAI) APIs.
+    Request can override model config via model/base_url/api_key fields.
+    Supports streaming and non-streaming responses.
+    """
+    # Resolve model config: request payload overrides config.yml
+    model_cfg = resolve_model_for_request(config, payload)
+
+    messages = payload.get("messages", [])
+    stream = payload.get("stream", False)
+
+    # Extract last user message for our agent
+    user_message = ""
+    for msg in reversed(messages):
+        if isinstance(msg, dict):
+            role = str(msg.get("role", "")).lower()
+            content = msg.get("content", "")
+            if role == "user" and content:
+                user_message = str(content)
+                break
+
+    if not user_message:
+        if stream:
+            async def error_stream():
+                yield json.dumps({
+                    "error": {
+                        "message": "No user message found",
+                        "type": "invalid_request_error",
+                        "code": "invalid_request",
+                    }
+                }, ensure_ascii=False) + "\n"
+            return StreamingResponse(
+                error_stream(),
+                media_type="application/x-ndjson",
+                headers={"Cache-Control": "no-transform", "X-Accel-Buffering": "no"},
+            )
+        return {
+            "error": {
+                "message": "No user message found",
+                "type": "invalid_request_error",
+                "code": "invalid_request",
+            }
+        }
+
+    # Build input messages for agent (flatten conversation)
+    input_messages = []
+    system_content = ""
+    for msg in messages:
+        if isinstance(msg, dict):
+            role = str(msg.get("role", "")).lower()
+            content = str(msg.get("content", "") or "")
+            if role == "system":
+                system_content = content
+            elif role in ("user", "assistant"):
+                input_messages.append({"role": role, "content": content})
+
+    if not input_messages or input_messages[-1].get("role") != "user":
+        input_messages.append({"role": "user", "content": user_message})
+    if system_content:
+        input_messages.insert(0, {"role": "system", "content": system_content})
+
+    # Create ChatOpenAI with resolved config (local or remote)
+    chat_model = create_chat_model(model_cfg)
+
+    # Select tools based on request
+    enabled_tools = set()
+    if payload.get("tools"):
+        for t in payload.get("tools", []):
+            if isinstance(t, dict):
+                name = str(t.get("function", {}).get("name", "")).strip()
+                if name:
+                    enabled_tools.add(name)
+    search_enabled = bool(enabled_tools & {"search", "web_search"})
+
+    all_tools = get_tools({"current_time"})
+    mcp_tools = await load_mcp_tools_progressive()
+    all_tools = all_tools + mcp_tools
+    if search_enabled:
+        all_tools = all_tools + get_tools({"search"})
+
+    # Build system prompt
+    context = context_loader.load_context() if context_loader else ""
+    runtime_system_prompt = build_system_prompt_with_context(
+        MainAgentPrompt.SYSTEM_PROMPT,
+        context,
+        "",
+    )
+
+    session_id = f"openai-{hashlib.md5(str(messages).encode()).hexdigest()[:12]}"
+
+    # Create temporary agent with the resolved model
+    temp_agent = create_agent(
+        model=chat_model,
+        tools=all_tools,
+        system_prompt=runtime_system_prompt,
+        middleware=[],
+        checkpointer=None,
+    )
+
+    if stream:
+        async def openai_stream():
+            full_content = ""
+            thinking_text = ""
+            tool_names_seen = set()
+
+            async for mode, event in temp_agent.astream(
+                {"messages": input_messages},
+                stream_mode=["messages", "values"],
+                config={
+                    "configurable": {"thread_id": f"openai:{session_id}"},
+                    "recursion_limit": AGENT_RECURSION_LIMIT,
+                },
+            ):
+                if mode == "messages":
+                    try:
+                        msg, _meta = event
+                    except Exception:
+                        msg = event
+                    role_name = _normalize_message_role(msg)
+
+                    if role_name in {"assistant", "ai"}:
+                        delta = _extract_text_from_message(msg)
+                        if delta:
+                            full_content += delta
+                            yield json.dumps({
+                                "id": f"chatcmpl-{hashlib.md5(str(time.time()).encode()).hexdigest()[:8]}",
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": model_cfg.get("model", ""),
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {"content": delta},
+                                    "finish_reason": None,
+                                }],
+                            }, ensure_ascii=False) + "\n"
+
+                        thinking = _extract_thinking_from_message(msg)
+                        if thinking:
+                            thinking_text = thinking
+                else:
+                    events = event.get("messages") if isinstance(event, dict) else None
+                    if isinstance(events, list):
+                        for message in events:
+                            role_msg = _normalize_message_role(message)
+                            if role_msg == "tool":
+                                name_msg = _extract_message_name(message)
+                                if name_msg:
+                                    tool_names_seen.add(name_msg)
+
+            # Final chunk
+            finish_reason = "tool_calls" if tool_names_seen else "stop"
+            yield json.dumps({
+                "id": f"chatcmpl-{hashlib.md5(str(time.time()).encode()).hexdigest()[:8]}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": model_cfg.get("model", ""),
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": finish_reason,
+                }],
+            }, ensure_ascii=False) + "\n"
+
+            if thinking_text:
+                yield json.dumps({
+                    "id": f"chatcmpl-{hashlib.md5(str(time.time()).encode()).hexdigest()[:8]}",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": model_cfg.get("model", ""),
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": f"\n\n[think]\n{thinking_text[:500]}\n[/think]"},
+                        "finish_reason": None,
+                    }],
+                }, ensure_ascii=False) + "\n"
+
+            yield json.dumps({
+                "id": f"chatcmpl-{hashlib.md5(str(time.time()).encode()).hexdigest()[:8]}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": model_cfg.get("model", ""),
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop",
+                }],
+            }, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(
+            openai_stream(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-transform", "X-Accel-Buffering": "no"},
+        )
+
+    # Non-streaming response
+    collected = []
+    async for mode, event in temp_agent.astream(
+        {"messages": input_messages},
+        stream_mode=["messages"],
+        config={
+            "configurable": {"thread_id": f"openai:{session_id}"},
+            "recursion_limit": AGENT_RECURSION_LIMIT,
+        },
+    ):
+        if mode == "messages":
+            try:
+                msg, _meta = event
+            except Exception:
+                msg = event
+            role_name = _normalize_message_role(msg)
+            if role_name in {"assistant", "ai"}:
+                delta = _extract_text_from_message(msg)
+                if delta:
+                    collected.append(delta)
+
+    full_content = "".join(collected)
+    return {
+        "id": f"chatcmpl-{hashlib.md5(str(time.time()).encode()).hexdigest()[:8]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model_cfg.get("model", ""),
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": full_content or "No response generated",
+            },
+            "finish_reason": "stop",
+        }],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        },
+    }
+
+
+@app.get("/v1/models")
+async def openai_list_models():
+    """OpenAI-compatible models listing endpoint."""
+    return {
+        "object": "list",
+        "data": [{
+            "id": main_model_config.get("model", "unknown"),
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": "robotagent",
+        }],
+    }
 
 
 if __name__ == "__main__":

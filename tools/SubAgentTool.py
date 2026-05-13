@@ -22,6 +22,7 @@ from deepagents import CompiledSubAgent
 # 替换相对导入为绝对导入
 from prompts import AnalysisAgentPrompt, SimulationAgentPrompt
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from backend.model_config import resolve_openai_compatible_model
 
 logger = logging.getLogger("uvicorn")
 
@@ -158,10 +159,11 @@ async def init_subagents(
             function = getattr(AnalysisTool, func_name)
             _cached_analysis_tools.append(function)
     if _cached_analysis_chat is None:
+        analysis_model_config = resolve_openai_compatible_model(config, "analysis")
         _cached_analysis_chat = ChatOpenAI(
-            base_url=config.get("analysis_model_url", config["model_url"]),
-            model=config.get("analysis_llm", config["llm"]),
-            api_key=config.get("analysis_api_key", config.get("api_key", "no_need")),
+            base_url=analysis_model_config["base_url"],
+            model=analysis_model_config["model"],
+            api_key=analysis_model_config["api_key"],
         )
 
     # Rebuild analysis agent graph with current experiences
@@ -237,10 +239,11 @@ async def init_subagents(
         )
 
     if _cached_simulation_chat is None:
+        simulation_model_config = resolve_openai_compatible_model(config, "simulation")
         _cached_simulation_chat = ChatOpenAI(
-            base_url=config.get("simulation_model_url", config["model_url"]),
-            model=config.get("simulation_llm", config["llm"]),
-            api_key=config.get("simulation_api_key", config.get("api_key", "no_need")),
+            base_url=simulation_model_config["base_url"],
+            model=simulation_model_config["model"],
+            api_key=simulation_model_config["api_key"],
         )
 
     # Rebuild simulation agent graph with current experiences

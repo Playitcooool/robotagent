@@ -6,9 +6,6 @@
 
     <div class="results-body">
       <section v-if="liveFrame?.image_url" class="rail-section frame-section">
-        <div v-if="isStale" class="section-heading">
-          <span class="stale-badge">{{ lang === 'zh' ? '⚠ 画面卡住' : '⚠ Stale' }}</span>
-        </div>
         <div class="frame-stage">
           <div
             class="frame-wrap"
@@ -86,8 +83,6 @@ export default {
   },
   data () {
     return {
-      nowSec: Math.floor(Date.now() / 1000),
-      _staleTimer: null,
       cameraDrag: null,
       lastCameraSend: 0,
       cameraPanelOpen: false,
@@ -117,13 +112,7 @@ export default {
     const { lang } = useI18n()
     return { lang }
   },
-  mounted () {
-    this._staleTimer = setInterval(() => {
-      this.nowSec = Math.floor(Date.now() / 1000)
-    }, 2000)
-  },
   beforeUnmount () {
-    if (this._staleTimer) clearInterval(this._staleTimer)
     if (this.cameraFormTimer) clearTimeout(this.cameraFormTimer)
     if (this.cameraSendTimer) clearTimeout(this.cameraSendTimer)
   },
@@ -300,12 +289,6 @@ export default {
     },
     hasContent () {
       return Boolean(this.liveFrame?.image_url)
-    },
-    isStale () {
-      const ts = Number(this.liveFrame?.timestamp)
-      if (!ts || !Number.isFinite(ts)) return false
-      if (this.liveFrame?.done) return false
-      return this.nowSec - ts > 10
     },
     mjpegUrl () {
       return '/api/sim/mjpeg'
@@ -722,15 +705,6 @@ export default {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-}
-
-.stale-badge {
-  color: #ffb86b;
-  background: rgba(255, 159, 90, 0.15);
-  border-radius: 999px;
-  padding: 1px 8px;
-  font-size: 11px;
-  font-weight: 700;
 }
 
 .empty-state {
