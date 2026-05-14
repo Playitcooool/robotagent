@@ -16,28 +16,46 @@
             @contextmenu.prevent
             @wheel.prevent="handleCameraWheel"
           >
-            <div class="camera-toolbar" @mousedown.stop @wheel.stop>
-              <button type="button" class="camera-button text" @click="sendCameraAction({ action: 'fit_scene' })">
+            <div
+              class="camera-toolbar"
+              @pointerdown.stop
+              @pointermove.stop
+              @pointerup.stop
+              @pointercancel.stop
+              @mousedown.stop
+              @click.stop
+              @wheel.stop
+            >
+              <button
+                type="button"
+                class="camera-button text"
+                :class="{ active: replayActive }"
+                :disabled="replayLoading"
+                @click.stop="toggleReplay"
+              >
+                {{ replayActive ? (lang === 'zh' ? '直播' : 'Live') : (lang === 'zh' ? '回放' : 'Replay') }}
+              </button>
+              <button type="button" class="camera-button text" :disabled="replayActive" @click.stop="sendCameraAction({ action: 'fit_scene' }, { immediate: true })">
                 {{ lang === 'zh' ? '适配场景' : 'Fit' }}
               </button>
-              <button type="button" class="camera-button text" @click="sendCameraAction({ action: 'reset_auto' })">
+              <button type="button" class="camera-button text" :disabled="replayActive" @click.stop="sendCameraAction({ action: 'reset_auto' }, { immediate: true })">
                 {{ lang === 'zh' ? '重置' : 'Reset' }}
               </button>
-              <button type="button" class="camera-button text" @click="sendCameraAction({ action: 'preset', preset: 'top' })">
+              <button type="button" class="camera-button text" :disabled="replayActive" @click.stop="sendCameraAction({ action: 'preset', preset: 'top' }, { immediate: true })">
                 {{ lang === 'zh' ? '俯视' : 'Top' }}
               </button>
-              <button type="button" class="camera-button text" @click="sendCameraAction({ action: 'preset', preset: 'front' })">
+              <button type="button" class="camera-button text" :disabled="replayActive" @click.stop="sendCameraAction({ action: 'preset', preset: 'front' }, { immediate: true })">
                 {{ lang === 'zh' ? '正视' : 'Front' }}
               </button>
-              <button type="button" class="camera-button text" @click="sendCameraAction({ action: 'preset', preset: 'side' })">
+              <button type="button" class="camera-button text" :disabled="replayActive" @click.stop="sendCameraAction({ action: 'preset', preset: 'side' }, { immediate: true })">
                 {{ lang === 'zh' ? '侧视' : 'Side' }}
               </button>
             </div>
             <img
               class="frame-img"
               draggable="false"
-              :src="mjpegUrl"
-              :alt="liveFrame.task || 'simulation frame'"
+              :src="displayFrameUrl"
+              :alt="displayFrameAlt"
             />
           </div>
         </div>
@@ -105,7 +123,12 @@ export default {
       lastCameraSignature: '',
       cameraSendTimer: null,
       cameraInFlight: false,
-      queuedCameraPayload: null
+      queuedCameraPayload: null,
+      replayFrames: [],
+      replayActive: false,
+      replayLoading: false,
+      replayIndex: 0,
+      replayTimer: null
     }
   },
   setup () {
@@ -115,6 +138,7 @@ export default {
   beforeUnmount () {
     if (this.cameraFormTimer) clearTimeout(this.cameraFormTimer)
     if (this.cameraSendTimer) clearTimeout(this.cameraSendTimer)
+    if (this.replayTimer) clearTimeout(this.replayTimer)
   },
   watch: {
     'liveFrame.camera': {
@@ -193,6 +217,7 @@ export default {
       this.sendCameraAction(payload)
     },
     startCameraDrag (event) {
+      if (this.replayActive) return
       if (event.button !== 0 && event.button !== 2) return
       event.currentTarget.setPointerCapture?.(event.pointerId)
       this.cameraDrag = {
@@ -223,11 +248,20 @@ export default {
       this.cameraDrag = null
     },
     handleCameraWheel (event) {
+      if (this.replayActive) return
       const factor = event.deltaY < 0 ? 0.88 : 1.14
       this.sendCameraAction({ action: 'zoom', zoom_factor: factor })
     },
-    async sendCameraAction (payload) {
+    async sendCameraAction (payload, options = {}) {
       this.queuedCameraPayload = payload
+      if (options.immediate && !this.cameraInFlight) {
+        if (this.cameraSendTimer) {
+          clearTimeout(this.cameraSendTimer)
+          this.cameraSendTimer = null
+        }
+        await this.flushCameraAction()
+        return
+      }
       const now = Date.now()
       const delay = Math.max(0, 90 - (now - this.lastCameraSend))
       if (this.cameraSendTimer) return
@@ -265,6 +299,58 @@ export default {
           }, 90)
         }
       }
+    },
+    async toggleReplay () {
+      if (this.replayActive) {
+        this.stopReplay()
+        return
+      }
+      await this.startReplay()
+    },
+    async startReplay () {
+      this.replayLoading = true
+      this.cameraError = ''
+      try {
+        const response = await fetch('/api/sim/replay', { headers: { Accept: 'application/json' } })
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok || data.ok === false) {
+          throw new Error(data.error || `HTTP ${response.status}`)
+        }
+        const frames = Array.isArray(data.frames) ? data.frames.filter((frame) => frame?.image_url) : []
+        if (!frames.length) {
+          throw new Error(this.lang === 'zh' ? '暂无可回放帧' : 'No replay frames available')
+        }
+        this.replayFrames = frames
+        this.replayIndex = 0
+        this.replayActive = true
+        this.scheduleReplayFrame()
+      } catch (error) {
+        this.cameraError = error?.message || String(error)
+      } finally {
+        this.replayLoading = false
+      }
+    },
+    stopReplay () {
+      if (this.replayTimer) {
+        clearTimeout(this.replayTimer)
+        this.replayTimer = null
+      }
+      this.replayActive = false
+      this.replayIndex = 0
+    },
+    scheduleReplayFrame () {
+      if (this.replayTimer) clearTimeout(this.replayTimer)
+      if (!this.replayActive) return
+      this.replayTimer = setTimeout(() => {
+        this.replayTimer = null
+        if (!this.replayActive) return
+        if (this.replayIndex >= this.replayFrames.length - 1) {
+          this.stopReplay()
+          return
+        }
+        this.replayIndex += 1
+        this.scheduleReplayFrame()
+      }, 180)
     }
   },
   computed: {
@@ -289,6 +375,18 @@ export default {
     },
     hasContent () {
       return Boolean(this.liveFrame?.image_url)
+    },
+    currentReplayFrame () {
+      return this.replayFrames[this.replayIndex] || null
+    },
+    displayFrameUrl () {
+      return this.replayActive && this.currentReplayFrame?.image_url
+        ? this.currentReplayFrame.image_url
+        : this.mjpegUrl
+    },
+    displayFrameAlt () {
+      const frame = this.replayActive ? this.currentReplayFrame : this.liveFrame
+      return frame?.task || 'simulation frame'
     },
     mjpegUrl () {
       return '/api/sim/mjpeg'
@@ -456,6 +554,16 @@ export default {
 .camera-button:hover {
   background: rgba(34, 87, 160, 0.82);
   border-color: rgba(143, 183, 255, 0.44);
+}
+
+.camera-button.active {
+  background: rgba(47, 125, 255, 0.86);
+  border-color: rgba(159, 198, 255, 0.72);
+}
+
+.camera-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
 }
 
 .camera-panel {

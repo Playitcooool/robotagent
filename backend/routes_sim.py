@@ -15,6 +15,7 @@ def register_sim_routes(
     sim_stream_dir: Path,
     sim_meta_file: Path,
     sim_frame_file: Path,
+    sim_replay_dir: Path,
     sim_frame_cache: dict[str, Any],
 ):
     mcp_camera_lock = asyncio.Lock()
@@ -110,6 +111,34 @@ def register_sim_routes(
         sim_frame_cache["payload"] = payload
         return payload
 
+    def load_replay_payload():
+        frames: list[dict[str, Any]] = []
+        if not sim_replay_dir.exists():
+            return {"ok": True, "frames": frames}
+        for meta_path in sorted(sim_replay_dir.glob("frame_*.json")):
+            frame_id = meta_path.stem
+            frame_path = sim_replay_dir / f"{frame_id}.png"
+            if not frame_path.exists():
+                continue
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+            except Exception:
+                meta = {}
+            timestamp = float(meta.get("timestamp") or frame_path.stat().st_mtime)
+            frames.append({
+                "frame_id": frame_id,
+                "run_id": meta.get("run_id"),
+                "task": meta.get("task"),
+                "step": meta.get("step"),
+                "total_steps": meta.get("total_steps"),
+                "done": bool(meta.get("done")),
+                "timestamp": timestamp,
+                "image_url": f"/api/sim/replay/{frame_id}.png?ts={timestamp}",
+            })
+        frames.sort(key=lambda item: float(item.get("timestamp") or 0.0))
+        return {"ok": True, "frames": frames}
+
     @app.get("/api/sim/debug")
     async def sim_debug():
         return {
@@ -121,6 +150,29 @@ def register_sim_routes(
     @app.get("/api/sim/latest-frame")
     async def get_latest_sim_frame():
         return load_latest_frame_payload()
+
+    @app.get("/api/sim/replay")
+    async def get_sim_replay():
+        return load_replay_payload()
+
+    @app.get("/api/sim/replay/{frame_id}.png")
+    async def get_sim_replay_png(frame_id: str):
+        if not frame_id.startswith("frame_") or not frame_id.replace("frame_", "", 1).isdigit():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="invalid frame id",
+            )
+        frame_path = sim_replay_dir / f"{frame_id}.png"
+        if not frame_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="replay frame not found",
+            )
+        return FileResponse(
+            frame_path,
+            media_type="image/png",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
     @app.get("/api/sim/camera")
     async def get_sim_camera():

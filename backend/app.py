@@ -74,6 +74,7 @@ SIM_STREAM_DIR = Path(
 ).resolve()
 SIM_META_FILE = SIM_STREAM_DIR / "latest.json"
 SIM_FRAME_FILE = SIM_STREAM_DIR / "latest.png"
+SIM_REPLAY_DIR = SIM_STREAM_DIR / "replay"
 _SIM_FRAME_CACHE = {
     "meta_mtime": 0.0,
     "frame_mtime": 0.0,
@@ -386,6 +387,7 @@ register_sim_routes(
     sim_stream_dir=SIM_STREAM_DIR,
     sim_meta_file=SIM_META_FILE,
     sim_frame_file=SIM_FRAME_FILE,
+    sim_replay_dir=SIM_REPLAY_DIR,
     sim_frame_cache=_SIM_FRAME_CACHE,
 )
 

@@ -324,6 +324,7 @@ STREAM_DIR = Path(
 ).resolve()
 LATEST_META_FILE = STREAM_DIR / "latest.json"
 LATEST_FRAME_FILE = STREAM_DIR / "latest.png"
+REPLAY_DIR = STREAM_DIR / "replay"
 REQUIRED_PYBULLET_ASSETS = [
     "plane.urdf",
     "cube_small.urdf",
@@ -332,6 +333,7 @@ REQUIRED_PYBULLET_ASSETS = [
 PREVIEW_WIDTH = int(os.environ.get("PYBULLET_PREVIEW_WIDTH", "480"))
 PREVIEW_HEIGHT = int(os.environ.get("PYBULLET_PREVIEW_HEIGHT", "360"))
 MAX_PREVIEW_FRAMES = int(os.environ.get("PYBULLET_MAX_PREVIEW_FRAMES", "8"))
+MAX_REPLAY_FRAMES = max(1, int(os.environ.get("PYBULLET_MAX_REPLAY_FRAMES", "120")))
 PNG_COMPRESS_LEVEL = max(0, min(9, int(os.environ.get("PYBULLET_PNG_COMPRESS_LEVEL", "1"))))
 SNAPSHOT_DEBOUNCE_SECONDS = max(
     0.0, float(os.environ.get("PYBULLET_SNAPSHOT_DEBOUNCE_MS", "120")) / 1000.0
@@ -340,6 +342,7 @@ SNAPSHOT_DEBOUNCE_SECONDS = max(
 
 def _ensure_stream_dir():
     STREAM_DIR.mkdir(parents=True, exist_ok=True)
+    REPLAY_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _cleanup_stream_tmp_files():
@@ -350,8 +353,64 @@ def _cleanup_stream_tmp_files():
                 path.unlink()
             except Exception:
                 pass
+        for path in REPLAY_DIR.glob("*.tmp"):
+            try:
+                path.unlink()
+            except Exception:
+                pass
     except Exception:
         pass
+
+
+def _clear_replay_frames():
+    try:
+        _ensure_stream_dir()
+        for path in REPLAY_DIR.glob("frame_*"):
+            try:
+                path.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _prune_replay_frames():
+    try:
+        frames = sorted(REPLAY_DIR.glob("frame_*.png"), key=lambda pth: pth.stat().st_mtime, reverse=True)
+        for frame_path in frames[MAX_REPLAY_FRAMES:]:
+            try:
+                frame_path.unlink()
+            except Exception:
+                pass
+            meta_path = frame_path.with_suffix(".json")
+            try:
+                if meta_path.exists():
+                    meta_path.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _write_replay_frame(frame_id: str, png_bytes: bytes, payload: dict[str, Any], *, fsync_file: bool = False):
+    tmp_frame = REPLAY_DIR / f"{frame_id}.png.tmp"
+    frame_path = REPLAY_DIR / f"{frame_id}.png"
+    meta_path = REPLAY_DIR / f"{frame_id}.json"
+    try:
+        with open(tmp_frame, "wb") as f:
+            f.write(png_bytes)
+            f.flush()
+            if fsync_file:
+                os.fsync(f.fileno())
+        os.replace(tmp_frame, frame_path)
+        _write_json_atomic(meta_path, payload, fsync_file=fsync_file)
+        _prune_replay_frames()
+    except Exception:
+        try:
+            if tmp_frame.exists():
+                tmp_frame.unlink()
+        except Exception:
+            pass
 
 
 def _pybullet_asset_status() -> dict[str, bool]:
@@ -642,7 +701,9 @@ def _publish_realtime_frame(
     png_bytes = _encode_png_rgb(rgb)
 
     ts = time.time()
+    frame_id = f"frame_{int(ts * 1000000)}"
     payload = {
+        "frame_id": frame_id,
         "run_id": run_id,
         "task": task,
         "step": int(step_idx),
@@ -672,6 +733,8 @@ def _publish_realtime_frame(
             pass
         return
     _write_json_atomic(LATEST_META_FILE, payload, fsync_file=fsync_file)
+    if not (extra and extra.get("live")):
+        _write_replay_frame(frame_id, png_bytes, payload, fsync_file=fsync_file)
 
 
 _snapshot_lock = threading.Lock()
@@ -799,6 +862,7 @@ def setup_simulation(gui: bool = False):
             LATEST_FRAME_FILE.unlink()
     except Exception:
         pass
+    _clear_replay_frames()
     with _sim_lock:
         reuse_existing = (
             not gui
