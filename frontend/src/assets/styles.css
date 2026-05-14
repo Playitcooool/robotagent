@@ -44,6 +44,21 @@
   --shadow-sm: 0 14px 28px rgba(18, 34, 68, 0.08);
 }
 
+:root.light body {
+  background:
+    radial-gradient(960px 480px at 10% -10%, rgba(37, 99, 235, 0.12), transparent 60%),
+    radial-gradient(760px 420px at 100% 0%, rgba(5, 150, 105, 0.08), transparent 56%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.64), rgba(255, 255, 255, 0)),
+    var(--bg);
+}
+
+:root.light body::before {
+  background-image:
+    linear-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.035) 1px, transparent 1px);
+  opacity: 0.34;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -304,11 +319,31 @@ img {
 .hljs-selector-pseudo { color: #d2a8ff; }
 
 :root.light .markdown pre {
-  background: #eef4fb;
+  border-color: var(--line);
+  background: #f3f6fb;
 }
 
 :root.light .markdown :not(pre) > code {
   background: rgba(15, 23, 42, 0.05);
+}
+
+:root.light .markdown blockquote {
+  border-left-color: rgba(37, 99, 235, 0.42);
+  background: rgba(37, 99, 235, 0.06);
+}
+
+:root.light .markdown th {
+  background: rgba(15, 23, 42, 0.04);
+}
+
+:root.light .code-copy-btn {
+  border-color: var(--line-strong);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--muted);
+}
+
+:root.light .code-lang-label {
+  color: #64748b;
 }
 
 :root.light .hljs-keyword,
@@ -339,6 +374,195 @@ img {
 :root.light .hljs-selector-class,
 :root.light .hljs-selector-attr { color: #8250df; }
 :root.light .hljs-tag { color: #116329; }
+
+:root.light .auth-card,
+:root.light .skeleton-card {
+  background:
+    radial-gradient(560px 220px at 50% 0%, var(--accent-soft), transparent 58%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.68)),
+    var(--panel);
+}
+
+:root.light .skeleton-title,
+:root.light .skeleton-subtitle,
+:root.light .skeleton-input,
+:root.light .line {
+  background: linear-gradient(90deg, rgba(15, 23, 42, 0.05), rgba(37, 99, 235, 0.16), rgba(15, 23, 42, 0.05));
+  background-size: 200% 100%;
+}
+
+:root.light .topbar {
+  border-bottom-color: var(--line);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(246, 249, 253, 0.86)),
+    var(--panel);
+}
+
+:root.light .nav-btn,
+:root.light .icon-btn,
+:root.light .logout-btn,
+:root.light .status-chip,
+:root.light .user-chip,
+:root.light .mini-action,
+:root.light .search-toggle,
+:root.light .camera-panel-toggle,
+:root.light .pill {
+  border-color: var(--line);
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--text);
+}
+
+:root.light .nav-btn.active,
+:root.light .session-row.active,
+:root.light .pill.active {
+  background: rgba(37, 99, 235, 0.1);
+  border-color: rgba(37, 99, 235, 0.3);
+  color: #1d4ed8;
+}
+
+:root.light .workbench .session-rail,
+:root.light .workbench .conversation-stage,
+:root.light .workbench .results-rail,
+:root.light .bubble-card,
+:root.light .hero-card,
+:root.light .composer-surface,
+:root.light .rail-card,
+:root.light .source-card,
+:root.light .frame-card,
+:root.light .plan-item {
+  border-color: var(--line);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.5)),
+    var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+
+:root.light .workbench .conversation-stage,
+:root.light .composer-surface {
+  background:
+    radial-gradient(880px 360px at 50% 0%, rgba(37, 99, 235, 0.08), transparent 56%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.56)),
+    var(--panel);
+}
+
+:root.light .message-row.user .bubble-card,
+:root.light .new-session-btn {
+  border-color: rgba(37, 99, 235, 0.26);
+  background:
+    linear-gradient(180deg, rgba(37, 99, 235, 0.12), rgba(37, 99, 235, 0.06)),
+    #ffffff;
+  color: #1e3a8a;
+}
+
+:root.light .results-toggle {
+  border-color: rgba(37, 99, 235, 0.28);
+  background: rgba(255, 255, 255, 0.94);
+  color: #2563eb;
+}
+
+:root.light .lead,
+:root.light .thinking-preview,
+:root.light .inline-status,
+:root.light .source-block,
+:root.light .empty-state,
+:root.light .title-edit,
+:root.light .camera-field input {
+  border-color: var(--line);
+}
+
+:root.light .lead {
+  color: var(--soft);
+}
+
+:root.light .session-row:hover,
+:root.light .thinking-preview,
+:root.light .plan-item,
+:root.light .empty-icon {
+  background: rgba(15, 23, 42, 0.04);
+}
+
+:root.light .empty-state {
+  border-color: rgba(15, 23, 42, 0.12);
+}
+
+:root.light .hero-card-tag,
+:root.light .agent-main,
+:root.light .source-link,
+:root.light .source-card a,
+:root.light .collapse-btn,
+:root.light .eyebrow {
+  color: #2563eb;
+}
+
+:root.light .agent-main,
+:root.light .hero-card-tag {
+  background: rgba(37, 99, 235, 0.1);
+}
+
+:root.light .agent-analysis,
+:root.light .agent-chip.analysis {
+  color: #047857;
+  background: rgba(5, 150, 105, 0.1);
+}
+
+:root.light .agent-simulator,
+:root.light .agent-chip.simulator {
+  color: #c2410c;
+  background: rgba(234, 88, 12, 0.11);
+}
+
+:root.light .send-btn {
+  border-color: rgba(37, 99, 235, 0.34);
+  background: #2563eb;
+  color: #ffffff;
+}
+
+:root.light .send-btn:hover:not(:disabled) {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+}
+
+:root.light .send-btn.stop {
+  border-color: rgba(220, 38, 38, 0.28);
+  background: rgba(220, 38, 38, 0.1);
+  color: #b91c1c;
+}
+
+:root.light .camera-button {
+  border-color: rgba(15, 23, 42, 0.14);
+  background: rgba(255, 255, 255, 0.86);
+  color: #132033;
+}
+
+:root.light .camera-button:hover,
+:root.light .camera-button.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+}
+
+:root.light .camera-field input,
+:root.light .title-edit {
+  background: #ffffff;
+  color: var(--text);
+}
+
+:root.light .camera-error {
+  background: rgba(220, 38, 38, 0.08);
+  color: #b91c1c;
+}
+
+:root.light .shortcut-overlay {
+  background: rgba(15, 23, 42, 0.38);
+}
+
+:root.light .toast {
+  background: rgba(19, 32, 51, 0.94);
+}
+
+:root.light ::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.2);
+}
 
 .shortcut-overlay {
   position: fixed;

@@ -22,6 +22,14 @@ test('readPreferences hydrates persisted language, theme, and font size', () => 
   })
 })
 
+test('readPreferences defaults to light theme', () => {
+  assert.deepEqual(readPreferences(createStorageAdapter()), {
+    lang: 'zh',
+    theme: 'light',
+    fontSize: 15
+  })
+})
+
 test('toggle helpers flip current theme and language', () => {
   assert.equal(toggleTheme('dark'), 'light')
   assert.equal(toggleTheme('light'), 'dark')

@@ -21,7 +21,7 @@ export function createStorageAdapter(seed = {}) {
 
 export function readPreferences(storage = globalThis?.localStorage) {
   const lang = storage?.getItem?.(LANG_KEY) || 'zh'
-  const theme = storage?.getItem?.(THEME_KEY) === 'light' ? 'light' : 'dark'
+  const theme = storage?.getItem?.(THEME_KEY) === 'dark' ? 'dark' : 'light'
   const rawFontSize = Number.parseInt(storage?.getItem?.(FONT_SIZE_KEY) || `${DEFAULT_FONT_SIZE}`, 10)
 
   return {
@@ -31,7 +31,7 @@ export function readPreferences(storage = globalThis?.localStorage) {
   }
 }
 
-export function toggleTheme(theme = 'dark') {
+export function toggleTheme(theme = 'light') {
   return theme === 'light' ? 'dark' : 'light'
 }
 
