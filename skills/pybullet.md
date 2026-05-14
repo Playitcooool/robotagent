@@ -48,6 +48,28 @@ Check if required PyBullet bundled assets (`plane.urdf`, `cube_small.urdf`, `kuk
 Use these for non-arm mobile robot tasks such as driving, waypoint following,
 lidar scans, collision checks, and robot-level state.
 
+#### `run_pybullet_navigation_task`
+
+Preferred high-level tool for mobile navigation task evaluation. It loads the
+mobile robot, creates optional simple obstacles, follows waypoints, stops the
+base, and returns a unified navigation metrics payload.
+
+**Parameters:**
+- `robot_type` (str, default=`r2d2`): `husky`, `racecar`, or `r2d2`.
+- `start_position` (list[3], default=[0,0,0])
+- `waypoints` (list): `[[x,y], ...]` or `[[x,y,z], ...]`
+- `obstacles` (list[dict]): `shape` (`box`/`sphere`/`cylinder`), `position`, `size`, optional `name`
+- `speed` (float), `tolerance` (float), `max_steps` (int)
+- `avoid_obstacles` (bool): basic lidar local avoidance
+- `publish_frames` (bool)
+
+**Returns:** `trajectory`, `final_position`, and `metrics` with `completed`,
+`success`, `final_error`, `waypoint_errors`, `path_length`, `steps`,
+`collision_count`, `min_clearance`, and `failure_reason`.
+
+Use lower-level `load_robot` / `drive_robot` / `follow_waypoints` only when the
+task needs fine-grained control rather than a closed-loop task report.
+
 #### `load_robot`
 
 Load a common mobile robot.

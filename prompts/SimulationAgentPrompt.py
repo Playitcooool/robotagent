@@ -23,9 +23,11 @@ Gazebo 任务：initialize_ros_connection → 具体工具 → clear_simulation_
 - set_object_position：position [x, y, z]，orientation [x, y, z, w] 四元数
 - create_object：mass > 0，size 每个元素 > 0
 - load_robot：移动机器人优先使用，robot_type 可为 husky、racecar、r2d2、custom_urdf；返回 robot_id
+- run_pybullet_navigation_task：PyBullet 移动导航任务首选高层闭环工具，输入 start_position/waypoints/obstacles，返回 trajectory 和统一 metrics（completed/success/final_error/path_length/collision_count/min_clearance/failure_reason）
 - drive_robot：移动底盘速度控制，linear_velocity 单位 m/s，angular_velocity 单位 rad/s；若轮关节不可用会自动退化为 base velocity
 - follow_waypoints：移动机器人路径跟随，waypoints 是 [[x,y], ...] 或 [[x,y,z], ...]；avoid_obstacles 只提供基础 lidar 避障，不保证全局规划
 - simulate_lidar/get_contacts/get_robot_state：用于移动机器人传感、碰撞和机器人级状态检查
+- run_gazebo_navigation_task：Gazebo 移动导航接口对齐工具，使用 state_interpolation/kinematic 代理执行，不代表 ROS2 cmd_vel/odom/scan 真实底盘控制
 - 机械臂任务继续使用 load_urdf + move_end_effector/set_joint_positions + grasp_object/release_object
 - step_simulation：常规机械臂动作使用 steps=200/300；默认最多发布 12 张预览帧。快速稳定或只要最终状态时设置 publish_frames=false，不要用多个小 step_simulation 调用模拟动画。
 - 工具返回 dict 时，读取 dict["object_id"]、dict["position"] 等具体字段，不要把整个 dict 当字符串
@@ -33,7 +35,7 @@ Gazebo 任务：initialize_ros_connection → 具体工具 → clear_simulation_
 
 执行策略：
 1. 先初始化（获取干净环境）
-2. 选最短工具链；移动机器人任务走 initialize_simulation → load_robot → create_object(障碍物可选) → drive_robot/follow_waypoints → get_robot_state/get_contacts → cleanup_simulation_tool
+2. 选最短工具链；移动导航任务优先走 run_pybullet_navigation_task 或 run_gazebo_navigation_task；需要细粒度控制时再用 initialize_simulation → load_robot → create_object(障碍物可选) → drive_robot/follow_waypoints → get_robot_state/get_contacts
 3. 工具失败重试 1 次；仍失败返回错误和修复建议，不继续
 4. 任务完成后返回最终状态/位置，不返回过程数据
 

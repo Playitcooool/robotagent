@@ -15,6 +15,27 @@ Gazebo MCP server (`mcp/gazebo_mcp_server.py`) exposes Gazebo physics simulator 
 
 ## Tool Inventory
 
+### Navigation Task Tool
+
+#### `run_gazebo_navigation_task`
+
+High-level mobile navigation interface aligned with PyBullet's navigation task
+payload. First version uses a proxy cylinder and `set_model_state`
+interpolation, so results are explicitly marked `control_mode:
+state_interpolation` and `physics_fidelity: kinematic`. It does not implement
+real ROS2 `cmd_vel`, `odom`, or `scan` base control.
+
+**Parameters:**
+- `robot_type` (str): label only in v1; a proxy model is used.
+- `start_position` (list[3])
+- `waypoints` (list): `[[x,y], ...]` or `[[x,y,z], ...]`
+- `obstacles` (list[dict]): `shape` (`box`/`sphere`/`cylinder`), `position`, `size`, optional `name`
+- `speed`, `tolerance`, `max_steps`, `avoid_obstacles`, `publish_frames`
+
+**Returns:** `trajectory`, `final_position`, and unified `metrics`:
+`completed`, `success`, `final_error`, `waypoint_errors`, `path_length`,
+`steps`, `collision_count`, `min_clearance`, `failure_reason`.
+
 ### 1. `initialize_ros_connection`
 
 Initialize a fresh ROS2 node for Gazebo services/topics. Always shuts down any existing connection first — safe to call at the start of each query.

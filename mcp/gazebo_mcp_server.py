@@ -18,6 +18,23 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_srvs.srv import Empty
 
+try:
+    from mcp.navigation_eval import (
+        approximate_collisions,
+        build_navigation_result,
+        normalize_obstacles,
+        normalize_start_position,
+        validate_waypoints,
+    )
+except ModuleNotFoundError:
+    from navigation_eval import (
+        approximate_collisions,
+        build_navigation_result,
+        normalize_obstacles,
+        normalize_start_position,
+        validate_waypoints,
+    )
+
 
 def _validate_vector(
     vec: list[float],
@@ -1056,6 +1073,126 @@ def create_simple_object(args: CreateSimpleObjectArgs):
         robot_namespace="",
     )
     return spawn_model(new_args)
+
+
+class RunGazeboNavigationTaskArgs(BaseModel):
+    robot_type: str = Field(default="proxy_cylinder", description="Robot type label; first version uses a proxy model.")
+    start_position: list[float] = Field(default=[0.0, 0.0, 0.1], description="Robot start position [x, y, z].")
+    waypoints: list[list[float]] = Field(description="List of [x, y] or [x, y, z] target waypoints.")
+    obstacles: list[dict[str, Any]] = Field(default=[], description="Simple obstacles: {shape, position, size, name}.")
+    speed: float = Field(default=0.5, description="Interpolation speed in m/s.")
+    tolerance: float = Field(default=0.1, description="Final waypoint tolerance in meters.")
+    max_steps: int = Field(default=2400, description="Maximum interpolation steps.")
+    avoid_obstacles: bool = Field(default=False, description="Accepted for schema alignment; not used in kinematic mode.")
+    publish_frames: bool = Field(default=False, description="Accepted for schema alignment; Gazebo frame publishing is not used here.")
+
+
+@mcp_server.tool()
+def run_gazebo_navigation_task(args: RunGazeboNavigationTaskArgs):
+    """Run a navigation task via Gazebo state interpolation and standardized metrics."""
+    try:
+        start = normalize_start_position(args.start_position)
+        waypoints = validate_waypoints(args.waypoints)
+        obstacles = normalize_obstacles(args.obstacles)
+    except ValueError as e:
+        return _tool_error("run_gazebo_navigation_task", str(e))
+
+    speed = max(0.0, min(float(args.speed), 5.0))
+    tolerance = max(0.01, float(args.tolerance))
+    max_steps = max(1, min(int(args.max_steps), 10000))
+    robot_name = f"nav_robot_{int(time.time() * 1000)}"
+
+    try:
+        create_robot = create_simple_object(
+            CreateSimpleObjectArgs(
+                name=robot_name,
+                shape="cylinder",
+                position=start,
+                size=[0.25, 0.2],
+            )
+        )
+        if create_robot.get("status") not in {"success", "warning"}:
+            return create_robot
+
+        obstacle_names: list[str] = []
+        for idx, obstacle in enumerate(obstacles):
+            obstacle_name = obstacle["name"] or f"nav_obstacle_{idx}_{int(time.time() * 1000)}"
+            created = create_simple_object(
+                CreateSimpleObjectArgs(
+                    name=obstacle_name,
+                    shape=obstacle["shape"],
+                    position=obstacle["position"],
+                    size=obstacle["size"],
+                )
+            )
+            if created.get("status") not in {"success", "warning"}:
+                return created
+            obstacle_names.append(obstacle_name)
+
+        trajectory = [start]
+        current = [float(start[0]), float(start[1]), float(start[2])]
+        steps_taken = 0
+        completed = False
+        step_distance = max(speed / 60.0, tolerance)
+
+        for target in waypoints:
+            while steps_taken < max_steps:
+                dx = float(target[0]) - current[0]
+                dy = float(target[1]) - current[1]
+                dist = float(np.hypot(dx, dy))
+                if dist <= tolerance:
+                    completed = target == waypoints[-1]
+                    break
+                ratio = min(1.0, step_distance / max(dist, 1e-9))
+                current[0] += dx * ratio
+                current[1] += dy * ratio
+                state = set_model_state(
+                    SetModelStateArgs(
+                        model_name=robot_name,
+                        position=current,
+                        orientation=[0.0, 0.0, 0.0, 1.0],
+                        linear_velocity=[0.0, 0.0, 0.0],
+                        angular_velocity=[0.0, 0.0, 0.0],
+                        reference_frame="world",
+                    )
+                )
+                if state.get("status") not in {"success", "warning"}:
+                    return state
+                steps_taken += 1
+                trajectory.append([current[0], current[1], current[2]])
+            if steps_taken >= max_steps or (target == waypoints[-1] and completed):
+                break
+
+        collisions, min_clearance = approximate_collisions(trajectory, obstacles)
+        return build_navigation_result(
+            backend="gazebo",
+            task="run_gazebo_navigation_task",
+            robot_id=robot_name,
+            start_position=start,
+            waypoints=waypoints,
+            trajectory=trajectory,
+            steps=steps_taken,
+            tolerance=tolerance,
+            collision_count=collisions,
+            min_clearance=min_clearance,
+            failure_reason=None if completed else "max_steps_exceeded",
+            extra={
+                "robot_type": args.robot_type,
+                "robot_model": robot_name,
+                "obstacles": obstacles,
+                "obstacle_models": obstacle_names,
+                "control_mode": "state_interpolation",
+                "physics_fidelity": "kinematic",
+                "avoid_obstacles_used": False,
+                "message": (
+                    "Gazebo navigation task completed with kinematic state interpolation."
+                    if completed
+                    else "Gazebo navigation task stopped before final waypoint."
+                ),
+            },
+        )
+    except Exception as e:
+        raise RuntimeError(f"run_gazebo_navigation_task failed: {e}") from e
 
 
 # ======================

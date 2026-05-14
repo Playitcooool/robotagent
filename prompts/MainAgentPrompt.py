@@ -29,6 +29,7 @@ SYSTEM_PROMPT = """
 
 核心工具（组合式原语）：
 - `initialize_simulation(gui=false)`: 初始化环境（每个任务只调用一次）
+- `run_pybullet_navigation_task(robot_type, start_position, waypoints, obstacles, speed, tolerance, max_steps, avoid_obstacles, publish_frames)`: 移动导航任务首选高层工具，返回 trajectory 和统一 metrics（completed/success/final_error/path_length/collision_count/min_clearance/failure_reason）
 - `create_object(object_type, position, size, mass, color)`: 创建简单几何体（cube/sphere/cylinder），返回 object_id
   - object_type: "cube" / "sphere" / "cylinder"
   - size: 3元素数组 [x,y,z] 米（sphere用 size[0] 当半径，cylinder用 size[0] 当半径、size[2] 当高度）

@@ -70,3 +70,44 @@ def test_apply_robot_drive_velocity_base_sets_body_velocity(mcp_module):
         assert ang_vel[2] == pytest.approx(0.25)
     finally:
         pybullet.disconnect(cid)
+
+
+def test_run_pybullet_navigation_task_rejects_bad_waypoints(mcp_module):
+    result = mcp_module.run_pybullet_navigation_task(
+        mcp_module.RunPybulletNavigationTaskArgs(waypoints=[])
+    )
+
+    assert result["status"] == "error"
+    assert result["error_type"] == "validation"
+
+
+def test_run_pybullet_navigation_task_returns_metrics_schema(mcp_module):
+    mcp_module.cleanup_simulation()
+    result = mcp_module.run_pybullet_navigation_task(
+        mcp_module.RunPybulletNavigationTaskArgs(
+            robot_type="r2d2",
+            start_position=[0.0, 0.0, 0.0],
+            waypoints=[[0.05, 0.0]],
+            speed=0.5,
+            tolerance=0.2,
+            max_steps=120,
+            publish_frames=False,
+        )
+    )
+
+    assert result["backend"] == "pybullet"
+    assert result["status"] in {"success", "warning"}
+    assert set(result["metrics"]) >= {
+        "completed",
+        "success",
+        "final_error",
+        "waypoint_errors",
+        "path_length",
+        "steps",
+        "collision_count",
+        "min_clearance",
+        "failure_reason",
+    }
+    state = mcp_module.get_robot_state(mcp_module.GetRobotStateArgs(robot_id=result["robot_id"], include_joints=False))
+    assert state["base_linear_velocity"][0] == pytest.approx(0.0)
+    assert state["base_linear_velocity"][1] == pytest.approx(0.0)

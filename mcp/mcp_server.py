@@ -16,6 +16,23 @@ import pybullet_data
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
+try:
+    from mcp.navigation_eval import (
+        approximate_collisions,
+        build_navigation_result,
+        normalize_obstacles,
+        normalize_start_position,
+        validate_waypoints,
+    )
+except ModuleNotFoundError:
+    from navigation_eval import (
+        approximate_collisions,
+        build_navigation_result,
+        normalize_obstacles,
+        normalize_start_position,
+        validate_waypoints,
+    )
+
 # ======================
 # 公共常量和工具函数
 # ======================
@@ -2076,6 +2093,181 @@ def follow_waypoints(args: FollowWaypointsArgs):
             }
     except Exception as e:
         raise RuntimeError(f"follow_waypoints failed: {e}") from e
+    finally:
+        _step_simulation_active.clear()
+
+
+class RunPybulletNavigationTaskArgs(BaseModel):
+    robot_type: str = Field(default="r2d2", description="Robot type: husky, racecar, r2d2, or custom_urdf.")
+    start_position: list[float] = Field(default=[0.0, 0.0, 0.0], description="Robot start position [x, y, z].")
+    waypoints: list[list[float]] = Field(description="List of [x, y] or [x, y, z] target waypoints.")
+    obstacles: list[dict[str, Any]] = Field(default=[], description="Simple obstacles: {shape, position, size, name}.")
+    speed: float = Field(default=0.5, description="Nominal forward speed in m/s.")
+    tolerance: float = Field(default=0.1, description="Final waypoint tolerance in meters.")
+    max_steps: int = Field(default=2400, description="Maximum simulation steps.")
+    avoid_obstacles: bool = Field(default=False, description="Use simple lidar-based angular avoidance.")
+    publish_frames: bool = Field(default=True, description="Publish realtime preview frames.")
+
+
+@mcp_server.tool()
+def run_pybullet_navigation_task(args: RunPybulletNavigationTaskArgs):
+    """Run a complete mobile navigation task and return standardized metrics."""
+    try:
+        start = normalize_start_position(args.start_position)
+        waypoints = validate_waypoints(args.waypoints)
+        obstacles = normalize_obstacles(args.obstacles)
+    except ValueError as e:
+        return _tool_error("run_pybullet_navigation_task", str(e), "validation")
+
+    speed = max(0.0, min(float(args.speed), 5.0))
+    tolerance = max(0.01, float(args.tolerance))
+    max_steps = max(1, min(int(args.max_steps), MAX_STEPS_PER_CALL))
+    robot_type = (args.robot_type or "r2d2").strip().lower()
+    if robot_type == "custom_urdf":
+        return _tool_error(
+            "run_pybullet_navigation_task",
+            "custom_urdf is not supported by this high-level tool; use load_robot for custom assets.",
+            "validation",
+        )
+
+    try:
+        _step_simulation_active.set()
+        with with_simulation() as cid:
+            robot_result = load_robot(
+                LoadRobotArgs(
+                    robot_type=robot_type,
+                    position=start,
+                    orientation=[0.0, 0.0, 0.0, 1.0],
+                    use_fixed_base=False,
+                )
+            )
+            if robot_result.get("status") != "success":
+                return robot_result
+            robot_id = int(robot_result["robot_id"])
+
+            obstacle_ids: list[int] = []
+            for obstacle in obstacles:
+                size = obstacle["size"]
+                if obstacle["shape"] == "sphere":
+                    pybullet_size = [float(size[0]) * 2.0] * 3
+                elif obstacle["shape"] == "cylinder":
+                    pybullet_size = [float(size[0]) * 2.0, float(size[0]) * 2.0, float(size[1])]
+                else:
+                    pybullet_size = [float(size[0]), float(size[1]), float(size[2])]
+                created = create_object(
+                    CreateObjectArgs(
+                        object_type="cube" if obstacle["shape"] == "box" else obstacle["shape"],
+                        position=obstacle["position"],
+                        size=pybullet_size,
+                        mass=1.0,
+                        color=[0.9, 0.35, 0.15, 1.0],
+                    )
+                )
+                if created.get("status") != "success":
+                    return created
+                obstacle_ids.append(int(created["object_id"]))
+
+            run_id = str(uuid.uuid4())
+            active_idx = 0
+            trajectory: list[list[float]] = []
+            contact_pairs: set[tuple[int, int]] = set()
+            lidar_min_distance: float | None = None
+            completed = False
+            steps_taken = 0
+            publish_interval = max(1, max_steps // MAX_PREVIEW_FRAMES)
+
+            for step_idx in range(1, max_steps + 1):
+                pos, orn = p.getBasePositionAndOrientation(robot_id, physicsClientId=cid)
+                current = [float(pos[0]), float(pos[1]), float(pos[2])]
+                trajectory.append(current)
+                target = waypoints[active_idx]
+                dx = target[0] - current[0]
+                dy = target[1] - current[1]
+                dist = float(np.hypot(dx, dy))
+                if dist <= tolerance:
+                    active_idx += 1
+                    if active_idx >= len(waypoints):
+                        completed = True
+                        steps_taken = step_idx
+                        break
+                    continue
+
+                yaw = _yaw_from_quat(orn)
+                heading = float(np.arctan2(dy, dx))
+                heading_error = float(np.arctan2(np.sin(heading - yaw), np.cos(heading - yaw)))
+                linear = min(speed, dist * 2.0) * max(0.0, float(np.cos(heading_error)))
+                angular = _clamp(heading_error * 3.0, -2.5, 2.5)
+                if bool(args.avoid_obstacles):
+                    scan_args = SimulateLidarArgs(robot_id=robot_id, num_rays=16, max_distance=1.5, height_offset=0.2)
+                    scan = simulate_lidar(scan_args)
+                    distances = [float(r["distance"]) for r in scan.get("rays", [])]
+                    if distances:
+                        lidar_min_distance = min(distances) if lidar_min_distance is None else min(lidar_min_distance, min(distances))
+                    front = [
+                        r for r in scan.get("rays", [])
+                        if abs(float(np.arctan2(np.sin(r["angle"] - yaw), np.cos(r["angle"] - yaw)))) < 0.55
+                    ]
+                    if front and min(float(r["distance"]) for r in front) < 0.6:
+                        linear *= 0.25
+                        angular += 1.2
+
+                mode = _apply_robot_drive(cid, robot_id, linear, angular, 100.0)
+                if mode == "velocity_base":
+                    _apply_robot_drive(cid, robot_id, linear, angular, 100.0)
+                p.stepSimulation(physicsClientId=cid)
+                steps_taken = step_idx
+                for contact in p.getContactPoints(bodyA=robot_id, physicsClientId=cid):
+                    other = int(contact[2]) if int(contact[1]) == robot_id else int(contact[1])
+                    if other in obstacle_ids:
+                        contact_pairs.add((robot_id, other))
+                if bool(args.publish_frames) and step_idx % publish_interval == 0:
+                    _publish_realtime_frame(
+                        run_id=run_id,
+                        task="run_pybullet_navigation_task",
+                        step_idx=step_idx,
+                        total_steps=max_steps,
+                        done=False,
+                        extra={"robot_id": robot_id, "active_waypoint": active_idx},
+                    )
+
+            final_pos, _ = p.getBasePositionAndOrientation(robot_id, physicsClientId=cid)
+            trajectory.append([float(final_pos[0]), float(final_pos[1]), float(final_pos[2])])
+            _apply_robot_drive(cid, robot_id, 0.0, 0.0, 100.0)
+            p.resetBaseVelocity(robot_id, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], physicsClientId=cid)
+            geometric_collisions, min_clearance = approximate_collisions(trajectory, obstacles)
+            collision_count = max(len(contact_pairs), geometric_collisions)
+            if bool(args.publish_frames):
+                _publish_realtime_frame(
+                    run_id=run_id,
+                    task="run_pybullet_navigation_task",
+                    step_idx=steps_taken,
+                    total_steps=max_steps,
+                    done=True,
+                    extra={"robot_id": robot_id},
+                )
+            _invalidate_scene_bounds()
+            return build_navigation_result(
+                backend="pybullet",
+                task="run_pybullet_navigation_task",
+                robot_id=robot_id,
+                start_position=start,
+                waypoints=waypoints,
+                trajectory=trajectory,
+                steps=steps_taken,
+                tolerance=tolerance,
+                collision_count=collision_count,
+                min_clearance=min_clearance,
+                failure_reason=None if completed else "max_steps_exceeded",
+                extra={
+                    "obstacles": obstacles,
+                    "obstacle_ids": obstacle_ids,
+                    "control_mode": _configured_drive(cid, robot_id).get("drive_type"),
+                    "lidar_min_distance": lidar_min_distance,
+                    "message": "Navigation task completed." if completed else "Navigation task stopped before final waypoint.",
+                },
+            )
+    except Exception as e:
+        raise RuntimeError(f"run_pybullet_navigation_task failed: {e}") from e
     finally:
         _step_simulation_active.clear()
 

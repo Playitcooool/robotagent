@@ -27,6 +27,8 @@ with open(os.path.join(ROOT_DIR, "config", "config.yml"), "r", encoding="utf-8")
 # loadURDF calls incompatible with composition.
 CORE_TOOL_NAMES = {
     "initialize_simulation",
+    "run_pybullet_navigation_task",
+    "run_gazebo_navigation_task",
     "create_object",
     "load_urdf",
     "load_robot",
