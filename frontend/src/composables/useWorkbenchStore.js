@@ -45,7 +45,7 @@ let sessionLoadController = null
 let chatAbortController = null
 let planningCloseTimer = null
 
-const hasLiveFrame = computed(() => Boolean(liveFrame.value?.image_url))
+const hasLiveFrame = computed(() => Boolean(liveFrame.value?.has_frame))
 const landingMode = computed(() => showLandingHero.value && computeLandingMode(conversation.value))
 const hasToolPanelContent = computed(() => computeShowToolPanel({
   liveFrame: liveFrame.value,

@@ -25,7 +25,7 @@ export function computeLandingMode(conversation = []) {
 }
 
 export function computeShowToolPanel({ liveFrame = null } = {}) {
-  return Boolean(liveFrame?.image_url)
+  return Boolean(liveFrame?.has_frame)
 }
 
 export function computeShowPlanningPanel(planning = null) {

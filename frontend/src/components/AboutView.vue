@@ -33,7 +33,7 @@
           <li>前端发送用户问题到 `/api/chat/send`。</li>
           <li>后端通过 `active_agent.astream(...)` 产生增量事件流。</li>
           <li>事件按 `delta / thinking / planning / timeline / usage` 分类发送。</li>
-          <li>仿真结果由 `/api/sim/stream` 和 `/api/sim/latest.png` 持续回传。</li>
+          <li>仿真状态由 `/api/sim/stream` 回传，实时画面由 `/api/sim/mjpeg` 持续显示。</li>
           <li>聊天记录与会话索引存入 Redis，支持会话切换和删除。</li>
         </ol>
       </article>

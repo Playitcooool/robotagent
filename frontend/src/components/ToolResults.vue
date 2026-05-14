@@ -5,7 +5,7 @@
     </header>
 
     <div class="results-body">
-      <section v-if="liveFrame?.image_url" class="rail-section frame-section">
+      <section v-if="liveFrame?.has_frame" class="rail-section frame-section">
         <div class="frame-stage">
           <div
             class="frame-wrap"
@@ -374,7 +374,7 @@ export default {
       return this.lang === 'zh' ? '自动完整取景' : 'Auto fit'
     },
     hasContent () {
-      return Boolean(this.liveFrame?.image_url)
+      return Boolean(this.liveFrame?.has_frame)
     },
     currentReplayFrame () {
       return this.replayFrames[this.replayIndex] || null

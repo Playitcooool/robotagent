@@ -103,7 +103,6 @@ def register_sim_routes(
             "total_steps": meta.get("total_steps"),
             "done": bool(meta.get("done")),
             "timestamp": meta.get("timestamp"),
-            "image_url": f"/api/sim/latest.png?ts={meta.get('timestamp')}",
             "camera": meta.get("camera"),
         }
         sim_frame_cache["meta_mtime"] = meta_mtime
@@ -194,19 +193,6 @@ def register_sim_routes(
             return {"ok": True, "result": jsonable_encoder(result)}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-
-    @app.get("/api/sim/latest.png")
-    async def get_latest_sim_png():
-        if not sim_frame_file.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="frame not found",
-            )
-        return FileResponse(
-            sim_frame_file,
-            media_type="image/png",
-            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
-        )
 
     @app.get("/api/sim/stream")
     async def stream_sim_frames(request: Request, since: float = 0.0):
