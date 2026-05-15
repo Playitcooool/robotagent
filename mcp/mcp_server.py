@@ -1732,6 +1732,182 @@ def create_object(args: CreateObjectArgs):
         raise RuntimeError(f"create_object failed: {e}") from e
 
 
+def _create_visual_box(
+    cid: int,
+    *,
+    position: list[float],
+    size: list[float],
+    color: list[float],
+    orientation: list[float] | None = None,
+    mass: float = 0.0,
+) -> int:
+    half_extents = [max(0.001, float(v) / 2.0) for v in size]
+    col_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=half_extents, physicsClientId=cid)
+    vis_shape = p.createVisualShape(p.GEOM_BOX, halfExtents=half_extents, rgbaColor=color, physicsClientId=cid)
+    return p.createMultiBody(
+        baseMass=float(mass),
+        baseCollisionShapeIndex=col_shape,
+        baseVisualShapeIndex=vis_shape,
+        basePosition=position,
+        baseOrientation=orientation or [0, 0, 0, 1],
+        physicsClientId=cid,
+    )
+
+
+def _create_visual_sphere(
+    cid: int,
+    *,
+    position: list[float],
+    radius: float,
+    color: list[float],
+    mass: float = 0.0,
+) -> int:
+    radius = max(0.005, float(radius))
+    col_shape = p.createCollisionShape(p.GEOM_SPHERE, radius=radius, physicsClientId=cid)
+    vis_shape = p.createVisualShape(p.GEOM_SPHERE, radius=radius, rgbaColor=color, physicsClientId=cid)
+    return p.createMultiBody(
+        baseMass=float(mass),
+        baseCollisionShapeIndex=col_shape,
+        baseVisualShapeIndex=vis_shape,
+        basePosition=position,
+        physicsClientId=cid,
+    )
+
+
+class CreateVisualMarkerArgs(BaseModel):
+    position: list[float] = Field(default=[0.0, 0.0, 0.05], description="Marker center [x, y, z].")
+    marker_type: str = Field(default="goal", description="goal, waypoint, obstacle_zone, pickup, dropoff, or beacon.")
+    label: str = Field(default="", description="Optional semantic label returned in the tool result.")
+    size: float = Field(default=0.24, description="Marker footprint size in meters.")
+    color: list[float] = Field(default=[0.1, 0.8, 0.2, 1.0], description="RGBA marker color.")
+
+
+@mcp_server.tool()
+def create_visual_marker(args: CreateVisualMarkerArgs):
+    """
+    Create visible task markers for demonstrations and debugging.
+
+    This tool adds non-moving visual geometry for goals, waypoints, pickup/dropoff
+    zones and obstacle regions. It is intended to make screenshots and live task
+    feedback easier to read.
+    """
+    marker_type = (args.marker_type or "goal").strip().lower()
+    if marker_type not in {"goal", "waypoint", "obstacle_zone", "pickup", "dropoff", "beacon"}:
+        return _tool_error("create_visual_marker", f"Unsupported marker_type: {args.marker_type}", "validation")
+    try:
+        _validate_vector(args.position, "position", size=3, allow_negative=True, max_val=100.0)
+        _validate_vector(args.color, "color", size=4, allow_negative=False, max_val=1.0)
+    except ValueError as e:
+        return _tool_error("create_visual_marker", str(e), "validation")
+
+    size = max(0.03, min(float(args.size), 5.0))
+    z = float(args.position[2])
+    ids: list[int] = []
+    try:
+        with with_simulation() as cid:
+            x, y, _ = [float(v) for v in args.position]
+            color = list(args.color)
+            if marker_type in {"goal", "pickup", "dropoff"}:
+                bar = size
+                thick = max(0.015, size * 0.12)
+                ids.append(_create_visual_box(cid, position=[x, y, z], size=[bar, thick, thick], color=color))
+                ids.append(_create_visual_box(cid, position=[x, y, z], size=[thick, bar, thick], color=color))
+                ids.append(_create_visual_sphere(cid, position=[x, y, z + size * 0.28], radius=size * 0.16, color=color))
+            elif marker_type == "waypoint":
+                ids.append(_create_visual_sphere(cid, position=[x, y, z], radius=size * 0.22, color=color))
+                ids.append(_create_visual_box(cid, position=[x, y, z + size * 0.18], size=[size * 0.08, size * 0.08, size * 0.36], color=color))
+            elif marker_type == "obstacle_zone":
+                thick = max(0.015, size * 0.08)
+                ids.append(_create_visual_box(cid, position=[x, y - size / 2, z], size=[size, thick, thick], color=color))
+                ids.append(_create_visual_box(cid, position=[x, y + size / 2, z], size=[size, thick, thick], color=color))
+                ids.append(_create_visual_box(cid, position=[x - size / 2, y, z], size=[thick, size, thick], color=color))
+                ids.append(_create_visual_box(cid, position=[x + size / 2, y, z], size=[thick, size, thick], color=color))
+            else:
+                ids.append(_create_visual_sphere(cid, position=[x, y, z + size * 0.2], radius=size * 0.2, color=color))
+                ids.append(_create_visual_box(cid, position=[x, y, z], size=[size * 0.08, size * 0.08, size * 0.5], color=color))
+            _invalidate_scene_bounds()
+            _publish_snapshot_async("create_visual_marker", done=False, extra={"marker_ids": ids})
+            return {
+                "task": "create_visual_marker",
+                "status": "success",
+                "marker_type": marker_type,
+                "label": args.label,
+                "marker_ids": ids,
+                "message": f"Created {marker_type} marker with {len(ids)} visual bodies.",
+            }
+    except Exception as e:
+        raise RuntimeError(f"create_visual_marker failed: {e}") from e
+
+
+class CreateTrajectoryMarkersArgs(BaseModel):
+    points: list[list[float]] = Field(description="Path points as [x, y] or [x, y, z].")
+    color: list[float] = Field(default=[0.05, 0.45, 1.0, 1.0], description="RGBA path color.")
+    point_radius: float = Field(default=0.055, description="Radius of waypoint dots.")
+    line_width: float = Field(default=0.035, description="Width of path bars.")
+    height: float = Field(default=0.035, description="Z height for path markers.")
+    show_points: bool = Field(default=True, description="Whether to draw dot markers at each point.")
+    show_lines: bool = Field(default=True, description="Whether to draw bars between consecutive points.")
+
+
+@mcp_server.tool()
+def create_trajectory_markers(args: CreateTrajectoryMarkersArgs):
+    """
+    Draw a readable physical path overlay using small spheres and flat bars.
+
+    Unlike debug lines, these markers are real visual bodies and appear in
+    DIRECT-mode camera renders, making them suitable for paper screenshots.
+    """
+    if not args.points:
+        return _tool_error("create_trajectory_markers", "points must not be empty.", "validation")
+    try:
+        _validate_vector(args.color, "color", size=4, allow_negative=False, max_val=1.0)
+    except ValueError as e:
+        return _tool_error("create_trajectory_markers", str(e), "validation")
+
+    points = []
+    for idx, point in enumerate(args.points):
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            return _tool_error("create_trajectory_markers", f"point {idx} must contain at least x and y.", "validation")
+        z = float(point[2]) if len(point) > 2 else float(args.height)
+        points.append([float(point[0]), float(point[1]), z])
+    ids: list[int] = []
+    radius = max(0.005, min(float(args.point_radius), 1.0))
+    line_width = max(0.005, min(float(args.line_width), 0.5))
+    try:
+        with with_simulation() as cid:
+            if bool(args.show_lines):
+                for a, b in zip(points, points[1:]):
+                    ax, ay, az = a
+                    bx, by, bz = b
+                    dx, dy = bx - ax, by - ay
+                    length = float(np.hypot(dx, dy))
+                    if length < 0.01:
+                        continue
+                    yaw = float(np.arctan2(dy, dx))
+                    quat = p.getQuaternionFromEuler([0.0, 0.0, yaw])
+                    ids.append(_create_visual_box(
+                        cid,
+                        position=[(ax + bx) / 2.0, (ay + by) / 2.0, (az + bz) / 2.0],
+                        size=[length, line_width, line_width],
+                        orientation=quat,
+                        color=args.color,
+                    ))
+            if bool(args.show_points):
+                for point in points:
+                    ids.append(_create_visual_sphere(cid, position=point, radius=radius, color=args.color))
+            _invalidate_scene_bounds()
+            _publish_snapshot_async("create_trajectory_markers", done=False, extra={"marker_ids": ids})
+            return {
+                "task": "create_trajectory_markers",
+                "status": "success",
+                "marker_ids": ids,
+                "points": points,
+                "message": f"Created trajectory overlay with {len(ids)} visual bodies.",
+            }
+    except Exception as e:
+        raise RuntimeError(f"create_trajectory_markers failed: {e}") from e
+
+
 # ======================
 # Tool: Load URDF Model (robots, articulated objects)
 # ======================
