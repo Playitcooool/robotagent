@@ -1,11 +1,11 @@
 import { createApp } from 'vue'
 import App from './App.vue'
 import { router } from './router/index.js'
-import './assets/styles.css'
 // KaTeX styles for math rendering
 import 'katex/dist/katex.min.css'
 // Highlight.js code block styles
 import 'highlight.js/styles/github-dark.css'
+import './assets/styles.css'
 
 createApp(App).use(router).mount('#app')
 

@@ -375,6 +375,102 @@ img {
 :root.light .hljs-selector-attr { color: #8250df; }
 :root.light .hljs-tag { color: #116329; }
 
+html:root.light body .markdown {
+  color: var(--text);
+}
+
+html:root.light body .markdown a {
+  color: #2563eb;
+  text-decoration-color: rgba(37, 99, 235, 0.32);
+}
+
+html:root.light body .markdown blockquote {
+  border-left-color: rgba(37, 99, 235, 0.42);
+  background: rgba(37, 99, 235, 0.06);
+  color: var(--soft);
+}
+
+html:root.light body .markdown table {
+  background: rgba(255, 255, 255, 0.56);
+}
+
+html:root.light body .markdown th,
+html:root.light body .markdown td {
+  border-color: rgba(15, 23, 42, 0.1);
+}
+
+html:root.light body .markdown th {
+  background: rgba(15, 23, 42, 0.045);
+  color: var(--text);
+}
+
+html:root.light body .markdown pre {
+  border-color: rgba(15, 23, 42, 0.12);
+  background: #f6f8fa;
+  color: #24292f;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+html:root.light body .markdown pre code,
+html:root.light body .markdown pre .hljs {
+  background: transparent;
+  color: #24292f;
+}
+
+html:root.light body .markdown :not(pre) > code {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(15, 23, 42, 0.055);
+  color: #0f172a;
+}
+
+html:root.light body .code-copy-btn {
+  border-color: rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.88);
+  color: #475569;
+}
+
+html:root.light body .code-copy-btn:hover {
+  border-color: rgba(37, 99, 235, 0.28);
+  color: #2563eb;
+}
+
+html:root.light body .code-lang-label {
+  color: #64748b;
+}
+
+html:root.light body .hljs-keyword,
+html:root.light body .hljs-selector-tag,
+html:root.light body .hljs-built_in,
+html:root.light body .hljs-name,
+html:root.light body .hljs-tag { color: #cf222e; }
+html:root.light body .hljs-string,
+html:root.light body .hljs-title,
+html:root.light body .hljs-section,
+html:root.light body .hljs-attribute,
+html:root.light body .hljs-literal,
+html:root.light body .hljs-addition { color: #0a3069; }
+html:root.light body .hljs-comment,
+html:root.light body .hljs-quote,
+html:root.light body .hljs-deletion,
+html:root.light body .hljs-meta { color: #6e7781; }
+html:root.light body .hljs-symbol,
+html:root.light body .hljs-bullet,
+html:root.light body .hljs-subst,
+html:root.light body .hljs-link,
+html:root.light body .hljs-number,
+html:root.light body .hljs-attr { color: #0550ae; }
+html:root.light body .hljs-variable,
+html:root.light body .hljs-template-variable,
+html:root.light body .hljs-class .hljs-title,
+html:root.light body .hljs-title.class_ { color: #953800; }
+html:root.light body .hljs-regexp,
+html:root.light body .hljs-tag { color: #116329; }
+html:root.light body .hljs-function,
+html:root.light body .hljs-params,
+html:root.light body .hljs-selector-class,
+html:root.light body .hljs-selector-attr,
+html:root.light body .hljs-selector-pseudo { color: #8250df; }
+
 :root.light .auth-card,
 :root.light .skeleton-card {
   background:
