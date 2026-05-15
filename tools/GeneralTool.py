@@ -5,7 +5,7 @@ import os
 import re
 import time
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from itertools import chain
 from pathlib import Path
@@ -491,11 +491,41 @@ def http_get(url: str, max_chars: int = 3000, timeout: float = 8.0) -> str:
 def _get_tavily_client():
     """Lazy init Tavily client."""
     global _tavily_client
+    if not TAVILY_API_KEY:
+        raise RuntimeError("TAVILY_API_KEY not set in environment")
+    if TavilyClient is None:
+        return None
     if _tavily_client is None:
-        if not TAVILY_API_KEY:
-            raise RuntimeError("TAVILY_API_KEY not set in environment")
         _tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
     return _tavily_client
+
+
+def _tavily_search_request(query: str, limit: int, timeout: float) -> Dict[str, Any]:
+    """Search Tavily through the SDK when installed, otherwise through the REST API."""
+    client = _get_tavily_client()
+    if client is not None:
+        return client.search(
+            query=query,
+            max_results=limit,
+            timeout_seconds=timeout,
+            include_answer=True,
+            include_raw_content=False,
+        )
+
+    resp = requests.post(
+        "https://api.tavily.com/search",
+        json={
+            "api_key": TAVILY_API_KEY,
+            "query": query,
+            "max_results": limit,
+            "include_answer": True,
+            "include_raw_content": False,
+        },
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return data if isinstance(data, dict) else {"results": [], "answer": ""}
 
 
 def _web_search_impl(query: str, max_results: int = 5, timeout: float = 15.0) -> str:
@@ -506,21 +536,15 @@ def _web_search_impl(query: str, max_results: int = 5, timeout: float = 15.0) ->
     limit = max(1, min(max_results, 10))
 
     last_error = None
-    for attempt in range(5):
+    attempts = max(1, int(os.environ.get("WEB_SEARCH_MAX_RETRIES", "2")))
+    for attempt in range(attempts):
         try:
-            client = _get_tavily_client()
-            results_raw = client.search(
-                query=q,
-                max_results=limit,
-                timeout_seconds=timeout,
-                include_answer=True,
-                include_raw_content=False,
-            )
+            results_raw = _tavily_search_request(q, limit, timeout)
             break  # success
         except Exception as e:
             last_error = e
-            if attempt < 4:
-                time.sleep(2 ** attempt)  # exponential backoff: 1s, 2s, 4s, 8s
+            if attempt < attempts - 1:
+                time.sleep(min(2 ** attempt, 2))
                 continue
             # exhausted retries → build empty result instead of raising
             results_raw = {"results": [], "answer": ""}
@@ -556,6 +580,8 @@ def _web_search_impl(query: str, max_results: int = 5, timeout: float = 15.0) ->
     }
     if not results:
         payload["warning"] = "no results from Tavily"
+        if last_error is not None:
+            payload["error"] = str(last_error) or repr(last_error)
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
@@ -725,13 +751,14 @@ def search(
         return json.dumps({"query": "", "results": [], "error": "query is required"}, ensure_ascii=False, indent=2)
 
     limit = max(1, min(max_results, 20))
+    academic_timeout = min(timeout, float(os.environ.get("ACADEMIC_SEARCH_TIMEOUT", "8")))
 
     # Always fetch both academic and web results concurrently
     def fetch_academic():
         raw = _academic_search_impl(
             query=q,
             max_results=limit,
-            timeout=timeout,
+            timeout=academic_timeout,
             year_from=year_from,
             year_to=year_to,
         )
@@ -748,30 +775,7 @@ def search(
         web_future = executor.submit(fetch_web)
 
         try:
-            academic_data = academic_future.result(timeout=timeout * 2)
-            for item in academic_data.get("results", []):
-                if item.get("type") == "error":
-                    continue
-                academic_results.append({
-                    "type": item.get("type", "paper"),
-                    "title": item.get("title", "Unknown"),
-                    "authors": item.get("authors", ""),
-                    "year": item.get("year", ""),
-                    "venue": item.get("venue", ""),
-                    "abstract": item.get("abstract", ""),
-                    "url": item.get("url", ""),
-                    "pdf_url": item.get("pdf_url", ""),
-                    "citations": item.get("citations", 0),
-                    "arxiv_id": item.get("arxiv_id", ""),
-                    "source": item.get("source", "academic"),
-                })
-        except Exception as exc:
-            import sys
-            err = str(exc) or repr(exc) or "unknown error"
-            print(f"[WARNING] Academic search failed: {err}", file=sys.stderr)
-
-        try:
-            web_data = web_future.result(timeout=timeout * 2)
+            web_data = web_future.result(timeout=timeout + 2)
             if isinstance(web_data, dict) and not web_data.get("error"):
                 for item in web_data.get("results", []):
                     web_results.append({
@@ -791,6 +795,31 @@ def search(
             import sys
             err = str(exc) or repr(exc) or "unknown error"
             print(f"[WARNING] Web search failed: {err}", file=sys.stderr)
+
+        try:
+            academic_data = academic_future.result(timeout=academic_timeout + 2)
+            for item in academic_data.get("results", []):
+                if item.get("type") == "error":
+                    continue
+                academic_results.append({
+                    "type": item.get("type", "paper"),
+                    "title": item.get("title", "Unknown"),
+                    "authors": item.get("authors", ""),
+                    "year": item.get("year", ""),
+                    "venue": item.get("venue", ""),
+                    "abstract": item.get("abstract", ""),
+                    "url": item.get("url", ""),
+                    "pdf_url": item.get("pdf_url", ""),
+                    "citations": item.get("citations", 0),
+                    "arxiv_id": item.get("arxiv_id", ""),
+                    "source": item.get("source", "academic"),
+                })
+        except Exception as exc:
+            import sys
+            err = str(exc) or repr(exc) or "unknown error"
+            if isinstance(exc, FutureTimeoutError):
+                academic_future.cancel()
+            print(f"[WARNING] Academic search failed: {err}", file=sys.stderr)
 
     # Merge: web results first, then academic results (de-duplicate by title)
     seen_titles: Set[str] = set()
