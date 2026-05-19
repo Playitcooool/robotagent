@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 
 import {
   computeLandingMode,
-  computeShowPlanningPanel,
   computeShowToolPanel,
   createWelcomeMessage,
   deriveResultRailData,
@@ -35,7 +34,7 @@ test('computeShowToolPanel only shows live simulation frames', () => {
   assert.equal(computeShowToolPanel({ liveFrame: null, planningState: null, conversation: baseConversation }), false)
   assert.equal(
     computeShowToolPanel({
-      liveFrame: { image_url: 'frame.png' },
+      liveFrame: { has_frame: true, image_url: 'frame.png' },
       planningState: null,
       conversation: baseConversation
     }),
@@ -113,13 +112,6 @@ test('normalizePlanningPayload preserves structured status fields without steps'
       steps: []
     }
   )
-})
-
-test('computeShowPlanningPanel shows steps only', () => {
-  assert.equal(computeShowPlanningPanel(null), false)
-  assert.equal(computeShowPlanningPanel({ steps: [], statusText: '' }), false)
-  assert.equal(computeShowPlanningPanel({ steps: [], statusText: '正在执行工具：task' }), false)
-  assert.equal(computeShowPlanningPanel({ steps: [{ id: '1', step: 'Plan', status: 'pending' }] }), true)
 })
 
 test('hasRenderableAssistantContent ignores status-only placeholders', () => {

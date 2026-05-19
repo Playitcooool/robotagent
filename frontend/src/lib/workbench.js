@@ -28,11 +28,6 @@ export function computeShowToolPanel({ liveFrame = null } = {}) {
   return Boolean(liveFrame?.has_frame)
 }
 
-export function computeShowPlanningPanel(planning = null) {
-  const steps = Array.isArray(planning?.steps) ? planning.steps : []
-  return steps.length > 0
-}
-
 export function hasRenderableAssistantContent({
   text = '',
   thinking = '',
