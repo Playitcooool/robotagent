@@ -16,6 +16,9 @@ dist
 *.png
 *.jpg
 *.md
+!/README.md
+!/README.en.md
+!/README.zh-CN.md
 *.doc
 *.pptx
 *.zip
