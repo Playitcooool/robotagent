@@ -2,6 +2,14 @@
 
 一个面向机器人任务执行的多 Agent 平台，集成聊天交互、子代理协作、MCP 仿真控制、Agentic RAG 与实时可视化界面。
 
+## 界面预览
+
+![RobotAgent 工作台预览](screenshots/22d6fdafc39c72568b5fcf74bea97327.png)
+
+![RobotAgent 聊天与任务执行预览](screenshots/6cc1fb3678ae4d068ad68cad244ad235.png)
+
+![RobotAgent 仿真与分析预览](screenshots/89061257528821dbb3f4b3759a59f1af.png)
+
 ## 项目概览
 
 RobotAgent 提供一套围绕机器人任务的端到端工作流：
