@@ -1,74 +1,32 @@
-import os
-os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,host.docker.internal")
-os.environ.setdefault("no_proxy", "localhost,127.0.0.1,host.docker.internal")
-
-from fastapi import FastAPI
-from fastapi import Depends, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pathlib import Path
-import ast
-from langchain.agents import create_agent
-from langchain.agents.middleware.context_editing import (
-    ClearToolUsesEdit,
-    ContextEditingMiddleware,
-)
-from langchain.agents.middleware.model_call_limit import ModelCallLimitMiddleware
-from tools.mcp_loader import load_mcp_tools_progressive
-from prompts.context_loader import ContextLoader
-from prompts.MainAgentPrompt import build_system_prompt_with_context
-import logging
 import json
-import yaml
-from tools import GeneralTool
-from tools import AnalysisTool
+import logging
+import os
 import time
-from langchain_openai import ChatOpenAI
-import re
-import hashlib
-from prompts import MainAgentPrompt
-from langgraph.checkpoint.redis.aio import AsyncRedisSaver
-from redis.asyncio import Redis
+from pathlib import Path
 from typing import Optional
-from backend.schemas import ChatIn
+
+import yaml
+from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from redis.asyncio import Redis
+
 from backend.auth_utils import (
-    validate_username,
-    validate_password,
     hash_password,
+    validate_password,
+    validate_username,
     verify_password,
-)
-from backend.stream_utils import (
-    normalize_text,
-    extract_text_from_message,
-    extract_thinking_from_message,
-    split_think_and_answer_delta,
-    normalize_message_role,
-    extract_message_name,
-    extract_planning_steps_from_write_todos,
-    truncate_text,
-    safe_int,
-    extract_message_token_usage,
-    extract_message_id,
-    sum_usage_map,
-    strip_pseudo_thought_prefix,
 )
 from backend.routes_auth import register_auth_routes
 from backend.routes_sim import register_sim_routes
 from backend.utils.retry import with_retry_async
-from backend.model_config import resolve_openai_compatible_model, resolve_model_for_request, create_chat_model
-from backend.workflow_utils import (
-    restore_env_var,
-)
 
-os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
-# Chat history Redis should be separated from agent checkpoint Redis.
+os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,host.docker.internal")
+os.environ.setdefault("no_proxy", "localhost,127.0.0.1,host.docker.internal")
 os.environ.setdefault("CHAT_REDIS_URL", "redis://127.0.0.1:6379/1")
-# Auth/user Redis should be separated from chat history Redis.
 os.environ.setdefault("AUTH_REDIS_URL", "redis://127.0.0.1:6379/2")
-# Shared realtime frame location written by mcp/mcp_server.py
-# Default path points to repo-mounted directory so host and docker can share files.
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_SIM_STREAM_DIR = Path("/Volumes/Samsung/Projects/robotagent/mcp/.sim_stream").resolve()
+DEFAULT_SIM_STREAM_DIR = (ROOT_DIR / "mcp" / ".sim_stream").resolve()
 SIM_STREAM_DIR = Path(
     os.environ.get("PYBULLET_STREAM_DIR", str(DEFAULT_SIM_STREAM_DIR))
 ).resolve()
@@ -80,19 +38,10 @@ _SIM_FRAME_CACHE = {
     "frame_mtime": 0.0,
     "payload": {"status": "idle", "has_frame": False},
 }
-# ========== 1. 日志配置（确保输出到Uvicorn控制台） ==========
+
 logger = logging.getLogger("uvicorn")
 logger.setLevel(logging.INFO)
-DEBUG_STREAM_FIELDS = os.environ.get("DEBUG_STREAM_FIELDS", "0") == "1"
-DEBUG_STREAM_TOKENS = os.environ.get("DEBUG_STREAM_TOKENS", "0") == "1"
 
-# ========== 2. 全局变量定义（关键：提前声明active_agent） ==========
-active_agent = None  # 默认 agent：不加载联网搜索工具
-active_search_agent = None  # 联网搜索 agent：仅用户打开开关时使用
-agent_checkpointer_cm = None
-chat_redis: Optional[Redis] = None
-auth_redis: Optional[Redis] = None
-context_loader: Optional[ContextLoader] = None  # Context 文件加载器
 CHAT_REDIS_URL = os.environ["CHAT_REDIS_URL"]
 AUTH_REDIS_URL = os.environ["AUTH_REDIS_URL"]
 CHAT_HISTORY_PREFIX = "robotagent:chat:messages"
@@ -103,206 +52,11 @@ AUTH_SESSION_PREFIX = "robotagent:auth:session"
 AUTH_SESSION_TTL_SECONDS = int(
     os.environ.get("AUTH_SESSION_TTL_SECONDS", str(30 * 24 * 3600))
 )
-PASSWORD_PBKDF2_ITERATIONS = int(
-    os.environ.get("AUTH_PASSWORD_PBKDF2_ITERATIONS", "200000")
-)
-with open(ROOT_DIR / "config" / "config.yml", "r", encoding="utf-8") as f:
-    config = yaml.load(f.read(), Loader=yaml.FullLoader)
 
+chat_redis: Optional[Redis] = None
+auth_redis: Optional[Redis] = None
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_int(name: str, default: int, minimum: int = 0) -> int:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return max(minimum, int(raw))
-    except ValueError:
-        logger.warning("Invalid integer for %s=%r; using %s", name, raw, default)
-        return default
-
-
-def _truncate_for_prefill(text: str, max_chars: int) -> str:
-    if max_chars <= 0 or not text:
-        return ""
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars].rstrip() + "\n\n[...context truncated for faster prefill...]"
-
-
-AGENT_MODEL_CALL_LIMIT = _env_int("AGENT_MODEL_CALL_LIMIT", 999999, minimum=1)
-AGENT_RECURSION_LIMIT = _env_int("AGENT_RECURSION_LIMIT", 999999, minimum=2)
-
-
-# ========== 4. 加载工具函数（保留并添加日志） ==========
-def get_tools(enabled_general_tools: set[str] | None = None):
-    try:
-        general_tools = []
-        subagent_tools = []
-        if enabled_general_tools is None:
-            configured_tools = os.environ.get("MAIN_GENERAL_TOOLS", "current_time")
-            enabled_general_tools = {
-                name.strip()
-                for name in configured_tools.split(",")
-                if name.strip()
-            }
-        for func_name in GeneralTool.__all__:
-            if enabled_general_tools and func_name not in enabled_general_tools:
-                continue
-            function = getattr(GeneralTool, func_name)
-            general_tools.append(function)
-
-        # 合并工具
-        all_tools = general_tools + subagent_tools
-        logger.info(
-            "总工具数量：%s；MainAgent 通用工具：%s",
-            len(all_tools),
-            [getattr(t, "name", str(t)) for t in general_tools],
-        )
-        return all_tools
-    except Exception as e:
-        logger.error(f"加载工具失败：{str(e)}", exc_info=True)
-        return []  # 兜底返回空列表
-
-
-# ========== 5. 初始化LLM模型 ==========
-main_model_config = resolve_openai_compatible_model(config, "main")
-chatBot = ChatOpenAI(
-    base_url=main_model_config["base_url"],
-    model=main_model_config["model"],
-    api_key=main_model_config["api_key"],
-    streaming=True,
-)
-
-# ========== 6. FastAPI应用初始化 ==========
-app = FastAPI()
-
-
-# ========== 7. 启动事件（正确初始化agent） ==========
-@app.on_event("startup")
-async def startup_event():
-    global active_agent, active_search_agent, agent_checkpointer_cm, chat_redis, auth_redis, context_loader  # 关联全局变量
-    try:
-        # Redis connection with retry (指数退避 + jitter)
-        async def connect_chat_redis():
-            return Redis.from_url(CHAT_REDIS_URL, decode_responses=True)
-        chat_redis = await with_retry_async(
-            connect_chat_redis,
-            max_retries=5,
-            base_delay=0.5,
-            retryable_exceptions=(ConnectionError, OSError),
-        )
-        await chat_redis.ping()
-        logger.info(f"Chat history Redis 已连接: {CHAT_REDIS_URL}")
-
-        async def connect_auth_redis():
-            return Redis.from_url(AUTH_REDIS_URL, decode_responses=True)
-        auth_redis = await with_retry_async(
-            connect_auth_redis,
-            max_retries=5,
-            base_delay=0.5,
-            retryable_exceptions=(ConnectionError, OSError),
-        )
-        await auth_redis.ping()
-        logger.info(f"Auth Redis 已连接: {AUTH_REDIS_URL}")
-
-        # 初始化 ContextLoader（加载 robot_context.md）
-        context_loader = ContextLoader()
-        logger.info("ContextLoader 已初始化")
-
-        # 加载默认工具。联网 search 工具只挂到 search agent，避免每轮都进入 prefill。
-        all_tools = get_tools({"current_time"})
-        search_tools = get_tools({"current_time", "search"})
-        if not all_tools:
-            logger.warning("未加载到任何工具，agent将使用空工具列表")
-
-        # 加载 MCP 工具（直接挂载到主代理）
-        mcp_tools = await load_mcp_tools_progressive()
-        all_tools = all_tools + mcp_tools
-        search_tools = search_tools + mcp_tools
-        logger.info(f"已加载 {len(mcp_tools)} 个 MCP 工具")
-
-        prompt_suffix = ""
-
-        # 加载 robot_context.md
-        context = context_loader.load_context() if context_loader else ""
-        context = _truncate_for_prefill(
-            context,
-            _env_int("ROBOT_CONTEXT_MAX_CHARS", 1200, minimum=0),
-        )
-        logger.info(f"已加载 robot_context.md: {len(context)} 字符" if context else "未找到 robot_context.md")
-
-        runtime_system_prompt = build_system_prompt_with_context(
-            MainAgentPrompt.SYSTEM_PROMPT,
-            context,
-            "",
-        ) + prompt_suffix
-
-        # 创建带工具的agent（核心修正）
-        DB_URI = "redis://localhost:6379"
-        checkpointer = None
-        if _env_bool("AGENT_CHECKPOINT_ENABLED", True):
-            agent_checkpointer_cm = AsyncRedisSaver.from_conn_string(DB_URI)
-            checkpointer = await agent_checkpointer_cm.__aenter__()
-            await checkpointer.asetup()
-        # Middleware: context editing (trim old tool outputs) + model call limit (prevent runaway)
-        agent_middleware = [
-            ContextEditingMiddleware(
-                edits=[ClearToolUsesEdit(trigger=8000, keep=3, clear_tool_inputs=False)],
-            ),
-            ModelCallLimitMiddleware(run_limit=AGENT_MODEL_CALL_LIMIT, exit_behavior="end"),
-        ]
-        active_agent = create_agent(
-            model=chatBot,
-            tools=all_tools,
-            system_prompt=runtime_system_prompt,
-            middleware=agent_middleware,
-            checkpointer=checkpointer,
-        )
-        active_search_agent = create_agent(
-            model=chatBot,
-            tools=search_tools,
-            system_prompt=runtime_system_prompt,
-            middleware=agent_middleware,
-            checkpointer=checkpointer,
-        )
-        logger.info("Agent 初始化成功！")
-    except Exception as e:
-        logger.error(f"Agent 初始化失败：{str(e)}", exc_info=True)
-        active_agent = None
-        active_search_agent = None
-        if agent_checkpointer_cm is not None:
-            await agent_checkpointer_cm.__aexit__(None, None, None)
-            agent_checkpointer_cm = None
-        if chat_redis is not None:
-            await chat_redis.aclose()
-            chat_redis = None
-        if auth_redis is not None:
-            await auth_redis.aclose()
-            auth_redis = None
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    global chat_redis, auth_redis, agent_checkpointer_cm
-    if agent_checkpointer_cm is not None:
-        await agent_checkpointer_cm.__aexit__(None, None, None)
-        agent_checkpointer_cm = None
-    if chat_redis is not None:
-        await chat_redis.aclose()
-        chat_redis = None
-    if auth_redis is not None:
-        await auth_redis.aclose()
-        auth_redis = None
-
-
-# ========== 8. CORS中间件 ==========
+app = FastAPI(title="RobotAgent Legacy Backend")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -310,6 +64,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _load_config() -> dict:
+    config_path = ROOT_DIR / "config" / "config.yml"
+    if not config_path.exists():
+        return {}
+    with open(config_path, "r", encoding="utf-8") as f:
+        return yaml.load(f.read(), Loader=yaml.FullLoader) or {}
 
 
 def _chat_history_key(user_id: str, session_id: str) -> str:
@@ -329,45 +91,55 @@ def _auth_session_key(token: str) -> str:
     return f"{AUTH_SESSION_PREFIX}:{token}"
 
 
-async def _append_chat_message(user_id: str, session_id: str, role: str, text: str):
-    if chat_redis is None:
-        return
-    now_ts = time.time()
-    payload = {
-        "id": int(now_ts * 1000),
-        "role": role,
-        "text": text or "",
-        "session_id": session_id,
-        "created_at": now_ts,
-    }
-    key = _chat_history_key(user_id, session_id)
-    await chat_redis.rpush(key, json.dumps(payload, ensure_ascii=False))
-    await chat_redis.ltrim(key, -CHAT_HISTORY_MAX_LEN, -1)
-    await chat_redis.zadd(_chat_sessions_key(user_id), {session_id: now_ts})
-
-
-
-# bind extracted module helpers so endpoint logic uses modularized implementations
-_validate_username = validate_username
-_validate_password = validate_password
-_hash_password = hash_password
-_verify_password = verify_password
-_normalize_text = normalize_text
-_extract_text_from_message = extract_text_from_message
-_extract_thinking_from_message = extract_thinking_from_message
-_split_think_and_answer_delta = split_think_and_answer_delta
-_normalize_message_role = normalize_message_role
-_extract_message_name = extract_message_name
-_extract_planning_steps_from_write_todos = extract_planning_steps_from_write_todos
-_truncate_text = truncate_text
-_safe_int = safe_int
-_extract_message_token_usage = extract_message_token_usage
-_extract_message_id = extract_message_id
-_sum_usage_map = sum_usage_map
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
 
 
 def _get_auth_redis():
     return auth_redis
+
+
+@app.on_event("startup")
+async def startup_event():
+    global chat_redis, auth_redis
+
+    async def connect_chat_redis():
+        return Redis.from_url(CHAT_REDIS_URL, decode_responses=True)
+
+    chat_redis = await with_retry_async(
+        connect_chat_redis,
+        max_retries=5,
+        base_delay=0.5,
+        retryable_exceptions=(ConnectionError, OSError),
+    )
+    await chat_redis.ping()
+    logger.info("Chat history Redis connected: %s", CHAT_REDIS_URL)
+
+    async def connect_auth_redis():
+        return Redis.from_url(AUTH_REDIS_URL, decode_responses=True)
+
+    auth_redis = await with_retry_async(
+        connect_auth_redis,
+        max_retries=5,
+        base_delay=0.5,
+        retryable_exceptions=(ConnectionError, OSError),
+    )
+    await auth_redis.ping()
+    logger.info("Auth Redis connected: %s", AUTH_REDIS_URL)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global chat_redis, auth_redis
+    if chat_redis is not None:
+        await chat_redis.aclose()
+        chat_redis = None
+    if auth_redis is not None:
+        await auth_redis.aclose()
+        auth_redis = None
 
 
 require_auth_user = register_auth_routes(
@@ -376,10 +148,10 @@ require_auth_user = register_auth_routes(
     auth_session_ttl_seconds=AUTH_SESSION_TTL_SECONDS,
     auth_user_key=_auth_user_key,
     auth_session_key=_auth_session_key,
-    validate_username=_validate_username,
-    validate_password=_validate_password,
-    hash_password=_hash_password,
-    verify_password=_verify_password,
+    validate_username=validate_username,
+    validate_password=validate_password,
+    hash_password=hash_password,
+    verify_password=verify_password,
 )
 
 register_sim_routes(
@@ -392,18 +164,8 @@ register_sim_routes(
 )
 
 
-# ========== 10. 接口定义 ==========
-
-# 健康检查端点
 @app.get("/api/health")
 async def health_check():
-    """后端健康检查"""
-    health_info = {
-        "status": "healthy",
-        "agent_ready": active_agent is not None,
-    }
-
-    # 检查 Redis 连接
     redis_status = {"chat": False, "auth": False}
     try:
         if chat_redis:
@@ -411,7 +173,6 @@ async def health_check():
             redis_status["chat"] = True
     except Exception:
         pass
-
     try:
         if auth_redis:
             await auth_redis.ping()
@@ -419,127 +180,22 @@ async def health_check():
     except Exception:
         pass
 
-    health_info["redis"] = redis_status
-
-    # 检查 MCP 服务（通过端口连接检测）
-    mcp_status = {}
-    try:
-        import socket
-        # PyBullet MCP (port 18001)
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
-            result = sock.connect_ex(('127.0.0.1', 18001))
-            sock.close()
-            mcp_status["pybullet"] = "online" if result == 0 else "offline"
-        except Exception:
-            mcp_status["pybullet"] = "offline"
-
-        # Gazebo MCP (port 8002)
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
-            result = sock.connect_ex(('127.0.0.1', 8002))
-            sock.close()
-            mcp_status["gazebo"] = "online" if result == 0 else "offline"
-        except Exception:
-            mcp_status["gazebo"] = "offline"
-    except Exception as e:
-        mcp_status["error"] = str(e)
-
-    health_info["mcp"] = mcp_status
-
-    # 模型配置信息
-    health_info["config"] = {
-        "llm_model": main_model_config.get("model", "unknown"),
-        "llm_url": main_model_config.get("base_url", "unknown"),
-    }
-
-    return health_info
-
-
-# 工具列表端点
-@app.get("/api/tools")
-async def list_tools():
-    """返回所有可用的工具列表"""
-    from tools import GeneralTool
-
-    tools_info = []
-
-    # 获取 GeneralTool 中的工具
-    for func_name in GeneralTool.__all__:
-        try:
-            func = getattr(GeneralTool, func_name)
-            # 获取工具描述
-            tool_description = func.__doc__ or "无描述"
-            # 提取第一行作为简介
-            brief = tool_description.strip().split("\n")[0] if tool_description else "无描述"
-
-            # 获取参数信息
-            params = {}
-            if hasattr(func, "args_schema") and func.args_schema:
-                schema = func.args_schema.schema() if hasattr(func.args_schema, 'schema') else {}
-                params = schema.get("properties", {})
-
-            tools_info.append({
-                "name": func_name,
-                "brief": brief,
-                "description": tool_description.strip(),
-                "parameters": list(params.keys()),
-            })
-        except Exception as e:
-            logger.warning(f"获取工具 {func_name} 信息失败: {e}")
-
-    # 获取 MCP 服务工具（使用 fastmcp client）
-    mcp_tools = []
-    try:
-        from fastmcp import Client
-
-        # PyBullet MCP
-        try:
-            client = Client("http://localhost:18001/mcp")
-            async with client:
-                tools = await client.list_tools()
-                for t in tools:
-                    mcp_tools.append({
-                        "name": t.name,
-                        "source": "pybullet",
-                        "description": t.description or "",
-                    })
-        except Exception as e:
-            logger.warning(f"获取 PyBullet MCP 工具失败: {e}")
-
-        # Gazebo MCP
-        try:
-            client = Client("http://localhost:8002/mcp")
-            async with client:
-                tools = await client.list_tools()
-                for t in tools:
-                    mcp_tools.append({
-                        "name": t.name,
-                        "source": "gazebo",
-                        "description": t.description or "",
-                    })
-        except Exception as e:
-            logger.warning(f"获取 Gazebo MCP 工具失败: {e}")
-    except ImportError:
-        logger.warning("fastmcp client 未安装")
-    except Exception as e:
-        logger.warning(f"MCP 工具获取失败: {e}")
-
+    cfg = _load_config()
     return {
-        "local_tools": tools_info,
-        "mcp_tools": mcp_tools,
-        "total": len(tools_info) + len(mcp_tools),
+        "status": "healthy",
+        "agent_ready": False,
+        "legacy_backend": True,
+        "redis": redis_status,
+        "config": {
+            "llm_model": cfg.get("llm", "unknown"),
+            "llm_url": cfg.get("model_url", "unknown"),
+        },
     }
 
 
 @app.get("/api/ping")
 async def ping():
-    return {
-        "status": "ok",
-        "agent_ready": active_agent is not None,  # 新增：返回agent状态
-    }
+    return {"status": "ok", "agent_ready": False, "legacy_backend": True}
 
 
 @app.get("/api/messages")
@@ -563,7 +219,6 @@ async def get_messages(
                 messages.append(parsed)
         except Exception:
             continue
-
     return messages
 
 
@@ -576,8 +231,9 @@ async def get_sessions(
         return []
 
     normalized_limit = max(1, min(limit, 500))
+    user_id = current_user.get("uid", "unknown")
     ranked = await chat_redis.zrevrange(
-        _chat_sessions_key(current_user.get("uid", "unknown")),
+        _chat_sessions_key(user_id),
         0,
         normalized_limit - 1,
         withscores=True,
@@ -585,8 +241,6 @@ async def get_sessions(
     if not ranked:
         return []
 
-    result = []
-    user_id = current_user.get("uid", "unknown")
     pipe = chat_redis.pipeline()
     for session_id, _ in ranked:
         key = _chat_history_key(user_id, session_id)
@@ -594,6 +248,7 @@ async def get_sessions(
         pipe.lindex(key, -1)
     raw_items = await pipe.execute()
 
+    result = []
     idx = 0
     for session_id, score in ranked:
         first_raw = raw_items[idx]
@@ -615,10 +270,8 @@ async def get_sessions(
                 last_role = str(last_msg.get("role") or "assistant")
             except Exception:
                 preview = ""
-
         if not title:
             title = preview or "新对话"
-
         result.append(
             {
                 "session_id": session_id,
@@ -628,7 +281,6 @@ async def get_sessions(
                 "last_role": last_role,
             }
         )
-
     return result
 
 
@@ -644,1459 +296,36 @@ async def delete_session(
         )
 
     user_id = current_user.get("uid", "unknown")
-    key = _chat_history_key(user_id, session_id)
-    sessions_key = _chat_sessions_key(user_id)
     pipe = chat_redis.pipeline()
-    pipe.delete(key)
-    pipe.zrem(sessions_key, session_id)
+    pipe.delete(_chat_history_key(user_id, session_id))
+    pipe.zrem(_chat_sessions_key(user_id), session_id)
     deleted_messages, removed_session = await pipe.execute()
-
     return {
         "ok": True,
-        "deleted": bool(
-            _safe_int(deleted_messages) > 0 or _safe_int(removed_session) > 0
-        ),
+        "deleted": bool(_safe_int(deleted_messages) > 0 or _safe_int(removed_session) > 0),
         "session_id": session_id,
     }
 
 
 @app.post("/api/chat/send")
-async def chat_send(
-    payload: ChatIn,
-    current_user: dict = Depends(require_auth_user),
-):
-    user_message = payload.message or ""
-    session_id = payload.session_id or "default_session"  # 使用会话ID或默认值
-    enabled_tools = {
-        str(t).strip()
-        for t in (payload.enabled_tools or [])
-        if str(t).strip()
-    }
-    search_enabled = bool(enabled_tools & {"search", "academic_search", "web_search"})
-    user_id = current_user.get("uid", "unknown")
-
-    # Task 1: Confirmation detection - if prev assistant asked "确认?" and user confirms
-    confirmation_detected = False
-    if chat_redis is not None:
-        try:
-            key = _chat_history_key(user_id, session_id)
-            recent_raw = await chat_redis.lrange(key, -2, -1)
-            last_assistant_text = ""
-            for item in recent_raw:
-                try:
-                    parsed = json.loads(item)
-                    if parsed.get("role") == "assistant":
-                        last_assistant_text = str(parsed.get("text") or "")
-                except Exception:
-                    continue
-            assistant_asked = bool(
-                last_assistant_text
-                and re.search(
-                    r"(确认|confirm|开始|execute|proceed)[^。\n]{0,10}[?？]",
-                    last_assistant_text[-200:], re.IGNORECASE,
-                )
-            )
-            user_confirmed = bool(
-                re.search(
-                    r"^\s*(确认|好|好的|可以|开始|执行|继续|go|ok|okay|yes|y|confirm|proceed|行|对)\s*[。！!.]?\s*$",
-                    user_message.strip(), re.IGNORECASE,
-                )
-                or re.search(r"(确认执行|开始执行|请执行)", user_message)
-            )
-            confirmation_detected = assistant_asked and user_confirmed
-            if confirmation_detected:
-                logger.info(
-                    "[confirm-detect] user confirmed user=%s session=%s",
-                    user_id, session_id,
-                )
-        except Exception as e:
-            logger.warning(f"Confirmation detection failed: {e}")
-
-    await _append_chat_message(user_id, session_id, "user", user_message)
-
-    # 核心修正：使用全局的active_agent，而非初始空工具的agent
-    selected_agent = active_search_agent if search_enabled else active_agent
-    if not selected_agent:
-        # 返回流式错误响应（保持格式统一）并添加防缓冲头
-        return StreamingResponse(
-            iter(
-                [
-                    json.dumps(
-                        {"type": "error", "error": "Agent 未初始化完成，请检查日志"},
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                ]
-            ),
-            media_type="application/x-ndjson",
-            headers={"Cache-Control": "no-transform", "X-Accel-Buffering": "no"},
-        )
-
-    async def event_stream():
-        prev_rag_disabled = os.environ.get("RAG_DISABLED")
-        if prev_rag_disabled:
-            os.environ["RAG_DISABLED"] = "1"
-        main_latest_text = ""
-        main_stream_text = ""
-        thinking_stream_text = ""
-        thinking_sent_text = ""
-        in_think_tag = False
-        think_tag_carry = ""
-        thinking_truncated = False
-        MAX_THINKING_CHARS = 1600
-        last_planning_signature = ""
-        usage_by_message: dict[str, dict[str, int]] = {}
-        usage_by_agent_message: dict[str, dict[str, dict[str, int]]] = {}
-        message_source_by_id: dict[str, str] = {}
-        last_usage_signature = ""
-        last_usage_by_agent_signature = ""
-        last_status_signature = ""
-        last_tool_output_signature = ""
-        current_planning_steps = []
-        current_status_text = ""
-        current_status_source = "main"
-        pending_answer_whitespace_by_source: dict[str, str] = {}
-        debug_msg_count = 0
-        stream_message_events = 0
-        stream_values_events = 0
-        tool_names_seen: set[str] = set()
-        debug_stream_token_counts: dict[str, int] = {}
-        try:
-            analysis_tool_names = set(getattr(AnalysisTool, "__all__", []))
-            main_tool_names = set(getattr(GeneralTool, "__all__", []))
-
-            def _debug_stream_token(
-                *,
-                source: str,
-                channel: str,
-                text: str,
-                msg_id: str = "",
-                role: str = "",
-                name: str = "",
-            ) -> None:
-                if not DEBUG_STREAM_TOKENS or not text:
-                    return
-                normalized_source = source or "main"
-                key = f"{normalized_source}:{channel}"
-                debug_stream_token_counts[key] = debug_stream_token_counts.get(key, 0) + 1
-                logger.info(
-                    "[stream-token] user=%s session=%s source=%s channel=%s seq=%s role=%s name=%s msg_id=%s chars=%s text=%r",
-                    user_id,
-                    session_id,
-                    normalized_source,
-                    channel,
-                    debug_stream_token_counts[key],
-                    role or "-",
-                    name or "-",
-                    msg_id or "-",
-                    len(text),
-                    text,
-                )
-
-            def _resolve_agent_source(meta) -> str:
-                if not isinstance(meta, dict):
-                    return "main"
-                parts = []
-                for key in (
-                    "langgraph_path",
-                    "langgraph_node",
-                    "langgraph_checkpoint_ns",
-                    "checkpoint_ns",
-                ):
-                    value = meta.get(key)
-                    if isinstance(value, (list, tuple)):
-                        parts.extend(str(x).lower() for x in value)
-                    elif value is not None:
-                        parts.append(str(value).lower())
-                text = " ".join(parts)
-                if any(k in text for k in ("simulator", "pybullet", "gazebo")):
-                    return "simulator"
-                if any(k in text for k in ("data-analyzer", "analysis", "analyzer")):
-                    return "analysis"
-                return "main"
-
-            def _resolve_tool_source(tool_name: str) -> str:
-                name = str(tool_name or "").strip()
-                if name == "write_todos":
-                    return "main"
-                if name in analysis_tool_names:
-                    return "analysis"
-                if name in main_tool_names:
-                    return "main"
-                return "simulator"
-
-            def _compute_missing_delta(current_stream: str, latest_full: str) -> str:
-                """Return only the unsent tail from latest_full relative to current_stream."""
-                stream = _normalize_text(current_stream)
-                latest = _normalize_text(latest_full)
-                if not latest:
-                    return ""
-                if not stream:
-                    return latest
-                if latest == stream:
-                    return ""
-                if latest.startswith(stream):
-                    return latest[len(stream) :]
-                # If stream already contains latest (e.g. whitespace normalized differently),
-                # do not emit any fallback to avoid duplicated full paragraphs.
-                if latest in stream:
-                    return ""
-                # Longest suffix/prefix overlap fallback.
-                max_k = min(len(stream), len(latest))
-                overlap = 0
-                for k in range(max_k, 0, -1):
-                    if stream[-k:] == latest[:k]:
-                        overlap = k
-                        break
-                return latest[overlap:]
-
-            def _extract_tool_display_text(raw_text: str) -> str:
-                text = _normalize_text(raw_text).strip()
-                if not text:
-                    return ""
-                normalized_quotes = (
-                    text.replace("“", '"')
-                    .replace("”", '"')
-                    .replace("‘", "'")
-                    .replace("’", "'")
-                )
-                for parser in (json.loads, ast.literal_eval):
-                    try:
-                        parsed = parser(normalized_quotes)
-                    except Exception:
-                        continue
-                    if isinstance(parsed, dict):
-                        result = parsed.get("result") or parsed.get("message")
-                        artifacts = parsed.get("artifacts")
-                        if result is not None:
-                            result_text = _normalize_text(result).strip()
-                            if isinstance(artifacts, list) and artifacts:
-                                cleaned = [
-                                    _normalize_text(str(a)).strip()
-                                    for a in artifacts
-                                    if a is not None
-                                ]
-                                cleaned = [a for a in cleaned if a]
-                                if cleaned:
-                                    return f"{result_text} | artifacts: {', '.join(cleaned)}"
-                            return result_text
-                        # Common simulator return payload: format to readable summary.
-                        if any(
-                            k in parsed
-                            for k in (
-                                "final_position",
-                                "velocity",
-                                "final_velocity",
-                                "status",
-                            )
-                        ):
-                            parts = []
-                            if parsed.get("status") is not None:
-                                parts.append(f"status={parsed.get('status')}")
-                            if parsed.get("final_position") is not None:
-                                parts.append(f"final_position={parsed.get('final_position')}")
-                            if parsed.get("velocity") is not None:
-                                parts.append(f"velocity={parsed.get('velocity')}")
-                            if parsed.get("final_velocity") is not None:
-                                parts.append(f"final_velocity={parsed.get('final_velocity')}")
-                            if parts:
-                                return "仿真结果：" + ", ".join(parts)
-                m = re.search(
-                    r'"result"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"[a-zA-Z_]+"|}$)',
-                    normalized_quotes,
-                )
-                if m:
-                    return m.group(1).strip()
-                return text
-
-            def _extract_web_search_refs(raw_text: str):
-                text = _normalize_text(raw_text).strip()
-                if not text:
-                    return []
-                for parser in (json.loads, ast.literal_eval):
-                    try:
-                        parsed = parser(text)
-                    except Exception:
-                        continue
-                    if not isinstance(parsed, dict):
-                        continue
-                    results = parsed.get("results")
-                    if not isinstance(results, list):
-                        continue
-                    refs = []
-                    for item in results[:8]:
-                        if not isinstance(item, dict):
-                            continue
-                        title = _normalize_text(item.get("title") or "Search Result")
-                        url = _normalize_text(item.get("url") or "")
-                        snippet = _normalize_text(item.get("snippet") or "")
-                        if not url:
-                            continue
-                        refs.append(
-                            {
-                                "title": _truncate_text(title, max_len=120),
-                                "url": url,
-                                "snippet": _truncate_text(snippet, max_len=220),
-                            }
-                        )
-                    return refs
-                return []
-
-            def _extract_academic_search_refs(raw_text: str):
-                """提取 academic_search 结果"""
-                text = _normalize_text(raw_text).strip()
-                if not text:
-                    return []
-                for parser in (json.loads, ast.literal_eval):
-                    try:
-                        parsed = parser(text)
-                    except Exception:
-                        continue
-                    if not isinstance(parsed, dict):
-                        continue
-                    results = parsed.get("results")
-                    if not isinstance(results, list):
-                        continue
-                    refs = []
-                    for item in results[:8]:
-                        if not isinstance(item, dict):
-                            continue
-                        # academic_search 返回的字段
-                        title = _normalize_text(item.get("title") or "Academic Paper")
-                        url = _normalize_text(item.get("url") or "")
-                        abstract = _normalize_text(item.get("abstract") or "")
-                        authors = _normalize_text(item.get("authors") or "")
-                        year = item.get("year", "")
-                        source = item.get("source", "")
-                        if not url:
-                            continue
-                        refs.append(
-                            {
-                                "title": _truncate_text(title, max_len=120),
-                                "url": url,
-                                "snippet": _truncate_text(abstract, max_len=220),
-                                "authors": authors,
-                                "year": str(year),
-                                "source": source,
-                            }
-                        )
-                    return refs
-                return []
-
-            def _extract_search_refs(raw_text: str):
-                """提取 unified search 结果（包含 web 和 paper 类型）"""
-                text = _normalize_text(raw_text).strip()
-                if not text:
-                    return []
-                for parser in (json.loads, ast.literal_eval):
-                    try:
-                        parsed = parser(text)
-                    except Exception:
-                        continue
-                    if not isinstance(parsed, dict):
-                        continue
-                    results = parsed.get("results")
-                    if not isinstance(results, list):
-                        continue
-                    refs = []
-                    for item in results[:8]:
-                        if not isinstance(item, dict):
-                            continue
-                        title = _normalize_text(item.get("title") or "Search Result")
-                        url = _normalize_text(item.get("url") or "")
-                        if not url:
-                            continue
-                        # Paper type: has abstract/authors
-                        if item.get("type") == "paper":
-                            abstract = _normalize_text(item.get("abstract") or "")
-                            authors = _normalize_text(item.get("authors") or "")
-                            year = item.get("year", "")
-                            source = item.get("source", "")
-                            refs.append({
-                                "title": _truncate_text(title, max_len=120),
-                                "url": url,
-                                "snippet": _truncate_text(abstract, max_len=220),
-                                "authors": authors,
-                                "year": str(year),
-                                "source": source,
-                            })
-                        else:
-                            # Web type: has snippet
-                            snippet = _normalize_text(item.get("snippet") or "")
-                            src = item.get("source", "")
-                            refs.append({
-                                "title": _truncate_text(title, max_len=120),
-                                "url": url,
-                                "snippet": _truncate_text(snippet, max_len=220),
-                            })
-                    return refs
-                return []
-
-            def _extract_rag_refs(raw_text: str):
-                text = _normalize_text(raw_text).strip()
-                if not text:
-                    return []
-                for parser in (json.loads, ast.literal_eval):
-                    try:
-                        parsed = parser(text)
-                    except Exception:
-                        continue
-                    if not isinstance(parsed, dict):
-                        continue
-                    refs = []
-                    raw_refs = parsed.get("references")
-                    if isinstance(raw_refs, list):
-                        for item in raw_refs[:8]:
-                            if not isinstance(item, dict):
-                                continue
-                            title = _normalize_text(item.get("label") or "Reference")
-                            url = _normalize_text(item.get("url") or "")
-                            if not url:
-                                continue
-                            refs.append(
-                                {
-                                    "title": _truncate_text(title, max_len=140),
-                                    "url": url,
-                                }
-                            )
-                    if refs:
-                        return refs
-                    raw_results = parsed.get("results")
-                    if isinstance(raw_results, list):
-                        for item in raw_results[:8]:
-                            if not isinstance(item, dict):
-                                continue
-                            title = _normalize_text(
-                                item.get("citation_label")
-                                or item.get("doc_source")
-                                or "Reference"
-                            )
-                            url = _normalize_text(item.get("citation_url") or "")
-                            if not url:
-                                continue
-                            refs.append(
-                                {
-                                    "title": _truncate_text(title, max_len=140),
-                                    "url": url,
-                                }
-                            )
-                    return refs
-                return []
-
-            def _is_main_agent_message(meta) -> bool:
-                if not isinstance(meta, dict):
-                    return True
-                node = str(meta.get("langgraph_node") or "")
-                if node and node != "model":
-                    return False
-                path = meta.get("langgraph_path")
-                # main graph model chunks are usually exactly this path;
-                # subagent/internal chunks often have longer/deeper paths.
-                if isinstance(path, (list, tuple)) and len(path) > 2:
-                    return False
-                return True
-
-            def _build_planning_payload(
-                plan=None,
-                status_text: str = "",
-                active_source: str = "main",
-                is_active: bool = False,
-            ) -> dict:
-                return {
-                    "type": "planning",
-                    "plan": plan if isinstance(plan, list) else [],
-                    "updated_at": time.time(),
-                    "status_text": _normalize_text(status_text).strip(),
-                    "active_source": active_source or "main",
-                    "is_active": bool(is_active),
-                }
-
-            # Only inject runtime note if search is enabled (it affects current turn's tool set).
-            # Otherwise rely on the agent's system_prompt (set at create_agent time) + checkpointer history.
-            input_messages = []
-            if search_enabled:
-                input_messages.append({
-                    "role": "system",
-                    "content": "本轮可用工具：search（智能搜索）。请自主判断并调用。",
-                })
-            if confirmation_detected:
-                input_messages.append({
-                    "role": "system",
-                    "content": "用户已确认执行上一条计划。立即调用仿真工具执行，不要再输出计划文字或再次询问确认。",
-                })
-            input_messages.append({"role": "user", "content": user_message})
-            # 同时订阅 messages(增量token) 与 values(状态事件)，保证前端实时流式显示。
-            logger.info(
-                "[chat-stream] start user=%s session=%s search=%s",
-                user_id,
-                session_id,
-                search_enabled,
-            )
-            async for mode, event in selected_agent.astream(
-                {"messages": input_messages},
-                stream_mode=["messages", "values"],
-                config={
-                    "configurable": {"thread_id": f"{user_id}:{session_id}"},
-                    "recursion_limit": AGENT_RECURSION_LIMIT,
-                },
-            ):
-                if mode == "messages":
-                    stream_message_events += 1
-                    try:
-                        msg, _meta = event
-                    except Exception:
-                        msg = event
-                        _meta = None
-                    if DEBUG_STREAM_FIELDS and debug_msg_count < 6:
-                        debug_msg_count += 1
-                        if isinstance(msg, dict):
-                            logger.info(
-                                f"[stream-debug] msg(dict) keys={list(msg.keys())}"
-                            )
-                        else:
-                            logger.info(
-                                f"[stream-debug] msg(type={msg.__class__.__name__}) has content_blocks={hasattr(msg, 'content_blocks')} additional_kwargs={hasattr(msg, 'additional_kwargs')} response_metadata={hasattr(msg, 'response_metadata')}"
-                            )
-                    role_name = _normalize_message_role(msg)
-                    source = _resolve_agent_source(_meta)
-                    if role_name in {"assistant", "ai"}:
-                        msg_id = _extract_message_id(msg)
-                        if msg_id:
-                            message_source_by_id[msg_id] = source
-                    # (Subagent transfer-status handling removed - no more task-based subagents
-                    # for simulator; MCP tools are called directly by main agent.)
-
-                    if role_name in {"assistant", "ai"}:
-                        thinking_text = _extract_thinking_from_message(msg)
-                        if thinking_text:
-                            if len(thinking_text) > MAX_THINKING_CHARS:
-                                thinking_text = thinking_text[:MAX_THINKING_CHARS]
-                                thinking_truncated = True
-                            if thinking_text.startswith(thinking_sent_text):
-                                thinking_delta = thinking_text[
-                                    len(thinking_sent_text) :
-                                ]
-                            else:
-                                thinking_delta = thinking_text
-                            if thinking_delta:
-                                thinking_sent_text = thinking_text
-                                thinking_stream_text = thinking_text
-                                _debug_stream_token(
-                                    source=source,
-                                    channel="thinking",
-                                    text=thinking_delta,
-                                    msg_id=msg_id or "",
-                                    role=role_name,
-                                )
-                                yield json.dumps(
-                                    {
-                                        "type": "thinking",
-                                        "text": thinking_delta,
-                                        "source": source,
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n"
-
-                        delta = _extract_text_from_message(msg)
-                        if delta:
-                            _debug_stream_token(
-                                source=source,
-                                channel="raw",
-                                text=delta,
-                                msg_id=msg_id or "",
-                                role=role_name,
-                            )
-                            answer_delta, think_tag_delta, in_think_tag, think_tag_carry = (
-                                _split_think_and_answer_delta(
-                                    delta,
-                                    in_think=in_think_tag,
-                                    carry=think_tag_carry,
-                                )
-                            )
-
-                            if think_tag_delta:
-                                remain = MAX_THINKING_CHARS - len(thinking_stream_text)
-                                if remain > 0:
-                                    to_emit = think_tag_delta[:remain]
-                                    thinking_stream_text += to_emit
-                                    if to_emit:
-                                        _debug_stream_token(
-                                            source=source,
-                                            channel="think-tag",
-                                            text=to_emit,
-                                            msg_id=msg_id or "",
-                                            role=role_name,
-                                        )
-                                        yield json.dumps(
-                                            {
-                                                "type": "thinking",
-                                                "text": to_emit,
-                                                "source": source,
-                                            },
-                                            ensure_ascii=False,
-                                        ) + "\n"
-                                if len(think_tag_delta) > max(remain, 0):
-                                    thinking_truncated = True
-
-                            if answer_delta:
-                                if not answer_delta.strip():
-                                    pending_answer_whitespace_by_source[source] = (
-                                        pending_answer_whitespace_by_source.get(source, "")
-                                        + answer_delta
-                                    )
-                                    continue
-                                emit_delta = (
-                                    pending_answer_whitespace_by_source.pop(source, "")
-                                    + answer_delta
-                                )
-                                # Strip pseudo-thought labels at the very start of main stream.
-                                if source == "main" and not main_stream_text.strip():
-                                    candidate = main_stream_text + emit_delta
-                                    stripped = strip_pseudo_thought_prefix(candidate)
-                                    if stripped != candidate:
-                                        # Everything so far was pseudo-label; reset and drop it
-                                        emit_delta = stripped
-                                        main_stream_text = ""
-                                if source == "main":
-                                    main_stream_text += emit_delta
-                                if not emit_delta:
-                                    continue
-                                _debug_stream_token(
-                                    source=source,
-                                    channel="answer",
-                                    text=emit_delta,
-                                    msg_id=msg_id or "",
-                                    role=role_name,
-                                )
-                                yield json.dumps(
-                                    {
-                                        "type": "delta",
-                                        "text": emit_delta,
-                                        "source": source,
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n"
-
-                    # Emit real-time status for tool messages from subagents
-                    if role_name == "tool" and source in {"simulator", "analysis"}:
-                        tool_name = _extract_message_name(msg)
-                        if tool_name and tool_name != "task":
-                            tool_names_seen.add(tool_name)
-                            logger.info(
-                                "[chat-stream] subagent tool message user=%s session=%s source=%s tool=%s",
-                                user_id,
-                                session_id,
-                                source,
-                                tool_name,
-                            )
-                            tool_status_text = f"正在执行：{tool_name}"
-                            signature = f"subtool:{tool_name}"
-                            if signature != last_status_signature:
-                                last_status_signature = signature
-                                current_status_text = tool_status_text
-                                current_status_source = source
-                                yield json.dumps(
-                                    {"type": "status", "text": tool_status_text, "source": source},
-                                    ensure_ascii=False,
-                                ) + "\n"
-                                yield json.dumps(
-                                    _build_planning_payload(
-                                        current_planning_steps,
-                                        current_status_text,
-                                        current_status_source,
-                                        True,
-                                    ),
-                                    ensure_ascii=False,
-                                ) + "\n"
-
-                    continue
-
-                if mode != "values":
-                    logger.info(
-                        "[chat-stream] ignored stream mode user=%s session=%s mode=%s",
-                        user_id,
-                        session_id,
-                        mode,
-                    )
-                    continue
-
-                stream_values_events += 1
-                messages = event.get("messages") if isinstance(event, dict) else None
-                if isinstance(messages, list):
-                    for message in messages:
-                        role_name = _normalize_message_role(message)
-                        if role_name not in {"assistant", "ai"}:
-                            continue
-                        usage = _extract_message_token_usage(message)
-                        if not usage:
-                            continue
-                        msg_id = _extract_message_id(message)
-                        prev = usage_by_message.get(msg_id) or {
-                            "prompt_tokens": 0,
-                            "completion_tokens": 0,
-                            "total_tokens": 0,
-                        }
-                        merged = {
-                            "prompt_tokens": max(
-                                _safe_int(prev.get("prompt_tokens")),
-                                _safe_int(usage.get("prompt_tokens")),
-                            ),
-                            "completion_tokens": max(
-                                _safe_int(prev.get("completion_tokens")),
-                                _safe_int(usage.get("completion_tokens")),
-                            ),
-                            "total_tokens": max(
-                                _safe_int(prev.get("total_tokens")),
-                                _safe_int(usage.get("total_tokens")),
-                            ),
-                        }
-                        if merged["total_tokens"] <= 0:
-                            merged["total_tokens"] = (
-                                merged["prompt_tokens"] + merged["completion_tokens"]
-                            )
-                        usage_by_message[msg_id] = merged
-
-                    # Build per-agent usage attribution map from message-id/source cache.
-                    for msg_id, merged_usage in usage_by_message.items():
-                        source = message_source_by_id.get(msg_id, "main")
-                        per_agent_map = usage_by_agent_message.setdefault(source, {})
-                        prev_usage = per_agent_map.get(msg_id) or {
-                            "prompt_tokens": 0,
-                            "completion_tokens": 0,
-                            "total_tokens": 0,
-                        }
-                        per_agent_map[msg_id] = {
-                            "prompt_tokens": max(
-                                _safe_int(prev_usage.get("prompt_tokens")),
-                                _safe_int(merged_usage.get("prompt_tokens")),
-                            ),
-                            "completion_tokens": max(
-                                _safe_int(prev_usage.get("completion_tokens")),
-                                _safe_int(merged_usage.get("completion_tokens")),
-                            ),
-                            "total_tokens": max(
-                                _safe_int(prev_usage.get("total_tokens")),
-                                _safe_int(merged_usage.get("total_tokens")),
-                            ),
-                        }
-
-                    usage_summary = _sum_usage_map(usage_by_message)
-                    usage_signature = json.dumps(
-                        usage_summary, ensure_ascii=False, sort_keys=True
-                    )
-                    if (
-                        usage_signature != last_usage_signature
-                        and usage_summary.get("total_tokens", 0) > 0
-                    ):
-                        last_usage_signature = usage_signature
-                        yield json.dumps(
-                            {
-                                "type": "usage",
-                                "usage": usage_summary,
-                                "updated_at": time.time(),
-                            },
-                            ensure_ascii=False,
-                        ) + "\n"
-
-                    usage_by_agent_summary = {}
-                    for agent_name, usage_map in usage_by_agent_message.items():
-                        summary = _sum_usage_map(usage_map)
-                        if summary.get("total_tokens", 0) > 0:
-                            usage_by_agent_summary[agent_name] = summary
-                    usage_by_agent_signature = json.dumps(
-                        usage_by_agent_summary, ensure_ascii=False, sort_keys=True
-                    )
-                    if (
-                        usage_by_agent_signature != last_usage_by_agent_signature
-                        and usage_by_agent_summary
-                    ):
-                        last_usage_by_agent_signature = usage_by_agent_signature
-                        logger.info(
-                            "[token-usage][stream] user=%s session=%s usage_by_agent=%s",
-                            user_id,
-                            session_id,
-                            usage_by_agent_summary,
-                        )
-
-                    # process all tool messages in current state so planning
-                    # can update multiple times instead of only tracking the last one.
-                    for message in messages:
-                        role_msg = _normalize_message_role(message)
-                        if role_msg != "tool":
-                            continue
-                        name_msg = _extract_message_name(message)
-                        content_msg = None
-                        if isinstance(message, dict):
-                            content_msg = message.get("content") or message.get("text")
-                        else:
-                            content_msg = getattr(message, "content", None) or getattr(
-                                message, "text", None
-                            )
-
-                        if name_msg == "write_todos":
-                            continue
-
-                        # Auto-generate planning steps from tool calls
-                        tool_source = _resolve_tool_source(name_msg)
-                        if name_msg:
-                            tool_names_seen.add(name_msg)
-
-                        # For simulation tools, auto-track as planning steps (dedup by name)
-                        if tool_source == "simulator" and name_msg:
-                            # Find existing step for this tool name
-                            existing_step = None
-                            for step in current_planning_steps:
-                                if step.get("step") == name_msg:
-                                    existing_step = step
-                                    break
-
-                            if existing_step is None:
-                                # Mark previous in_progress as completed
-                                for step in current_planning_steps:
-                                    if step.get("status") == "in_progress":
-                                        step["status"] = "completed"
-                                current_planning_steps.append({
-                                    "id": str(len(current_planning_steps) + 1),
-                                    "step": name_msg,
-                                    "status": "in_progress",
-                                })
-                            else:
-                                # Reuse existing step, mark others completed
-                                for step in current_planning_steps:
-                                    if step is not existing_step and step.get("status") == "in_progress":
-                                        step["status"] = "completed"
-                                existing_step["status"] = "in_progress"
-
-                            current_status_text = f"正在执行：{name_msg}"
-                            current_status_source = "simulator"
-                            yield json.dumps(
-                                {"type": "status", "text": current_status_text, "source": "simulator"},
-                                ensure_ascii=False,
-                            ) + "\n"
-                            yield json.dumps(
-                                _build_planning_payload(
-                                    current_planning_steps,
-                                    current_status_text,
-                                    current_status_source,
-                                    True,
-                                ),
-                                ensure_ascii=False,
-                            ) + "\n"
-
-                        is_web_search_tool = name_msg == "web_search"
-                        is_academic_search_tool = name_msg == "academic_search"
-                        is_unified_search_tool = name_msg == "search"
-                        is_rag_tool = name_msg == "qdrant_retrieve_context"
-                        tool_status_text = (
-                            "智能搜索中..."
-                            if is_unified_search_tool
-                            else "学术论文搜索中..."
-                            if is_academic_search_tool
-                            else "联网搜索中..."
-                            if is_web_search_tool
-                            else f"正在执行：{name_msg or 'tool'}"
-                        )
-                        signature = f"tool:{name_msg}:{_truncate_text(_normalize_text(content_msg), max_len=60)}"
-                        if signature != last_status_signature:
-                            last_status_signature = signature
-                            current_status_text = tool_status_text
-                            current_status_source = tool_source
-                            yield json.dumps(
-                                {
-                                    "type": "status",
-                                    "text": tool_status_text,
-                                    "source": tool_source,
-                                    "status_kind": "search" if (is_web_search_tool or is_academic_search_tool or is_unified_search_tool) else "tool",
-                                },
-                                ensure_ascii=False,
-                            ) + "\n"
-                            yield json.dumps(
-                                _build_planning_payload(
-                                    current_planning_steps,
-                                    current_status_text,
-                                    current_status_source,
-                                    True,
-                                ),
-                                ensure_ascii=False,
-                            ) + "\n"
-                        tool_text = _normalize_text(content_msg)
-                        if is_web_search_tool and tool_text:
-                            refs = _extract_web_search_refs(tool_text)
-                            if refs:
-                                yield json.dumps(
-                                    {
-                                        "type": "web_search_results",
-                                        "source": "main",
-                                        "results": refs,
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n"
-                        if is_academic_search_tool and tool_text:
-                            refs = _extract_academic_search_refs(tool_text)
-                            if refs:
-                                yield json.dumps(
-                                    {
-                                        "type": "web_search_results",
-                                        "source": "main",
-                                        "results": refs,
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n"
-                        if is_unified_search_tool and tool_text:
-                            refs = _extract_search_refs(tool_text)
-                            if refs:
-                                yield json.dumps(
-                                    {
-                                        "type": "web_search_results",
-                                        "source": "main",
-                                        "results": refs,
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n"
-                        if is_rag_tool and tool_text:
-                            refs = _extract_rag_refs(tool_text)
-                            if refs:
-                                yield json.dumps(
-                                    {
-                                        "type": "rag_results",
-                                        "source": "main",
-                                        "results": refs,
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n"
-                        if tool_text and tool_source in {"simulator", "analysis"}:
-                            # Parse <think>...</think> in subagent/tool output to avoid leaking
-                            # reasoning tags into final visible answer text.
-                            think_matches = re.findall(
-                                r"<think>([\s\S]*?)</think>", tool_text, flags=re.IGNORECASE
-                            )
-                            if think_matches:
-                                tool_thinking_text = "\n".join(
-                                    part.strip() for part in think_matches if part and part.strip()
-                                ).strip()
-                                if tool_thinking_text:
-                                    tool_thinking_text = tool_thinking_text[:MAX_THINKING_CHARS]
-                                    _debug_stream_token(
-                                        source=tool_source,
-                                        channel="tool-thinking",
-                                        text=tool_thinking_text,
-                                        role=role_msg,
-                                        name=name_msg or "",
-                                    )
-                                    yield json.dumps(
-                                        {
-                                            "type": "thinking",
-                                            "text": tool_thinking_text,
-                                            "source": tool_source,
-                                        },
-                                        ensure_ascii=False,
-                                    ) + "\n"
-                            tool_text = re.sub(
-                                r"<think>[\s\S]*?</think>",
-                                "",
-                                tool_text,
-                                flags=re.IGNORECASE,
-                            ).strip()
-                            tool_text = _extract_tool_display_text(tool_text)
-
-                            output_signature = (
-                                f"{tool_source}:{name_msg}:"
-                                f"{hashlib.md5(tool_text.encode('utf-8', errors='ignore')).hexdigest()}"
-                            )
-                            if output_signature != last_tool_output_signature:
-                                last_tool_output_signature = output_signature
-                                display_tool_text = _truncate_text(tool_text, max_len=600)
-                                _debug_stream_token(
-                                    source=tool_source,
-                                    channel="tool-output",
-                                    text=display_tool_text,
-                                    role=role_msg,
-                                    name=name_msg or "",
-                                )
-                                yield json.dumps(
-                                    {
-                                        "type": "delta",
-                                        "text": display_tool_text,
-                                        "source": tool_source,
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n"
-
-                try:
-                    last = event["messages"][-1]
-                except Exception:
-                    last = None
-
-                if last is None:
-                    continue
-
-                role = _normalize_message_role(last)
-                name = _extract_message_name(last)
-                content = None
-                if isinstance(last, dict):
-                    content = last.get("content") or last.get("text")
-                else:
-                    content = getattr(last, "content", None) or getattr(
-                        last, "text", None
-                    )
-
-                # planning/timeline are handled above by scanning all tool messages.
-
-                if role == "assistant" and content is not None:
-                    main_latest_text = _normalize_text(content)
-
-            # Fallback: if no/partial incremental output was emitted, flush final text.
-            if main_latest_text and main_latest_text != main_stream_text:
-                final_delta = _compute_missing_delta(main_stream_text, main_latest_text)
-                if final_delta:
-                    answer_delta, think_tag_delta, in_think_tag, think_tag_carry = (
-                        _split_think_and_answer_delta(
-                            final_delta, in_think=in_think_tag, carry=think_tag_carry
-                        )
-                    )
-                    if think_tag_delta:
-                        remain = MAX_THINKING_CHARS - len(thinking_stream_text)
-                        if remain > 0:
-                            to_emit = think_tag_delta[:remain]
-                            thinking_stream_text += to_emit
-                            if to_emit:
-                                _debug_stream_token(
-                                    source="main",
-                                    channel="fallback-think-tag",
-                                    text=to_emit,
-                                    role="assistant",
-                                )
-                                yield json.dumps(
-                                    {
-                                        "type": "thinking",
-                                        "text": to_emit,
-                                        "source": "main",
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n"
-                        if len(think_tag_delta) > max(remain, 0):
-                            thinking_truncated = True
-                    if answer_delta:
-                        if not answer_delta.strip():
-                            pending_answer_whitespace_by_source["main"] = (
-                                pending_answer_whitespace_by_source.get("main", "")
-                                + answer_delta
-                            )
-                            answer_delta = ""
-                    if answer_delta:
-                        emit_delta = (
-                            pending_answer_whitespace_by_source.pop("main", "")
-                            + answer_delta
-                        )
-                        main_stream_text += emit_delta
-                        _debug_stream_token(
-                            source="main",
-                            channel="fallback-answer",
-                            text=emit_delta,
-                            role="assistant",
-                        )
-                        yield json.dumps(
-                            {"type": "delta", "text": emit_delta, "source": "main"},
-                            ensure_ascii=False,
-                        ) + "\n"
-
-            if thinking_stream_text:
-                yield json.dumps(
-                    {"type": "thinking_done", "truncated": thinking_truncated},
-                    ensure_ascii=False,
-                ) + "\n"
-
-            final_text = main_latest_text or main_stream_text
-            # Strip pseudo-"thought" labels that models sometimes emit as literal text.
-            final_text = strip_pseudo_thought_prefix(final_text)
-            final_text_stripped = final_text.strip()
-
-            # Fallback: if tools were called but model produced no text, synthesize summary
-            if not final_text_stripped and tool_names_seen:
-                fallback_text = f"已完成工具调用：{', '.join(sorted(tool_names_seen))}。"
-                final_text = fallback_text
-                final_text_stripped = fallback_text
-                main_stream_text = fallback_text
-                yield json.dumps(
-                    {"type": "delta", "text": fallback_text, "source": "main"},
-                    ensure_ascii=False,
-                ) + "\n"
-            elif not final_text_stripped and stream_message_events > 0:
-                fallback_text = "工具调用过程中出现错误，请重试或调整参数。"
-                final_text = fallback_text
-                final_text_stripped = fallback_text
-                yield json.dumps(
-                    {"type": "delta", "text": fallback_text, "source": "main"},
-                    ensure_ascii=False,
-                ) + "\n"
-
-            logger.info(
-                "[chat-stream] final user=%s session=%s message_events=%s values_events=%s tools=%s final_chars=%s final_preview=%r",
-                user_id,
-                session_id,
-                stream_message_events,
-                stream_values_events,
-                sorted(tool_names_seen),
-                len(final_text_stripped),
-                _truncate_text(final_text_stripped, max_len=300),
-            )
-
-            if final_text_stripped:
-                await _append_chat_message(user_id, session_id, "assistant", final_text)
-            final_usage_by_agent = {}
-            for agent_name, usage_map in usage_by_agent_message.items():
-                summary = _sum_usage_map(usage_map)
-                if summary.get("total_tokens", 0) > 0:
-                    final_usage_by_agent[agent_name] = summary
-            if final_usage_by_agent:
-                logger.info(
-                    "[token-usage][final] user=%s session=%s usage_by_agent=%s",
-                    user_id,
-                    session_id,
-                    final_usage_by_agent,
-                )
-            if current_planning_steps or current_status_text:
-                # Mark all steps as completed at end
-                for step in current_planning_steps:
-                    step["status"] = "completed"
-                yield json.dumps(
-                    _build_planning_payload(
-                        current_planning_steps,
-                        "执行完成" if current_planning_steps else current_status_text,
-                        current_status_source,
-                        False,
-                    ),
-                    ensure_ascii=False,
-                ) + "\n"
-            # 发送完成信号
-            logger.info(
-                "[chat-stream] done user=%s session=%s final_persisted=%s planning_status=%r",
-                user_id,
-                session_id,
-                bool(final_text_stripped),
-                current_status_text,
-            )
-            yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
-        except Exception as e:
-            # GraphRecursionError: model looped too long. Treat tools called so far as the result.
-            err_name = type(e).__name__
-            is_recursion = "Recursion" in err_name or "recursion_limit" in str(e).lower()
-
-            if is_recursion and tool_names_seen:
-                warning_text = (
-                    f"⚠️ 模型调用工具次数过多（已达上限）。"
-                    f"已执行的工具：{', '.join(sorted(tool_names_seen))}。"
-                    f"可能已完成任务，请查看右侧画面；或重新描述任务更简洁的步骤。"
-                )
-                await _append_chat_message(user_id, session_id, "assistant", warning_text)
-                yield json.dumps(
-                    {"type": "delta", "text": warning_text, "source": "main"},
-                    ensure_ascii=False,
-                ) + "\n"
-                if current_planning_steps:
-                    for step in current_planning_steps:
-                        step["status"] = "completed"
-                    yield json.dumps(
-                        _build_planning_payload(
-                            current_planning_steps, "已达调用上限", "simulator", False
-                        ),
-                        ensure_ascii=False,
-                    ) + "\n"
-                yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
-                logger.warning(
-                    "[chat-stream] recursion limit hit user=%s session=%s tools=%s",
-                    user_id, session_id, sorted(tool_names_seen),
-                )
-                return
-
-            logger.error(
-                f"调用Agent出错：{str(e)}", exc_info=True
-            )
-            await _append_chat_message(
-                user_id, session_id, "assistant", f"[后端错误] 处理请求失败：{str(e)}"
-            )
-            if thinking_stream_text:
-                yield json.dumps(
-                    {"type": "thinking_done", "truncated": thinking_truncated},
-                    ensure_ascii=False,
-                ) + "\n"
-            yield json.dumps(
-                {"type": "error", "error": f"处理请求失败：{str(e)}"},
-                ensure_ascii=False,
-            ) + "\n"
-        finally:
-            restore_env_var("RAG_DISABLED", prev_rag_disabled)
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="application/x-ndjson",
-        headers={"Cache-Control": "no-transform", "X-Accel-Buffering": "no"},
+async def removed_chat_send():
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Python LangChain agent has been removed. Use the Pi agent gateway.",
     )
 
-
-# ========== 10. OpenAI-compatible 接口 ==========
 
 @app.post("/v1/chat/completions")
-async def openai_chat_completions(payload: dict):
-    """OpenAI-compatible chat completions endpoint.
-
-    Supports both local (MLX/LM Studio) and remote (DeepSeek/OpenAI) APIs.
-    Request can override model config via model/base_url/api_key fields.
-    Supports streaming and non-streaming responses.
-    """
-    # Resolve model config: request payload overrides config.yml
-    model_cfg = resolve_model_for_request(config, payload)
-
-    messages = payload.get("messages", [])
-    stream = payload.get("stream", False)
-
-    # Extract last user message for our agent
-    user_message = ""
-    for msg in reversed(messages):
-        if isinstance(msg, dict):
-            role = str(msg.get("role", "")).lower()
-            content = msg.get("content", "")
-            if role == "user" and content:
-                user_message = str(content)
-                break
-
-    if not user_message:
-        if stream:
-            async def error_stream():
-                yield json.dumps({
-                    "error": {
-                        "message": "No user message found",
-                        "type": "invalid_request_error",
-                        "code": "invalid_request",
-                    }
-                }, ensure_ascii=False) + "\n"
-            return StreamingResponse(
-                error_stream(),
-                media_type="application/x-ndjson",
-                headers={"Cache-Control": "no-transform", "X-Accel-Buffering": "no"},
-            )
-        return {
-            "error": {
-                "message": "No user message found",
-                "type": "invalid_request_error",
-                "code": "invalid_request",
-            }
-        }
-
-    # Build input messages for agent (flatten conversation)
-    input_messages = []
-    system_content = ""
-    for msg in messages:
-        if isinstance(msg, dict):
-            role = str(msg.get("role", "")).lower()
-            content = str(msg.get("content", "") or "")
-            if role == "system":
-                system_content = content
-            elif role in ("user", "assistant"):
-                input_messages.append({"role": role, "content": content})
-
-    if not input_messages or input_messages[-1].get("role") != "user":
-        input_messages.append({"role": "user", "content": user_message})
-    if system_content:
-        input_messages.insert(0, {"role": "system", "content": system_content})
-
-    # Create ChatOpenAI with resolved config (local or remote)
-    chat_model = create_chat_model(model_cfg)
-
-    # Select tools based on request
-    enabled_tools = set()
-    if payload.get("tools"):
-        for t in payload.get("tools", []):
-            if isinstance(t, dict):
-                name = str(t.get("function", {}).get("name", "")).strip()
-                if name:
-                    enabled_tools.add(name)
-    search_enabled = bool(enabled_tools & {"search", "web_search"})
-
-    all_tools = get_tools({"current_time"})
-    mcp_tools = await load_mcp_tools_progressive()
-    all_tools = all_tools + mcp_tools
-    if search_enabled:
-        all_tools = all_tools + get_tools({"search"})
-
-    # Build system prompt
-    context = context_loader.load_context() if context_loader else ""
-    runtime_system_prompt = build_system_prompt_with_context(
-        MainAgentPrompt.SYSTEM_PROMPT,
-        context,
-        "",
+async def removed_openai_chat_completions():
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Python LangChain OpenAI-compatible agent has been removed. Use the Pi agent gateway.",
     )
-
-    session_id = f"openai-{hashlib.md5(str(messages).encode()).hexdigest()[:12]}"
-
-    # Create temporary agent with the resolved model
-    temp_agent = create_agent(
-        model=chat_model,
-        tools=all_tools,
-        system_prompt=runtime_system_prompt,
-        middleware=[],
-        checkpointer=None,
-    )
-
-    if stream:
-        async def openai_stream():
-            full_content = ""
-            thinking_text = ""
-            tool_names_seen = set()
-
-            async for mode, event in temp_agent.astream(
-                {"messages": input_messages},
-                stream_mode=["messages", "values"],
-                config={
-                    "configurable": {"thread_id": f"openai:{session_id}"},
-                    "recursion_limit": AGENT_RECURSION_LIMIT,
-                },
-            ):
-                if mode == "messages":
-                    try:
-                        msg, _meta = event
-                    except Exception:
-                        msg = event
-                    role_name = _normalize_message_role(msg)
-
-                    if role_name in {"assistant", "ai"}:
-                        delta = _extract_text_from_message(msg)
-                        if delta:
-                            full_content += delta
-                            yield json.dumps({
-                                "id": f"chatcmpl-{hashlib.md5(str(time.time()).encode()).hexdigest()[:8]}",
-                                "object": "chat.completion.chunk",
-                                "created": int(time.time()),
-                                "model": model_cfg.get("model", ""),
-                                "choices": [{
-                                    "index": 0,
-                                    "delta": {"content": delta},
-                                    "finish_reason": None,
-                                }],
-                            }, ensure_ascii=False) + "\n"
-
-                        thinking = _extract_thinking_from_message(msg)
-                        if thinking:
-                            thinking_text = thinking
-                else:
-                    events = event.get("messages") if isinstance(event, dict) else None
-                    if isinstance(events, list):
-                        for message in events:
-                            role_msg = _normalize_message_role(message)
-                            if role_msg == "tool":
-                                name_msg = _extract_message_name(message)
-                                if name_msg:
-                                    tool_names_seen.add(name_msg)
-
-            # Final chunk
-            finish_reason = "tool_calls" if tool_names_seen else "stop"
-            yield json.dumps({
-                "id": f"chatcmpl-{hashlib.md5(str(time.time()).encode()).hexdigest()[:8]}",
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": model_cfg.get("model", ""),
-                "choices": [{
-                    "index": 0,
-                    "delta": {},
-                    "finish_reason": finish_reason,
-                }],
-            }, ensure_ascii=False) + "\n"
-
-            if thinking_text:
-                yield json.dumps({
-                    "id": f"chatcmpl-{hashlib.md5(str(time.time()).encode()).hexdigest()[:8]}",
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": model_cfg.get("model", ""),
-                    "choices": [{
-                        "index": 0,
-                        "delta": {"content": f"\n\n[think]\n{thinking_text[:500]}\n[/think]"},
-                        "finish_reason": None,
-                    }],
-                }, ensure_ascii=False) + "\n"
-
-            yield json.dumps({
-                "id": f"chatcmpl-{hashlib.md5(str(time.time()).encode()).hexdigest()[:8]}",
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": model_cfg.get("model", ""),
-                "choices": [{
-                    "index": 0,
-                    "delta": {},
-                    "finish_reason": "stop",
-                }],
-            }, ensure_ascii=False) + "\n"
-
-        return StreamingResponse(
-            openai_stream(),
-            media_type="application/x-ndjson",
-            headers={"Cache-Control": "no-transform", "X-Accel-Buffering": "no"},
-        )
-
-    # Non-streaming response
-    collected = []
-    async for mode, event in temp_agent.astream(
-        {"messages": input_messages},
-        stream_mode=["messages"],
-        config={
-            "configurable": {"thread_id": f"openai:{session_id}"},
-            "recursion_limit": AGENT_RECURSION_LIMIT,
-        },
-    ):
-        if mode == "messages":
-            try:
-                msg, _meta = event
-            except Exception:
-                msg = event
-            role_name = _normalize_message_role(msg)
-            if role_name in {"assistant", "ai"}:
-                delta = _extract_text_from_message(msg)
-                if delta:
-                    collected.append(delta)
-
-    full_content = "".join(collected)
-    return {
-        "id": f"chatcmpl-{hashlib.md5(str(time.time()).encode()).hexdigest()[:8]}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": model_cfg.get("model", ""),
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": full_content or "No response generated",
-            },
-            "finish_reason": "stop",
-        }],
-        "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        },
-    }
 
 
 @app.get("/v1/models")
-async def openai_list_models():
-    """OpenAI-compatible models listing endpoint."""
-    return {
-        "object": "list",
-        "data": [{
-            "id": main_model_config.get("model", "unknown"),
-            "object": "model",
-            "created": int(time.time()),
-            "owned_by": "robotagent",
-        }],
-    }
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(
-        "backend.app:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info",
+async def removed_models():
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Model listing is served by the Pi agent gateway.",
     )

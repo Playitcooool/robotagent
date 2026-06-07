@@ -234,9 +234,9 @@ docker compose -f docker/qdrant/docker-compose.yml up -d
 - [backend/app.py](backend/app.py)：应用入口、Agent 初始化、聊天与会话 API
 - [backend/routes_auth.py](backend/routes_auth.py)：注册、登录、鉴权
 - [backend/routes_sim.py](backend/routes_sim.py)：仿真帧读取与 SSE 推送
-- [tools/GeneralTool.py](tools/GeneralTool.py)：workspace / web / academic / RAG 工具
-- [tools/AnalysisTool.py](tools/AnalysisTool.py)：统计与图表工具
-- [tools/SubAgentTool.py](tools/SubAgentTool.py)：分析代理与仿真代理初始化
+- [agent-gateway/](agent-gateway/)：基于 Pi 的公共 Agent Gateway 与 OpenAI 兼容 API
+- [tools/GeneralTool.py](tools/GeneralTool.py)：遗留可调用 workspace / web / academic / RAG 工具函数
+- [tools/AnalysisTool.py](tools/AnalysisTool.py)：遗留可调用统计与图表工具函数
 - [frontend/src/components/ChatView.vue](frontend/src/components/ChatView.vue)：主聊天界面
 - [frontend/src/components/AboutView.vue](frontend/src/components/AboutView.vue)：系统说明页
 

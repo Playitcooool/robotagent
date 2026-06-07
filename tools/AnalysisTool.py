@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 
-from langchain_core.tools import tool
+from tools.simple_tool import tool
 
 try:
     import pandas as pd

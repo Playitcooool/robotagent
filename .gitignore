@@ -1,6 +1,10 @@
 *.pdf
 *.log
 *.json
+!/package.json
+!/agent-gateway/package.json
+!/agent-gateway/package-lock.json
+!/agent-gateway/tsconfig.json
 *.info
 RAG/logs
 RAG/chunks
@@ -10,8 +14,11 @@ output
 .DS_Store
 *.pyc 
 frontend/node_modules
+node_modules/
+agent-gateway/node_modules/
 dpo_ckpt
 dist
+agent-gateway/dist/
 *.jsonl
 *.png
 *.jpg

@@ -1,0 +1,12 @@
+{
+  "scripts": {
+    "agent:dev": "npm --prefix agent-gateway run dev",
+    "agent:build": "npm --prefix agent-gateway run build",
+    "agent:start": "npm --prefix agent-gateway run start",
+    "agent:test": "npm --prefix agent-gateway run test"
+  },
+  "dependencies": {
+    "image-size": "^2.0.2",
+    "pptxgenjs": "^4.0.1"
+  }
+}

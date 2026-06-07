@@ -234,9 +234,9 @@ Default port: `6333`.
 - [backend/app.py](backend/app.py): app entry point, agent initialization, chat and session APIs
 - [backend/routes_auth.py](backend/routes_auth.py): registration, login, and auth checks
 - [backend/routes_sim.py](backend/routes_sim.py): simulation-frame loading and SSE streaming
-- [tools/GeneralTool.py](tools/GeneralTool.py): workspace, web, academic, and RAG tools
-- [tools/AnalysisTool.py](tools/AnalysisTool.py): statistics and chart tools
-- [tools/SubAgentTool.py](tools/SubAgentTool.py): analysis-agent and simulation-agent initialization
+- [agent-gateway/](agent-gateway/): Pi-based public agent gateway and OpenAI-compatible API
+- [tools/GeneralTool.py](tools/GeneralTool.py): legacy callable workspace, web, academic, and RAG utilities
+- [tools/AnalysisTool.py](tools/AnalysisTool.py): legacy callable statistics and chart utilities
 - [frontend/src/components/ChatView.vue](frontend/src/components/ChatView.vue): main chat UI
 - [frontend/src/components/AboutView.vue](frontend/src/components/AboutView.vue): system information page
 

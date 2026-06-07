@@ -130,9 +130,8 @@ def normalize_intent_result(
         if pending_response == "unclear":
             pending_response = infer_pending_action_response(user_message)
         if pending_response == "unclear":
-            # User continued conversation with pending simulator action;
-            # default to confirmed unless clearly modifying/rejecting.
-            execution_confirmed = True
+            # User continued conversation with a pending simulator action, but
+            # did not clearly confirm. Keep the action pending.
             simulator_required = True
         elif pending_response == "confirmed":
             execution_confirmed = True

@@ -12,17 +12,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
-from langchain_core.tools import tool
+from tools.simple_tool import tool
 
 try:
     from tavily import TavilyClient
 except Exception:
     TavilyClient = None
-
-try:
-    from langchain_huggingface import HuggingFaceEmbeddings
-except Exception:
-    HuggingFaceEmbeddings = None
 
 try:
     from qdrant_client import QdrantClient
